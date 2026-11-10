@@ -1,10 +1,14 @@
 # Marketplace-only installation (0.16.0)
 
+This page records the 0.16.0 installer transition and its acceptance status
+at that time. For the current stable marketplace identity and upgrade routes,
+see [compatibility](COMPATIBILITY.md).
+
 Version 0.16.0 removes the project installer from tracked source and runtime
 artifacts. No installer implementation is renamed or moved. Codex owns plugin
 installation. The distinct `codex-context-guard-v016` marketplace identity is
-experimental; the released marketplace and consumed 0.15.1 objects are not
-modified by this source change.
+experimental in that candidate; the then-released marketplace and consumed
+0.15.1 objects were not modified by that source change.
 
 ## Retired implementation and tests
 

@@ -1,8 +1,9 @@
-# Core v2 wire candidate (provisional, unreleased)
+# Core v2 wire reference (provisional contract)
 
 Canonical owner: this repository. The planning contract is
-[CORE_ALIGNMENT_CONTRACT_V2.md](CORE_ALIGNMENT_CONTRACT_V2.md). No installed
-runtime or formal upstream pin is changed by this development identity.
+[CORE_ALIGNMENT_CONTRACT_V2.md](CORE_ALIGNMENT_CONTRACT_V2.md). The reference
+and Codex adapter are included in the 0.17.1 release source. An installed
+runtime and a downstream upstream pin each require their own identity checks.
 
 ## Inputs and identity
 

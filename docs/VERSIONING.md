@@ -1,5 +1,9 @@
 # Versioning policy
 
+The release entries begin with the newest version. Historical candidate
+sections preserve the status of their specific source revision at the time of
+review; a later release of the same version does not change that evidence.
+
 ## 0.17.1 — 2026-11-09
 
 Schema 13, Stop protocol 5.0.0, the nine Hook events, and the default
@@ -796,6 +800,8 @@ report. The probe lives under `tools/validation/` and changes no installed
 Hook, runtime tree, state schema, or public protocol, so it does not consume a
 new plugin version by itself. The later validation-tools candidate adds reviewed raw-to-gate mappings and a composite validator. The accepted macOS and Windows composites each cover all six `host_behavior` gates for the original runtime, while preserving their original child sessions, raw evidence and tool identities. Windows current-tool portable acceptance separately passes. The Windows composite preserves R3 historical executable-evidence limits; version compatibility does not establish shared executable bytes. Tooling and documentation changes create a different full-source identity and do not establish new full-source install parity or authorize overwriting a consumed cache.
 # 0.14.0 source candidate (unreleased)
+
+This heading describes the earlier source candidate, before the 0.14.0 release.
 
 Private schema 13 and Stop 5.0.0 identify the provisional shared-core v2
 projection and source-bound continuation diagnosis. The runtime keeps the

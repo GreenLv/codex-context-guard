@@ -1,6 +1,8 @@
 # Distinct read-source ACL matrix fixture v3
 
-This unreleased 0.15.1 source candidate uses the new `distinct-source32` profile, `incident-acl-mechanism-matrix/v3` report schema and `distinct-read-source-retention/v3` construction contract. It tests protected fixture construction without manufacturing repeated explicit ACEs. Native v3 acceptance is not run; source models cannot establish Windows behavior or a real restricted subprocess token.
+This 0.15.1 fixture contract uses the `distinct-source32` profile, `incident-acl-mechanism-matrix/v3` report schema and `distinct-read-source-retention/v3` construction contract. It tests protected fixture construction without manufacturing repeated explicit ACEs. Source models alone cannot establish Windows behavior or a real restricted subprocess token.
+
+The later native Windows matrix passed all 32 cells on source `329e594`, with restoration verified. A separate full-host execution on that source passed through strict offline mapping at `66e9079`; the matrix alone does not establish the host result. The [0.15.1 acceptance record](LOCAL_ACCEPTANCE.md#0151--2026-10-05) retains the original failures and both evidence identities.
 
 A protected file target keeps four explicit management entries and three different inherited-source read entries. Clearing only I preserves all seven entries without making the last three copies of the first three. The source principals are existing well-known Everyone (`S-1-1-0`), Authenticated Users (`S-1-5-11`) and Builtin Users (`S-1-5-32-545`). Their specific mask `0x1200a9` permits read/list/traverse, not writes; their source flags are OI|CI. This is meaningful fixture coverage, not permission equivalence to the old full-control source.
 
@@ -26,7 +28,7 @@ After construction, coherent whole-family observation freezes S1. Target-only bu
 
 Use `python -B -m tests.test_incident_acl_family --mechanism-matrix --cell-profile distinct-source32` with full source commit, helper/runner SHA-256, distinct actual actor/collector SIDs, exclusive output and fixture-parent arguments. First run `--preflight` using the actual arguments. Output storage must neither overlap source nor be its ancestor. Preflight checks all 32 mapped descriptors without APIs, tokens or models; it cannot certify native feasibility.
 
-Actual execution stops on the first failure after saving evidence and attempting complete restoration. Remaining cells are explicitly not run. The full original Windows host profile must remain not run until a coordinator-approved prerequisite is satisfied; a green matrix alone cannot certify it. Native budgets and authority are external to this CLI: no new native run is authorized by this source candidate.
+Actual execution stops on the first failure after saving evidence and attempting complete restoration. Remaining cells are explicitly not run. The original full-host run was conditional on a separately approved prerequisite; a green matrix alone cannot certify it. Native budgets and authority remain external to this CLI.
 
 ## Mapping from v1 and v2
 

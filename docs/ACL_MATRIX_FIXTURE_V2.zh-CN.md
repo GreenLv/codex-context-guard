@@ -1,6 +1,6 @@
 # 受保护 ACL 矩阵夹具构造 v2
 
-这是尚未发布的 0.15.1 验证契约：为测试对象设置保护时，明确保留受控继承来源提供的权限。新 profile 为 `explicit-retained32`，报告 schema 为 `incident-acl-mechanism-matrix/v2`，构造契约为 `protected-explicit-retention/v2`。此修订仅作用于验证夹具，不改变产品运行时，也不自动转换用户 ACL。
+这是 0.15.1 的验证契约：为测试对象设置保护时，明确保留受控继承来源提供的权限。profile 为 `explicit-retained32`，报告 schema 为 `incident-acl-mechanism-matrix/v2`，构造契约为 `protected-explicit-retention/v2`。此修订仅作用于验证夹具，不改变产品运行时，也不自动转换用户 ACL。
 
 例如，一个受保护文件原计划有四条显式 allow ACE 和三条继承来源 allow ACE。新构造保留全部七条，只清除后三条 ACE 的 `INHERITED_ACE` 标志（`I`，`0x10`），结果为七条显式 ACE；读回只有四条仍判失败。描述符的 `AUTO_INHERITED`（`AI`，`0x400`）是另一个控制位，`1004` 与 `1404` 仍须分别验证。
 
@@ -22,7 +22,7 @@ collector 独占新建夹具，固定全族清单、验证对象身份，并拒�
 
 使用 `tests/test_incident_acl_family.py` 既有 `--mechanism-matrix` 入口，选择 `--cell-profile explicit-retained32`。提供完整源码 commit、helper 和 runner 的 SHA-256、不同的 collector/普通 actor SID、独占输出位置及 fixture parent；先用实际参数运行 `--preflight`。预检输出全部 32 格映射及描述符计划，不调用 Windows API、token 或模型；它核验输入，不证明原生可构造性。
 
-v2 成功只能证明新构造契约。旧 `full32`、`protected8` 仍使用 v1 含义，旧失败不改判为通过。原始 DACL 写入丢失 AI、保护调用未产生 P、保护后删除继承尾部，仍保留为负例。v2 矩阵不调用模型，不能替代真实受限子进程 token 或完整 Windows host 验收。本源码候选的 v2 原生验收仍待执行。
+v2 成功只能证明其构造契约。旧 `full32`、`protected8` 仍使用 v1 含义，旧失败不改判为通过。原始 DACL 写入丢失 AI、保护调用未产生 P、保护后删除继承尾部，仍保留为负例。v2 矩阵不调用模型，不能替代真实受限子进程 token 或完整 Windows host 验收。撰写此契约时，v2 原生验收尚待执行。后续不同对象的 Windows 结果见 [0.15.1 验收记录](LOCAL_ACCEPTANCE.md#0151--2026-10-05)。
 
 ## 与旧 32 格逐一对应
 

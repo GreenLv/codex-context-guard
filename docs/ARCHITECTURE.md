@@ -1,5 +1,10 @@
 # Architecture
 
+Sections labeled with a version and “candidate” retain the design and evidence
+boundary of that candidate. Later releases may include the same implementation;
+see [versioning](VERSIONING.md) and [compatibility](COMPATIBILITY.md) for the
+released behavior and upgrade boundaries.
+
 ## Optional commentary source binding (0.14.2 candidate)
 
 The host-selected transcript remains the completed-message source. With the

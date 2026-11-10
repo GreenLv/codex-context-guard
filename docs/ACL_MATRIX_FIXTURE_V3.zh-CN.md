@@ -1,6 +1,8 @@
 # 来源互异的只读 ACL 矩阵夹具 v3
 
-这是尚未发布的 0.15.1 源码候选，采用新 profile `distinct-source32`、报告 schema `incident-acl-mechanism-matrix/v3` 和构造契约 `distinct-read-source-retention/v3`。它验证受保护夹具的构造，并避免人为制造重复显式 ACE。v3 原生验收尚未运行；源模型不能证明 Windows 行为，也不能替代真实受限子进程 token。
+这是 0.15.1 的夹具契约，采用 profile `distinct-source32`、报告 schema `incident-acl-mechanism-matrix/v3` 和构造契约 `distinct-read-source-retention/v3`。它验证受保护夹具的构造，并避免人为制造重复显式 ACE。源模型本身不能证明 Windows 行为，也不能替代真实受限子进程 token。
+
+后续 Windows 原生矩阵在源码 `329e594` 上通过全部 32 格，并验证了恢复。同一源码的独立完整宿主执行经 `66e9079` 的严格离线映射通过；矩阵本身不能证明完整宿主结果。[0.15.1 验收记录](LOCAL_ACCEPTANCE.md#0151--2026-10-05)保留了此前失败及两种证据各自的身份。
 
 例如，受保护文件目标保留四条显式管理权限和三条来自不同主体的继承来源只读权限。只清除 I 后，七条均保留，后三条不会成为前三条的副本。三个来源均为既有 well-known 主体：Everyone（`S-1-1-0`）、Authenticated Users（`S-1-5-11`）、Builtin Users（`S-1-5-32-545`）；specific mask 为 `0x1200a9`，提供读、列举、遍历权限而不提供写权限，来源标志为 OI|CI。这是有明确含义的新夹具覆盖，不与旧 full-control 来源推断权限等价。
 
@@ -26,7 +28,7 @@ Named 构造写入使用夹具侧有界包装，观察已有的 `GetSecurityDesc
 
 使用 `python -B -m tests.test_incident_acl_family --mechanism-matrix --cell-profile distinct-source32`，提供完整源码 commit、helper/runner SHA-256、不同的真实 actor/collector SID、独占输出及 fixture-parent 参数。先用实际参数运行 `--preflight`。输出位置不能与源码重叠，也不能是源码祖先。预检核验全部 32 格计划，不调用 API、token 或模型，不能证明原生可构造性。
 
-实际执行在首个失败后先保存证据并尝试完整恢复，再停止；剩余格明确为未运行。协调方批准的前置条件未满足时，原始 Windows full host profile 必须保持未运行；矩阵通过也不能单独证明该 profile。原生预算和授权由 CLI 外的协调流程控制，此源码候选本身不授权新原生运行。
+实际执行在首个失败后先保存证据并尝试完整恢复，再停止；剩余格明确为未运行。原始完整宿主执行以另行批准的前置条件为基础，矩阵通过不能单独证明该结果。原生预算和授权仍由 CLI 外的协调流程控制。
 
 ## 与 v1/v2 逐格对应
 

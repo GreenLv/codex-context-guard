@@ -47,6 +47,12 @@ Capture replay additionally reports its existing capture status. Run without
 Keep original captures and results for later readback instead of rerunning
 because a transfer failed.
 
+To reproduce an existing release, build from its published tag. The release
+ZIP includes the README, changelog and other Markdown files. When a later
+release adopts edits to those files, assign that release its own version and
+refresh the reviewed distribution manifest before building and validating its
+ZIP. The original release keeps the manifest and files from its tag.
+
 Run the complete checks from the repository root when required:
 
 Install validation tools with `uv==0.12.18` and

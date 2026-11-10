@@ -5,7 +5,7 @@
 
 Status: **0.12.4 release baseline — 2026-09-09** (private state schema 11,
 Stop protocol 3.0.0, classifier 3.2.1, Proof 1.0.0, Execution 2.0.0, nine Hook
-events, Python 3.10+ standard-library runtime). This document is the current
+events, Python 3.10+ standard-library runtime). This document records the
 behavior baseline required by the 0.12.2 stabilization plan and carried through
 the consumed 0.12.3 trial into the 0.12.4 release. It states what the
 product is implemented and regression-tested to do at the source boundary,
@@ -20,10 +20,9 @@ v0.9.4 / schema 7 / Stop protocol 2.0.0) and the v1 conformance fixtures are a
 **historical alignment snapshot** of the earlier cross-host alignment round.
 They are preserved unchanged as frozen history; they do not describe current
 0.12.4 capability, and historical v1 fixture or Stop-protocol-2 semantics must
-not be read back as today's behavior. Current behavior is defined by the
-sections below plus the current-behavior suite; DSH still adapts from this
-repository, and unported 0.12.4 behavior remains pending/deferred on the DSH
-side until separately accepted there.
+not be read back as later behavior. The sections below describe 0.12.4; they
+do not supersede later releases or the current-behavior suite. DSH adaptation
+was a separate acceptance question for that release.
 
 ## Behavior areas
 

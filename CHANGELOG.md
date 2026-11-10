@@ -2,333 +2,244 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed newest first. See [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) for published versions and [local acceptance](docs/LOCAL_ACCEPTANCE.md) for test results and platform limits. The [original detailed changelog](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.md) preserves the earlier implementation and validation notes.
 
 ## 0.17.1 — 2026-11-09
 
 ### Highlights
 
-- Copy private task state into the stable entry when you choose to move it. The migration tool starts with a read-only plan. If two sessions share an ID but contain different data, it keeps the existing target and isolates the source copy. Restore removes only unchanged copies created by that run. Legacy sessions stay with their original runtime. [Migration tool](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md)
-- Use the stable entry after upgrading from the 0.16.1 public ZIP or its local wrapper, or upgrade an existing 0.17.0 stable entry in place. The 0.15.1 route follows its historical compatibility contract. Finish tasks that still need their old runtime before switching. [Upgrade guide](docs/UPGRADE_0_17_1.md)
-- Installation leaves private task state where it is. The nine Hook events, schema 13, Stop protocol 5.0.0 and ordinary tool behavior carry forward from 0.17.0.
+- If you installed 0.16.1 from the public ZIP or its local wrapper, switch to the stable plugin entry, `context-guard@codex-context-guard`. If you already use that entry on 0.17.0, upgrade it in place. Before changing either installation, finish tasks that still need the old plugin or keep them in a separately configured Codex environment. The guide also covers the 0.15.1 route. [Upgrade guide](docs/UPGRADE_0_17_1.md)
+- Installing 0.17.1 leaves your Context Guard records where they are. If you want to look up an older task from the new entry, use the migration tool to preview and copy records in the `sessions-v2` format on the same machine. Older-format records stay with the original plugin. [Migration tool](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md)
+- If both entries have different records for the same session ID, the tool keeps the destination record and saves the incoming copy separately for review. Undo removes only copies from that migration whose contents are still the same.
 
 ### Changes
 
-- The repository maintains the native upgrade toolkit. POSIX sh and PowerShell 5.1/7 launch the same Python implementation and record the exact source, artifact and host inputs.
-- Windows regressions cover separate process and PowerShell working directories, and access-control entries for an explicit user versus the owner-rights principal.
+- Maintainers can run the same upgrade checks through POSIX sh or PowerShell 5.1/7. Windows checks cover a PowerShell location that differs from the process directory and distinguish access granted to a named user from rights granted to the owner. [Native upgrade checks](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/validation/NATIVE_UPGRADE_ACCEPTANCE.md)
 
 ### Validation
 
-- Source checks, the historical incident library, macOS and Windows native tests, package parity, performance, CI and the HOL scan each bind to their own inputs. Exact release evidence and tested boundaries are recorded separately. [Acceptance record](docs/LOCAL_ACCEPTANCE.md)
+- The final ZIP passed upgrades from the 0.16.1 wrapper, the 0.17.0 stable entry, and 0.15.1 in isolated Codex CLI environments on macOS and Windows. On each platform, a separate test copied and removed sample session records. Daily Desktop use and migration of existing daily records have separate acceptance records. [Release acceptance](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.1/context-guard-0.17.1-acceptance.json)
 
 ## 0.17.0 — 2026-11-06
 
 ### Highlights
 
-- Planning a change no longer creates an obligation to edit files. Another person's completed work, quoted advice, future intent and “do not modify” stay distinct from a current instruction. Requests that also ask for an actual edit retain that obligation.
-- Terminal evidence recognizes the Desktop `aggregated_output` field alongside `stdout`. Command identity, working directory, status and exit code must still agree. Unrelated oversized transcript rows no longer hide later normal results; malformed or potentially relevant rows still prevent certification.
-- Session retention returns as opt-in maintenance. Preview is the default; eligible sessions enter recoverable quarantine before permanent removal. Every move and purge requires the selected object's creation identity. Objects whose identity cannot be verified stay protected, and SessionEnd performs no sweep.
-- New installations use the stable marketplace identity `codex-context-guard`. Finish tasks that require the published 0.16.1 runtime before switching their HOME, or keep them in a separately configured HOME. Cache retention alone does not prove which Hook an old task loads.
+- Planning an edit no longer makes Context Guard treat the edit as requested work. An explicit request to make the change remains open until it is done.
+- Terminal checks recognize Codex Desktop's `aggregated_output` as well as `stdout`. They still verify the command, working directory, status and exit code.
+- Session cleanup returns as an opt-in maintenance command. Preview is the default. After you enable the policy and apply a selection, the default settings let eligible sessions move to recoverable quarantine at least 30 days after ending. A later apply can permanently delete them after seven days in quarantine. SessionEnd does not run cleanup.
+- New installations use the stable marketplace `codex-context-guard`. Before switching a HOME, finish tasks that need the 0.16.1 runtime or keep them in a separate HOME. Keeping old cache files alone does not establish which Hook an old task loads.
 
 ### Changes
 
-- An enabled retention policy defaults to a 30-day minimum age and seven-day quarantine. Apply rechecks its selection manifest under lifecycle and maintenance locks. Quarantine, restore and purge write transaction records before changing the filesystem; interrupted or unprovable work retains data and recovery records. Purge leaves an expiring record that prevents silent recreation of a purged ledger.
-- Creation time supplements the directory's device and inode identity: macOS and Windows use their creation-time fields, and Linux uses `statx` when available. Missing or unreadable creation identity reports `identity_unverifiable` and skips cleanup. A mismatched identity refuses the replacement. Change times and directory-layout summaries cannot authorize cleanup; weak records from unpublished candidates remain protected and cannot be automatically upgraded or restored. These filesystems retain their existing data but cannot use automatic cleanup.
-- The final checks before and after quarantine, restore and purge retain the selection-time identity. A refused operation never becomes partial-removal progress, a replacement never receives a new binding, and a failed post-move check never reports success or retires its record. Compensating moves do not overwrite another object.
-- Independent maintenance runs keep discovery and processing progress on disk. A complete names-only scan must fit the invocation budget, which defaults to 20 seconds. Otherwise `capacity_exceeded`, backlog and incomplete status remain visible while registered work continues. Incremental purge progresses when the budget covers its next path and deletion unit. A failed progress write returns an error.
-- Scheduling has explicit enable, status and disable operations. The verified interpreter runs the same maintenance executor through launchd or Windows Task Scheduler. Definitions, loaded state and ownership are checked separately; unrelated jobs are refused. Installation enables neither a retention policy nor a scheduler.
-- Discovery snapshots use LF bytes on every platform. Damaged snapshots are rebuilt, and record hints restored by discovery are served in the same pass. The versioned native acceptance consumer derives per-object purge outcomes rather than trusting summary booleans. Windows test fixtures use host-independent user IDs and path components.
-- Session data and consumed caches are not migrated. See the [stable identity contract](tools/validation/STABLE_MARKETPLACE_IDENTITY.md) and [session storage](docs/SESSION_STORAGE.md) before changing an existing HOME. Historical regressions use an immutable incident-library pin and preserve rejected-intake lineage.
+- Cleanup checks each selected directory's identity before moving, restoring or deleting it. If creation identity is unavailable or has changed, the directory stays protected. Interruptions retain recovery records.
+- The scheduler is enabled and disabled explicitly through macOS launchd or Windows Task Scheduler. Installing the plugin enables neither the scheduler nor a retention policy.
+- The upgrade does not move existing session data or consumed caches. See [session storage](docs/SESSION_STORAGE.md) and the [stable marketplace identity contract](tools/validation/STABLE_MARKETPLACE_IDENTITY.md) before changing an existing HOME.
 
 ### Validation
 
-- Source checks, the canonical historical-library gate, performance, native macOS and Windows behavior, exact-artifact installation and upgrade, CI, HOL and publication have separate acceptance identities. Publication requires every applicable gate; source tests or a portable installation alone do not establish native behavior. See [local acceptance](docs/LOCAL_ACCEPTANCE.md) and the release acceptance assets for exact subjects and limits.
-- Earlier unpublished Windows and Linux failures retain their original verdicts. Their repaired source controls cover newline round trips, replacement refusal, creation-identity loss, interrupted transitions and normal strong-identity progress. They do not substitute for new native or exact-artifact results.
+- Source, historical regression, installation, performance, native macOS and Windows behavior, and publication evidence are recorded separately. Earlier failed Windows and Linux candidate runs retain their original results; repaired source checks do not replace native tests. See [local acceptance](docs/LOCAL_ACCEPTANCE.md) for subjects and limits.
 
 ## 0.16.1 — 2026-11-03
 
 ### Highlights
 
-- File names and paths such as `test.pdf` no longer add a testing duty or raise the activation score merely because they contain acceptance words. Real prose duties, original text, hashes and source spans are retained; the existing “run `test_*.py`” shorthand still works.
-- Session retention cleanup remains disabled. SessionEnd saves current state, while `cleanup` exits 2 without deleting data. Existing sessions remain on disk and storage can grow; there is no automatic retention cap or supported manual reclamation tool. See [Retention cleanup follow-up](docs/RETENTION_CLEANUP_FOLLOWUP.md).
-- Plugin listing metadata now declares the Skill's Apache-2.0 license and the bundled interface logo. The optional `interface.screenshots` field remains omitted.
+- File names such as `test.pdf` no longer add a testing requirement just because they contain a word like `test`. An explicit request such as “run `test_*.py`” still applies.
+- Marketplace metadata now includes the Skill's Apache-2.0 license and the packaged interface logo.
 
 ### Changes
 
-- The historical incident coverage checker now offers `--release-gate` with `--execute`: an invalid report, pending required observation, missing receipt, skip or incomplete required-node inventory blocks the release. The locator classification and Windows cleanup receipt regressions are registered as separate sanitized historical cases.
-- Windows CLI 0.165 zero-turn acceptance now validates the complete Windows Job cleanup record, including its retained original fields. Missing, unsuccessful or unexpected fields are rejected; the POSIX cleanup contract remains unchanged. The project version in `uv.lock` now matches the plugin version, so locked CI can install its validation tools.
-- The HOL scanner Action and its report-version binding were upgraded, and `actions/setup-python` was updated. Native acceptance probes have bounded timeouts and explicit error handling; CI and scoped performance checks are selected using the complete release-diff risk.
+- Session cleanup remains disabled. Ending a session saves its state, and `cleanup` exits with code 2 without deleting data. Existing sessions remain on disk and may use more storage. This version has no automatic retention cap or supported manual cleanup tool. See the [cleanup follow-up](docs/RETENTION_CLEANUP_FOLLOWUP.md).
+- The historical-incident checker can execute its required tests as a release gate. Missing results, skipped tests and incomplete required test lists prevent a pass.
+- Windows CLI acceptance checks the complete Job cleanup record. The Python dependency lock now uses the plugin's version.
 
 ### Validation
 
-- Independent locator regressions produced 448 failing assertions on the earlier developer candidate and passed after repair. A successor macOS source suite ran 2,899 tests with no failures or errors and 92 skips (30 retired retention nodes and 62 platform/capability skips). A later 147-test acceptance-tool family passed; the Windows cleanup controls passed 35 tests without skips.
-- On the earlier `b18fd91` candidate, exact-artifact portable installation checks passed on macOS and Windows. The pre-registered macOS performance comparison against the published 0.16.0 artifact put both declared cells within budget; an earlier inconclusive result remains recorded separately. The full historical Windows W1/W2 comparison remains unfinished.
-- Source tests, installed-artifact checks, native model observations, exact-commit CI/HOL and public release readback are separate evidence. The [acceptance record](docs/LOCAL_ACCEPTANCE.md) preserves the candidate identities and limits; final release evidence is listed with the [release assets](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.16.1).
+- A macOS source suite ran 2,899 tests with no failures or errors and 92 skips. Later focused acceptance-tool and Windows cleanup tests also passed. The earlier macOS and Windows portable-install result belongs to candidate `b18fd91`.
+- The recorded macOS performance comparison met its declared budgets. The full historical Windows W1/W2 comparison remained unfinished. See [local acceptance](docs/LOCAL_ACCEPTANCE.md) and the [release assets](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.16.1) for the separate evidence.
 
 ## 0.16.0 — 2026-11-01
 
 ### Highlights
 
-- Structured credentials no longer reach derived evidence, diagnostics, or shareable exports. Redaction now recognizes JSON-serialized credential fields (including escaped-quote forms), URL userinfo, authorization headers, and common token shapes, and exports additionally scrub plugin-private absolute paths. The supported domain is documented and bounded; arbitrary unknown secrets are still out of scope.
-- Exports never overwrite existing files and never change project directory permissions. A shareable handoff is published exclusively (an existing target keeps its exact bytes), and the project parent directory keeps its own mode.
-- Private state fails closed when its permission boundary cannot be established. On POSIX a private directory/file that cannot be restricted to `0700`/`0600` and verified stops the write; on Windows private directories get a read-back-verified protected DACL without spawning PowerShell in the Hook hot path.
-- SessionEnd saves current state and, when active, recovery content. Session retention deletion is disabled: automatic sweeps do not run, and the `cleanup` command reports that it is unavailable with exit code 2 without deleting data. Existing v2 and legacy sessions remain on disk, so storage can grow; there is no automatic 30-day deletion or storage cap. This version provides no supported manual reclamation tool. Keep active tasks, session data, lifecycle locks and existing plugin caches intact.
+- **More credential formats are masked.** Context Guard masks documented credentials in the evidence it produces, diagnostics, and exports. This includes authorization headers and credentials in URLs. Shareable exports also remove paths to the data root, plugin root, Codex home, and operating-system home. See the [privacy guide](docs/PRIVACY.md) for the credential formats covered.
+- **Export to a new file.** If a file already exists at the destination, Context Guard leaves it intact and reports an error. The project directory keeps its permissions.
+- **Private records require verified access permissions.** Context Guard stops the write if it cannot confirm the permissions on the private file or directory.
 
 ### Changes
 
-- Public-tree audits accept an optional private identity list outside the audited tree and apply semantic-boundary matching without embedding personal identities in distributed source. Missing, unreadable or in-tree private input fails closed; existing `--forbid` substring matching is unchanged.
-- Windows private-directory readback accepts the first trustee as `LA` only when `ConvertStringSidToSidW` and `EqualSid` prove equality to the complete expected current-user SID. A different local account or machine SID, unresolved alias, or any permission mismatch still fails closed. Windows evidence remains bound to its exact source, artifact and host.
-
-- Configured Windows Hook launches create the temporary UTF-8 capture file through .NET directly, so a missing `New-TemporaryFile` command no longer prevents the configured interpreter from starting. Wire verification, native exit codes and temporary-file cleanup are unchanged.
-
-- Windows independent answer review and validation workers now stop when a temporary process handle cannot be closed. Startup failures retain available native error codes; cleanup reports redacted status without exposing command arguments, waits for an unassigned suspended child independently of Job closure, and attempts bounded Job-tree cleanup if the thread may already have run. Unknown exit or closure stays unknown; this source repair requires fresh Windows acceptance.
-- Known limitation carried over from 0.15.1: words such as `test` in a file path can be counted as extra acceptance items. Multiple such items can activate Context Guard earlier than expected.
-- Field-aware evidence sanitization replaces values under a documented set of sensitive key names (`password`, `api_key`, `client_secret`, `authorization`, `credentials`, and close variants, matched case- and separator-insensitively) before serialization; JSON-encoded tool-response strings are decoded and sanitized structurally as well. Shareable exports scrub the private-path domain — the data root, plugin root, Codex home, and the operating-system home of the running account — from all free text in both the handoff and successor-pack surfaces (including status, next-action, and authorization fields). Ordinary business fields of the same shape (for example `password_policy`) are untouched. Raw prompt records keep their authoritative original bytes.
-- `context-guard export` creates its target exclusively via an atomic link-based publish; an existing file, directory, or symbolic-link target raises an actionable error and the original bytes remain. The parent directory's identity is captured when the export path is resolved and re-verified when the directory is opened and at each publication boundary: a parent replaced by a link anywhere on that chain fails the export, and a publication that landed through a replaced path is withdrawn by its own object identity. Successor packs refuse an existing output directory. Export paths reject symbolic links, and the export writer never chmods the project directory; the new export file itself stays owner-only on POSIX.
-- Private permission failures are visible: `PrivateBoundaryError` propagates instead of being swallowed, no sensitive data is written through an unverifiable boundary, and error text contains no private content. On Windows, directory isolation uses a protected three-entry DACL (current user, `SYSTEM`, Administrators) applied through reviewable ctypes structures and API accessors — `TOKEN_USER` SID dereference, the self-relative descriptor's DACL offset at byte 16, `GetSecurityDescriptorDacl`, and the `0x80000004` protected-DACL information flags — verified through API-shaped doubles and pure SID formatting tests; read-back compares protection and the exact three-ACE permission structure, allowing Windows to retain its independent AI inheritance metadata while still rejecting missing protection or extra permissions; file-level isolation comes from the verified parent plus inheritance, and no per-file ACL call runs on the write path. Actual Windows DACL, inheritance, and non-authorized-reader behavior remain separate native acceptance gates.
-- POSIX private objects are checked on each use. An owned directory or regular file already at the exact private mode avoids redundant permission rewrites; other cases retain the existing hardening and verification path, which fails closed if the boundary cannot be established.
-- Session identities are validated and injectively encoded: missing or empty session ids are refused instead of merging into one `unknown-session` directory, characters outside `[A-Za-z0-9._-]` escape byte-for-byte (`~xx`) instead of collapsing (`a/b` and `a_b` are distinct sessions), over-long ids truncate with a digest suffix, reserved and Windows device names are rejected, case-only sibling collisions are refused before creating a directory; a casefolded admission lock serializes concurrent first creation while preserving existing lifecycle lock names and deadlines. A loaded state whose recorded session identity differs from the event fails closed. UUID-shaped ids map exactly as before; directories created by the old underscore merging stay on disk but are no longer addressed.
-- Read and write surfaces share one session resolver: a command may name a session by its raw host identity or by its encoded directory name, and the raw identity always comes from the persisted state (the directory leaf is never treated as the host identity). Identity strings are validated before any filesystem join: reserved names and path-shaped raw identities (which the Hook encoding domain supports) can never be reinterpreted as legacy directories, and legacy lookups require a plausible legacy directory name. `status`, `diagnose`, `checkpoint-status`, `recovery-page`, and direct write commands all resolve identically; UUID-shaped and legacy sessions keep their exact mapping. The direct-command data root follows `CODEX_HOME`: explicit `CONTEXT_GUARD_DATA_DIR`/`PLUGIN_DATA`/`CLAUDE_PLUGIN_DATA` roots still win, and without them each `CODEX_HOME` now owns its own `<home>/context-guard` directory (the previous default `~/.codex/context-guard` is unchanged when `CODEX_HOME` is unset). Nothing is migrated, merged, or deleted.
-- Re-delivered or repeated UserPromptSubmit events stay independent: the Codex hook payload carries no stable per-message identity, so nothing is collapsed and no input is dropped (a pause, a resume, and a second pause in one turn all journal). A repeated (session, turn, prompt-bytes) shape is recorded only as a bounded, text-free diagnostic observation that never affects attribution, completion or authorization. Whether a real host re-delivers events, and whether a future host exposes a usable message identity, remain pending native facts.
-- SessionEnd keeps its lightweight-entry timing anchor for the current-session lock and saves state and recovery without running a retention sweep. Mandatory writes and synchronous filesystem calls are not preemptible; the complete installed command retains its separate three-second native acceptance gate.
-- Retention deletion is unavailable through both the CLI and direct runtime API. Existing registry, cursor and pending records are retained without migration, as are partial markers for sessions without a later state write. State saves no longer append discovery entries while cleanup is disabled. After each successful state write, the writer still attempts to retire its own old partial marker under the lifecycle lock.
-- Tests for the removed deletion executor and discovery progress are explicitly retired and reported by name, including the previously expected-failure unregistered-tail case. Their method bodies remain in the test modules; `tests/retired_retention_cleanup.json` records the baseline commit, method digests and prior status. Retirement is not a passing result for the old algorithm. Current locks, permissions, identity, recovery and data-preservation controls still run.
-- Official Codex marketplace commands replace the project installer under experimental marketplace identity `codex-context-guard-v016`. Existing interpreter bindings remain readable and runtime-validated, but no binding is created automatically. Installation and documented second-operation no-op results are specific to their exact artifact and host; synthetic old-cache checks do not establish real-cache protection, GUI startup, normal trust or old-task continuity. No archive repair or installation rollback is supplied.
-- The POSIX launcher falls back to explicit global Homebrew, Anaconda and Python.framework locations only after existing interpreter discovery fails. Isolated version probes require an exact marker; personal directories are not searched and no binding is written. Invalid explicit bindings keep their separate error. Windows discovery and actual GUI restart acceptance remain separate.
-- Windows finds Python directly in ordinary local PATH directories, avoiding general PowerShell command discovery during Hook startup. Interpreter priority and version checks stay the same; PowerShell scripts, bare command files and special PATH forms retain the existing resolver.
-- Windows startup explicitly loads its built-in PowerShell modules instead of analyzing unrelated installed modules. Missing Python candidates, including on a PATH containing `.`, no longer trigger module auto-discovery. Existing aliases, functions and path resolution remain available; the caller's module-loading preference is restored after lookup, including on failure. The original 30-second Hook acceptance limit is unchanged.
-- File readback contracts use the complete source instruction before diagnostic text is shortened. A long request to test one file and read another keeps the correct readback target, including when the target falls beyond the diagnostic excerpt. When an attachment arrives later, contract rebuilding checks the original prompt record and its bound clause; a missing or changed source is never replaced by a diagnostic summary. Persisted excerpt limits and state fields are unchanged.
-- Literal directory and file names no longer supply full-scope words, negation or counts to verification contracts. A target such as `/work/full/spec.txt` keeps its file-readback obligation; an explicit request to verify all files still requires the original scope evidence. Target identities, saved instructions and recovery retain the complete original locator. A normal Hook write can repair an affected pending cached contract only from its intact, hash-bound original instruction; read-only status queries and terminal history stay unchanged.
-- File-readback requests no longer require UI evidence merely because a directory or file name contains words such as `window` or `browser`. Explicit requests to inspect a window, browser or UI still require the corresponding UI evidence.
-- `SECURITY.md` now states the real support line and current schema/Stop protocol instead of the retired `0.7.x`/schema-5/Stop-1.1.0 wording. Schema 13, Stop protocol 5.0.0, the nine Hook events, matchers, and the default business-tool path without execution approval are unchanged; the optional replay ledger adds no migration.
-- Historical coverage can express the frozen macOS exemption for the three Windows-only helper, ACL and snapshot cases. Each still requires passing source and actual Windows evidence; a submitted row cannot exempt itself or waive an applicable native gate.
-
-- State writes group JSON encoder fragments before assembling the output to reduce temporary allocations. The persisted JSON format and existing private atomic publication path stay unchanged.
+- **Use Codex's marketplace commands to install 0.16.0.** This version uses the experimental entry `context-guard@codex-context-guard-v016`. Finish tasks that need the old plugin before switching. Keep the old data and caches, and disable the old entry in the Plugins UI before trusting the new Hooks. The [original release notes](docs/releases/v0.16.0.md) describe the installation and rollback limits.
+- **Session cleanup is disabled in this release.** Ending a session still saves its state and, when enabled, recovery information. Automatic cleanup does not run, and the `cleanup` command exits with code 2 without deleting anything. Existing sessions remain on disk and storage can grow. There is no automatic 30-day deletion, storage limit, or supported manual cleanup tool in 0.16.0.
+- Session IDs are checked and encoded separately, so names such as `a/b` and `a_b` no longer collapse into one directory. Missing or invalid IDs are rejected. Direct commands use the selected `CODEX_HOME` for their default data root. Existing data stays on disk. The old directories created by collapsing IDs with underscores are no longer used for lookup.
+- Repeated user-input events remain separate, including a pause followed by a resume and another pause in the same turn. Duplicate-shaped events are also noted in text-free diagnostics that do not decide authorization or completion.
+- A request to read a file no longer gains an extra UI check just because its path contains `window` or `browser`. A request to inspect a real window or browser still requires UI evidence. Long requests retain the correct file-readback target even when it falls beyond the diagnostic excerpt.
+- On Windows, Hook startup no longer depends on the `New-TemporaryFile` command when an interpreter is configured. Python discovery also avoids unnecessary PowerShell module loading for ordinary local PATH entries.
+- **Known limitation in 0.16.0:** words such as `test` in a file path can still be counted as extra acceptance items. Several such misclassifications can activate Context Guard earlier than intended.
+- Public-tree audits accept an optional private identity list outside the audited tree and match identities at semantic boundaries, without embedding them in distributed source. If a specified list is missing, unreadable, or inside the audited tree, the audit rejects it. The existing `--forbid` substring matching is unchanged.
+- Schema 13, Stop protocol 5.0.0, the nine Hook events, and the default path for ordinary tools remain unchanged.
 
 ### Validation
 
-- Exact-source checks, isolated installation, historical regression, performance and native evidence are recorded separately in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md). Windows DACL/inheritance behavior and real host re-delivery remain native facts, not source-test conclusions.
+- An isolated installation run on macOS and Windows passed eight checks and cleanup on the earlier `67985d7` candidate. It checked preservation of sample caches. The [acceptance record](docs/LOCAL_ACCEPTANCE.md) distinguishes that run from the final release and documents which Windows permission and daily-use cases were checked.
+- The [original detailed 0.16.0 entry](https://github.com/GreenLv/codex-context-guard/blob/v0.16.0/CHANGELOG.md#L7) retains the earlier implementation and test details.
 
 ## 0.15.1 — 2026-10-05
 
 ### Highlights
 
-- An explicit resume releases an ordinary pause and preserves unfinished work. A later user message that repeats the same pause text waits again; replaying the same event has no additional effect.
-- Status queries for `sessions-v2` verify the complete applicable source set without writing private state. Checks before and after projection prevent a concurrent resume or replacement from producing retired commands or a falsely unchanged result.
-- The CLI and PostToolUse recognize the same documented diagnostic options. Legal queries are no longer classified as malformed private controls; a nonzero diagnostic exit never becomes business evidence.
-- Windows state publication supports an open diagnostic reader on systems with the required atomic-rename capability. Unsupported APIs, filesystems or permissions fail closed without fallback.
+- “Please continue” can lift an ordinary pause while preserving unfinished work. A later pause request takes effect again; replaying the same event does not create another change.
+- A `sessions-v2` status query checks its sources before and after preparing the result. If a session resumes or its state changes during the read, the query does not present an outdated command or falsely report that nothing changed. The query does not write private state.
+- The CLI and PostToolUse accept the same documented diagnostic options. A diagnostic command's failure is not treated as evidence that the requested work succeeded.
+- Windows can publish state while a diagnostic reader is open when the system and filesystem support the required atomic rename. Unsupported systems report failure without a fallback.
 
 ### Changes
 
-- Polite pause and resume wording uses one clause-based contract. For example, “暂停一下” followed later by “请继续执行” releases an ordinary pause; “现在不要继续” keeps it waiting. Named inputs, exact markers, choices and external dependencies still need their own evidence.
-- For `sessions-v2`, status queries validate the complete applicable source set before and after projection, with bounded repeated checks. The loaded file descriptor and current path must still identify the same committed state, with matching revision, content and current turn bindings. Obtaining a stable snapshot uses bounded retries; changes detected after loading cause a controlled failure instead of returning stale results.
-- `checkpoint-status` accepts `--commands`, `--full`, `--item VALUE` and `--after-revision VALUE` under the shared option contract. Abbreviations, duplicate bindings, missing values, unknown options and incompatible modes are rejected. All four commands returned by `--commands` use the explicitly queried data directory, even without the Hook environment.
-- Windows concurrent publication requires Windows 10 RS1+ FileRenameInfoEx and a filesystem supporting replace-existing POSIX semantics. Kernel-lock ownership and fsync remain required; no target pre-deletion, in-place replacement or legacy fallback runs.
-- Schema 13, Stop protocol 5.0.0, all nine Hooks and the default business-tool path without execution approval are unchanged. No state migration runs. Finish old tasks before changing their HOME’s selected plugin, or keep a separate HOME on the original runtime; never overwrite a consumed cache. A misclassified 0.15.0 pause recovers only after its original source re-verifies during a real later resume.
-- Windows validation fixtures preserve distinct read/traverse entries and strict restoration. The acceptance collector now restores through separate state, so restoration diagnostics cannot change the signed request executed by the ordinary tool. These acceptance-tool repairs do not change the plugin runtime.
-- The HOL workflow retains original reports with a repository-owned evidence companion binding the exact checkout, plugin manifest, runtime tree and dependency lockfiles. This supports independent CI review; it does not certify registry ingestion, publisher identity or a public Trust score.
+- A general resume does not satisfy a request for a specific input, exact marker, choice or external result. Those waits keep their own conditions.
+- `checkpoint-status` checks its documented options consistently and rejects missing, repeated, abbreviated, unknown or incompatible arguments.
+- Before changing the plugin selected in a HOME, finish old tasks or keep them in a separate HOME with their original runtime. Existing session state is not migrated.
 
 ### Validation
 
-- The release source checks passed 2,389 tests across 102 modules with zero failures or errors and 28 explicit platform/capability skips. Bounded native macOS and Windows host checks passed all ten incident-profile gates.
-- Canonical history source checks cover 86 raw records, 61 active cases and 230 unique test nodes; 61 results were reused only with unchanged inputs. All 60 eligible source cases passed, including 17 DSH shared-semantics analogues; one approved incomplete case is excluded. The two current incidents have accepted macOS and Windows evidence. Other historical native gaps remain visible.
-- The Windows fixture matrix passed all 32 cells with restoration verified. Its full host evidence retains the original execution identity and a later strict mapping identity; it does not represent a new native collection on the repaired source. Exact source/platform evidence, CI/HOL and publication records are recorded separately in the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
+- The release source suite ran 2,389 tests with no failures or errors and 28 platform or capability skips. Bounded native macOS and Windows host checks passed their ten incident-profile gates.
+- Historical coverage distinguishes passing source cases, cross-product analogues and an approved incomplete exclusion. Some historical native evidence remains missing. The Windows result review used saved captures rather than a new raw collection. See [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.15.0 — 2026-10-02
 
 ### Highlights
 
-- New sessions keep exclusive ownership of their state through kernel locks, including during cleanup. Slow or suspended writers are no longer displaced by an elapsed-time lock rule.
-- Stateful Hooks avoid a second Python interpreter by loading the core in the router process. Ordinary tool calls retain their fast, approval-free path.
-- Shorter resident instructions and Skill guidance make advanced controls available on demand through `checkpoint-status --commands`, while preserving requirements and evidence boundaries.
-- Upgrade boundary: finish old tasks before changing their HOME’s selected plugin, or keep a separate HOME explicitly on the original runtime. This version isolates new sessions and does not migrate or clean legacy state.
+- New sessions use a lock that keeps another process from taking over a slow or paused state writer. Cleanup uses the same lock.
+- Stateful Hooks start faster by loading their core in the router process. Ordinary tool calls keep their approval-free path.
+- The always-loaded instructions are shorter. Advanced controls remain available through `checkpoint-status --commands`.
 
 ### Changes
 
-- Event-local text and projection caches have aggregate admission budgets. Unknown or oversized entries are evaluated without retention; source-integrity checks still run.
-- Lifecycle locks live outside deletable session directories. Queue and kernel acquisition share a bounded wait, and resumed v2 activity clears the old retention timestamp.
-- Read-only discovery of a missing session no longer creates a legacy directory that would reject its first normal Hook.
-- Preserve same-prompt acceptance criteria until their associated work is actually superseded. Adopted release verification remains fail-closed when classification fails; default business-tool behavior is unchanged.
-- Historical coverage distinguishes source regressions, platform results, product analogues and approved incomplete cases. Incomplete cases are excluded, never counted as passes.
+- Looking up a missing session no longer creates an old-format directory that could cause its first Hook to be rejected.
+- Before switching the plugin selected in a HOME, finish tasks that need the old version or keep them in a separate HOME. This version does not migrate or clean old session data.
 
 ### Validation
 
-- All 440 predeclared macOS A/B samples passed their semantic assertions. The fixed 100-event lifecycle median fell from 19.03 to 11.81 seconds (37.97%); Stop and RSS stayed within the declared budgets.
-- Resident Skill tokens fell 40.26%; two fixed ordinary Hook prompts fell 59–61%. Actual GPT-6 Astra/Sol/Luna total usage fell 5.90%/3.25%/3.10% in one matched live-host batch. These are bounded observations, not general cost guarantees.
-- Source validation and required historical checks passed; one approved incomplete case is excluded, never counted as a pass. Details and platform limits are in the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
-- macOS and Windows passed bounded native Stop, compaction and recovery checks. Windows also verified explicit old/new task coexistence in separate HOMEs. Release-commit CI/HOL and public identities are checked separately.
+- In a declared macOS comparison, a fixed 100-event lifecycle took a median 11.81 seconds, down from 19.03 seconds. All 440 samples passed the semantic checks; this is a bounded benchmark, not a universal speed guarantee.
+- macOS and Windows passed the recorded native Stop, compaction and recovery checks. Windows also tested old and new tasks in separate HOMEs. Detailed source, performance and historical-coverage results are in [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.14.3 — 2026-09-29
 
 ### Highlights
 
-- Completion checks for long conversations are faster. The incident-shaped macOS benchmark fell from a 7.252 s median in 0.14.2 to 0.472 s through the full Hook process; native Windows measured 0.489 s.
-- If a source record changes during Stop evaluation, the event rolls back its business-state changes. A failed integrity check cannot leave completed units or accepted proofs persisted as success.
-- Answered bounded Chinese why-questions no longer reappear as recovery debt. Mixed requests such as “解释模块为什么失败再修复模块” keep their execution work open.
-- The anonymized historical corpus has 37 directly passed active records and 15 Codex-side shared-semantics checks for DSH-origin cases. The latter do not certify DSH itself.
+- Completion checks in long sessions are faster. In the recorded macOS incident-shaped fixture, median full-Hook time fell from 7.252 seconds in 0.14.2 to 0.472 seconds. The Windows test measured 0.489 seconds.
+- If source records change while a completion decision is being checked, the current event's business-state changes are rolled back.
+- An answered Chinese “why” question no longer returns as unfinished work when the question has a clear, supported scope. A mixed request such as “explain why the module failed, then fix it” still keeps the repair open.
 
 ### Changes
 
-- Reuses parsed text and validated records within one event, and invalidates affected results after each state change. Nothing is cached across events; records consumed by the decision are checked again before it is saved.
-- Adds deterministic workload checks and full-process benchmarks. CI checks operation counts instead of imposing machine-dependent timing limits. The former 50 ms PreToolUse threshold remains retired.
-- Historical coverage now checks every required test node, record identity and successor relationship. Skipped tests, empty collection and setup/teardown errors cannot count as a pass.
-- Schema 13, Stop 5.0.0 and all nine Hooks remain unchanged. No state migration is needed. Upgrade with the managed installer, preserve caches used by existing tasks, review the nine Hooks in a fresh task, then start another task to load the new version.
-- Host acceptance targets Codex CLI 0.158.0; older CLI versions are not retested for this release.
+- Before saving a decision, Context Guard checks that the source records it used still match. It does not keep the processing cache across events.
+- This release keeps schema 13, Stop 5.0.0 and all nine Hooks. When upgrading, preserve the cache used by running tasks and start a new task to load the new version.
 
 ### Validation
 
-- The behavior suite ran 2,036 tests with no failures or errors and 22 platform/capability skips. Repository, privacy, lint, compile and frozen-baseline checks passed. All required historical test nodes passed; 19 superseded records retain their successors.
-- The original dispatch-only diagnostic measured a 0.084 s median against 5.860 s for the baseline. The separate full-process result is 0.472 s against 7.252 s. These measure different boundaries and are not interchangeable. Sampling details, earlier measurements and final-runtime distributions are in the [acceptance record](docs/LOCAL_ACCEPTANCE.md#0143--2026-09-29).
-- macOS and Windows isolated installs, Windows process regressions, and bounded live-host Stop/correction/compaction/resume scenarios passed. Synthetic host scenarios do not reproduce the original incident's entire state. Exact-commit CI/HOL and public publication identities are verified separately.
+- The behavior suite ran 2,036 tests with no failures or errors and 22 platform or capability skips. Historical coverage included 37 directly passing active cases and 15 DSH-origin cases checked only as shared-semantics analogues.
+- macOS and Windows isolated installation and bounded real-host checks passed. The synthetic host scenario did not reproduce every state of the original incident. See [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.14.2 — 2026-09-25
 
 ### Highlights
 
-- Instruction classification separates file and quoted data from action words, so renaming a test directory to `audit` or `commit` does not remove an existing continuation requirement.
-- Recovery distinguishes observed business results, remaining predicates and unknown evidence from whole-task completion; a matched edit/readback is not a request to repeat the edit.
-- Offline batch preflight rejects missing initial commits, reused composite sessions, mismatched input digests and inconsistent timeout budgets before model execution.
+- A file or directory name no longer changes the meaning of an instruction. For example, renaming a test directory to `audit` or `commit` does not cancel a request to keep working.
+- Recovery distinguishes a completed edit from work that is still outstanding. An edit followed by the requested readback is not treated as a request to edit the file again.
+- An answer to a side question can be delivered while the original task and any unanswered question remain open.
 
 ### Changes
 
-- Validation CI consumes the checked dependency lock; HOL scanning explicitly enables Cisco skill analysis without lowering existing score or severity gates. Local scans do not refresh the public registry.
-- A restricted acceptance tool installs frozen candidates into fresh namespaces, preserves consumed caches, and leaves unrecognized configuration changes untouched. Existing authenticated private test homes require separately authorized, exact-target scope records; installation does not establish native acceptance.
-- An optional host trace source can bind a side-question answer while the main task shares its turn. Exact input and response identity are checked before independent review; repeated identical inputs and missing sources remain unknown. An incomplete inference remains pending within the probe's bounded turn deadline; it never certifies an answer by arrival order alone.
-- A bounded native commentary probe connects official dynamic-tool calls, exact Hook trust readback, independent review and cold recovery to the source checks. On the current runtime, separate macOS and Windows complete-answer controls passed ten scoped replay gates each. Partial-answer controls passed seven scoped gates each while leaving the second question and main work pending; neither ran the requested suite. Both partial runs' final product SessionStart lacked a completion notification before cleanup.
-- An explicit root wait for an exact marker now releases only when a later user message matches that marker byte for byte. A general “continue,” quoted marker, or altered case leaves it waiting; an independent future observation remains open. Separate three-turn macOS and Windows controls ran one business call and the requested suite only after the exact marker; each zero-model replay passed nine scoped gates while future observation stayed pending.
-- The producer and independent reviewer share bounded process-tree ownership. Windows starts each process suspended and joins a kill-on-close Job before execution; POSIX checks group disappearance, or on macOS verifies that a remaining group has no running members. Cleanup with running or unreadable members cannot yield native acceptance, and the reviewer uses the selected isolated Host HOME. Each scoped Windows control includes owned cleanup; escaped descendants remain unestablished.
-- Stable commentary snapshots compare each file-stat API against itself, avoiding false unknown results when Windows path and handle creation/change-time fields differ. Replacement, concurrent modification and content-prefix checks remain enforced.
-
-- Review input selection is independent of the last-512-message display window, while full-stream conflict checks remain active. Legal finite numeric transcript metadata no longer reopens an answered question; per-root overflow remains unknown.
-- Independent review now records explicit per-question message associations. One projection shares its source parse; malformed unrelated records cannot interrupt recovery. The task-agent queue claims each new input once. Bounded complete-answer runs on macOS and Windows exercised the reviewer; missing provenance or uncertain coverage stays open.
-- Adds an explicit, one-shot independent answer reviewer and revocable information-scope projection. Judgments remain distinct from Host facts. The scoped native chains do not establish whole-task closure or adjudicate the original Windows historical cases.
-- Adds a streaming Host commentary observation reader at compaction/resume. Recovery and diagnostics show recorded-message counts and snapshot freshness; truncation, replacement and changed prefixes stay unknown. Message observations do not close questions or execution work.
-
-- Lossless lexical fragments retain original character and UTF-8 byte positions. Source hashes and locator verification continue to use the original text. Real compound requests, negative instructions and explicit release/proof contracts remain distinct.
-- Recovery budgets whole rows, prioritizes restrictions, waits and proofs, and reports omitted current entries with a session-bound detail command.
-- Private schema 13, Stop 5.0.0 and all nine Hooks remain unchanged. New runtime bytes require an isolated candidate home; consumed 0.14.1 caches remain immutable.
+- If a user asks to wait for an exact phrase, only a later user message matching that phrase releases the wait. A general “continue”, a quoted phrase or a different case does not.
+- Recovery retains restrictions, waits and proof first when its display budget is limited. A session-specific command can retrieve omitted entries.
+- An optional transcript reader and independent answer review help associate answers with questions. Missing, changed or ambiguous source material remains unresolved; observing a message alone does not complete a task.
+- The offline acceptance preflight checks the initial commit, session reuse, input digest and timeout budget before running a model.
 
 ### Validation
 
-- Current-runtime macOS and Windows complete-answer, partial-answer and exact-marker runs passed separate scoped native replays. Each original collector retains its narrower observation verdict. Complete runs left a synthetic main item pending; the partial controls intentionally did not run a suite, and future observation stayed pending in the exact-marker controls. Whole-task product closure and actual compaction-threshold calibration remain unestablished.
-- Source commit `514f41d67d8be3930aaa63450456a0a5c375e9d0` passed the [12-lane Candidate CI matrix](https://github.com/GreenLv/codex-context-guard/actions/runs/36089305152) and [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/36089304966).
-- Publication requires green CI/HOL for the exact release commit; their receipts are recorded separately.
-- The original Windows compaction-continuation and Stop-feedback chains plus Archive-045 remain unresolved. The user allowed release with these three cases open, without claiming a fix or pass. Tag and GitHub Release readback remain separate; see [development status](https://github.com/GreenLv/codex-context-guard/blob/e25be98037b2e1a9b3953faf6f3a1d45699407f6/docs/DEVELOPMENT_0.14.2.md) and [local acceptance](docs/LOCAL_ACCEPTANCE.md).
+- Scoped macOS and Windows native replays covered complete answers, partial answers and exact-phrase waits. The partial-answer runs intentionally did not run the requested tests; the recorded future observation remained pending. Whole-task closure and actual compaction-threshold calibration were not established by these controls.
+- Three original Windows cases remained unresolved at release: compaction and continuation, Stop feedback, and Archive-045. The release proceeded with these cases open, not as passed. See [development status](https://github.com/GreenLv/codex-context-guard/blob/e25be98037b2e1a9b3953faf6f3a1d45699407f6/docs/DEVELOPMENT_0.14.2.md) and [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.14.1 — 2026-09-22
 
 ### Highlights
 
-- Marketplace metadata links to the existing Apache-2.0 license as the software usage terms.
-- Hook behavior, state protocols, and completion policy remain unchanged.
-- A new patch version preserves the immutability of existing 0.14.0 installations.
-
-### Changes
-
-- Adds `interface.termsOfServiceURL`; no additional service agreement or change to the license is introduced.
-- Uses a new patch version because the manifest is part of the immutable installed runtime tree. Hook behavior and state protocols are unchanged.
+- The plugin now supplies a terms-of-use link to the existing Apache-2.0 license in its marketplace metadata. If you already use 0.14.0, this change requires no configuration or task-data changes.
 
 ### Validation
 
-- Implementation candidate `1cba5fc2c2488cef58af4006b000a6a262299a87` passed all 16 [CI jobs](https://github.com/GreenLv/codex-context-guard/actions/runs/35697425812) and [HOL scanning](https://github.com/GreenLv/codex-context-guard/actions/runs/35697432313). The termsOfServiceURL finding is absent from the new SARIF.
-- macOS isolated installation, a second no-op, source/cache parity and installed lifecycle smoke passed. CI and Windows portable installation do not establish a new daily-host or model result. HOL registry ingestion and scores remain pending upstream.
+- The isolated macOS install passed, and the [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/35697432313) cleared the missing terms-link finding. See the [original release notes](docs/releases/v0.14.1.md) for CI, Windows portable installation and registry status at release.
 
 ## 0.14.0 — 2026-09-21
 
 ### Highlights
 
-- A completed repair can end with “long-term benefit still needs observation” without a false prompt to keep working. An explicitly unfinished current test or evaluation remains a specific open requirement; a short resume, an incorrect whole-completion claim, or deferring current evaluation can trigger one bounded correction when its input is ready.
-- A short “continue” resumes the current task without becoming an unlimited persistence demand. A wait described in the reply does not register an external operation.
-- Mixed requests can deliver the explanation while keeping an unfinished file edit or unknown tail open.
+- Finishing a repair can include a note that its long-term benefit still needs observation. That future observation no longer makes the completed repair look unfinished. A test or evaluation explicitly required now remains open until addressed.
+- A short “continue” resumes the current task without becoming an unlimited request to keep working.
+- A mixed request can receive its explanation while a requested file edit or other unfinished work stays open.
 
 ### Changes
 
-- A short resume can lift a general pause, but cannot stand in for a requested input or a specific confirmation. Those waits retain their original condition until matching root input arrives or the user explicitly changes that condition; a later release does not revise earlier Stop decisions.
-- Schema 13 and Stop 5.0.0 retain prior journal and delivery history. Old mixed answered rows require review; old reply-derived waits do not become trusted lifecycle facts.
-- The shared core v2 schema and reference projection bind Stop diagnosis to the current root requirement, host-selected target, and observed result. A future time or unmet prerequisite keeps an evaluation deferred even if its input file exists. Downstream mirror and pin validation is a separate identity check.
-- Mixed requests can deliver an information span while the original execution and unknown scope stays pending. Root and host append numbers keep Stop decisions at their own event watermark even when timestamps tie or move backward.
-- A combined edit and test retain separate required outcomes. A later commit and push can bind the same uniquely sourced repository, with commit lineage and remote-ref readback checked separately. Host Goal-completion interception reports unavailable until a synchronous Hook route is verified.
-- Ordinary business tools remain host-owned; explicit proof and adopted release checks keep their existing gates.
-- When Codex supplies a text-only Bash or apply_patch Hook response, completion evidence requires the matching Host terminal record already present for that call. A failed command cannot prove that a test passed or an edit or readback succeeded; a quoted success message or missing Host status cannot certify those outcomes. Supported single-file patches, focused pytest commands, and exact file reads remain separate checks.
-- On Windows, PowerShell `cat` can rewrite line endings. A single exact `Console.Write(File.ReadAllText(...))` expression may supply file readback only when the Host ran PowerShell and its output matches the current physical file byte for byte; a BOM, alias, extra operation, or changed file remains unverified.
-- A direct edit request can quote its complete file path, including spaces, without turning the request into quoted speech. A quoted command, someone else's report, or a negated edit still creates no positive edit action; an ambiguous unquoted Windows path never grants its valid-looking prefix.
-- Ordinary file paths and URLs do not become visual-inspection requests because their directory names contain image-related words. Actual image references and direct visual questions retain their evidence requirements.
-- An audited one-file Update can satisfy its edit outcome after a separate exact post-edit readback, even without a prior read. Missing or conflicting readback remains insufficient and does not imply that the edit should be repeated. Historical Stop projections use the bytes recorded at their event watermark, not later disk state.
-- A direct backtick `pytest` request retains its command object as a current test; an ordinary shell-quoted `cat` display can corroborate the same single Host command without accepting a shortened compound command. A named test that reaches a trustworthy terminal result and is reported accurately fulfills a run-and-report request even when it fails; an explicit pass target still requires a pass. For a uniquely sourced file, an explicit literal replacement, independent full readback, and matching final report can close the supported root clauses. Ambiguous referents, extra actions, wrong bytes, and unrecognized conditions remain open.
-- A direct request to keep working stays bound to the ordinary tasks present when the user made it, even if an information question intervenes. A sourced pause or cancellation changes only that scope; a later resume lifts a pause without reviving a canceled task or extending persistence to new work. Required tests are related to a repair from the original request, and a later replacement keeps the old control auditable without making the replacement inherit it.
+- A general resume can lift an ordinary pause but does not replace a specifically requested input or confirmation.
+- File names and URLs containing image-related words no longer create a visual-inspection requirement. Actual images and explicit visual questions still require the appropriate evidence.
+- A request to run and report a test can be fulfilled by reporting its real failed result. A request that the test pass still requires a passing result.
+- A supported single-file edit can be checked by independently reading the result, without first reading the old contents. Missing or conflicting evidence remains unresolved.
+- Commit and push results are checked against the appropriate repository and remote. Normal tools continue to run under the host's permissions; explicitly adopted release and proof checks retain their rules.
 
 ### Validation
 
-- Candidate `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed the complete deterministic source matrix, all 16 candidate CI jobs, HOL scanning and a five-gate macOS portable native run with cleanup. Publication requires native Host, Windows and fixed-model gates for the final exact source. Later source or runtime changes require exact-subject revalidation. Tag and Release publication follow acceptance; public readback and daily installation are separate later steps. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
+- Candidate `1217029` passed the recorded source matrix, candidate CI, HOL scan and five macOS portable gates. The final release had separate native, Windows, model and publication requirements. See [local acceptance](docs/LOCAL_ACCEPTANCE.md) for their subjects and outcomes.
 
 ## 0.13.9 - 2026-09-14
 
 ### Highlights
 
-- Keep explicit user confirmation waits releasable: English dependency words must match complete tokens, so `explicit` and `specific` no longer count as CI. Actual CI and external waits retain their evidence requirements.
-- Persist Windows `SessionEnd` state within Codex CLI's three-second limit: skip the router's extra Python process, and probe the working Python before broken `py` or WindowsApps aliases. The 0.13.7 diagnostic cache remains untouched.
-- Reuse a logged-in isolated HOME across new candidate checkouts: the managed installer now recognizes its own prior checkout-named sanitized marketplace staging root while rejecting unrelated or Git-bearing directories.
-- Keep unfinished execution requests in recovery even when an explanation comes first: "list the files then delete temporary files" cannot close on an answer alone.
-- A delivered explanation can close a supported reply-only request, including "how do I publish a version?". Operation names inside a how-to explanation no longer create unfinished work by themselves.
+- Words such as `explicit` and `specific` no longer look like a CI dependency just because they contain “ci”. A real CI or external wait still needs its own result.
+- An explanation no longer closes work that follows it. For example, “list the files, then delete temporary files” keeps the deletion pending. A supported question such as “how do I publish a version?” can close after the explanation without creating a publishing task.
+- On Windows, the session-end Hook uses a faster Python startup path and fits the three-second Codex CLI limit in the recorded host checks.
 
 ### Changes
 
-- Release a unique user confirmation wait even when its task remains active before Stop parks it. Ambiguous waits and external dependencies retain their existing release requirements.
-
-- Preserve validation requests phrased politely or as questions. After an explicit request to continue, a reply that still proposes authorized assistant work receives at most one correction; genuine user and external waits remain available.
-- Include the unpublished 0.13.4 HOL scanner and manual registry-refresh updates. That version was consumed in isolated installation and is not overwritten.
-
-- `SessionEnd` declares the host's actual three-second maximum instead of asking for a deadline Codex silently clamps. Its POSIX and Windows launchers invoke the stateful core directly for this event; all other Hook routing remains unchanged.
-- An opt-in Windows Hook trace writes start and end boundaries, elapsed milliseconds and exit code to a private acceptance directory. It records no Hook input, user text or credentials; a start without an end remains an interrupted or errored boundary, not a pass.
-- Pin the scanner action to its reviewed immutable `v1.2.664` commit and write the registry payload during scans. A dispatch with `refresh_registry` is the only path that requests HOL resubmission.
-- Reply-only classification must match the whole request using a bounded English/Chinese grammar. Unrecognized wording remains pending; an explanation prefix never absorbs an unknown tail. This favors retaining uncertain work over silently discarding it. Historical answer-delivery reconstruction is unchanged; existing open items are not retroactively certified.
-- Schema, public protocols, activation rules, default tool access and release enforcement are unchanged. The new runtime uses a new plugin version; consumed 0.13.6, 0.13.7 and older caches remain immutable.
+- A matching user confirmation can release its wait even before the task is parked. Ambiguous waits and external dependencies keep their own conditions.
+- The managed installer recognizes an older staging directory from the same managed installation. It still rejects unrelated directories and directories containing Git metadata.
+- Unrecognized or incomplete information requests remain open instead of being closed as fully answered. The release also includes the unpublished 0.13.4 scanner and manual registry-refresh updates.
 
 ### Validation
 
-- Native Windows and macOS each pass all six real-host gates for the accepted 0.13.9 runtime; portable installation and cleanup also pass. Tool repairs are replayed against original captures without relabeling their execution commits. Exact-source CI, HOL and public release readback are recorded separately; see [acceptance boundaries](docs/LOCAL_ACCEPTANCE.md).
-
-- Focused synthetic Hook tests cover mixed requests, question-shaped acceptance criteria, compact/resume, bounded corrections and genuine waits. Full candidate results and limitations are recorded in [local acceptance](docs/LOCAL_ACCEPTANCE.md).
-- The earlier 0.13.4 installation and source results retain their original identity. They do not validate these changed runtime bytes. Native trusted-Hook acceptance, CI, HOL ingestion and publication remain separate gates.
+- macOS and Windows each passed six recorded real-host gates for the 0.13.9 runtime, along with portable installation and cleanup. Earlier candidate results retain their original subjects. See [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.13.3 - 2026-09-11
 
 ### Highlights
 
-- Ordinary commits and single branch pushes remain available when an active release contract's private state is unreadable. This also covers follow-on work in another repository within the same task.
-- Publication stays protected: tags, package uploads, GitHub Releases, mutation runners and restricted compound calls still require verified release state when the release profile is active.
-- The fix uses a new plugin version. Existing 0.13.2 caches remain unchanged for tasks that already loaded them.
+- Ordinary commits and single-branch pushes can continue even if an active release contract's private state cannot be read, including follow-on work in another repository.
+- When release mode is active, covered publication actions still require verified release state. Tasks already using 0.13.2 keep their original cached runtime.
 
 ### Changes
 
-- Check whether an action belongs to release enforcement before reading or validating its private state, including direct-handler and error-fallback paths. No state schema, ticket format, profile activation or host permission changes.
-- Refresh the complete bilingual README for 0.13.3: document profile selection and contract adoption in the user-control table, align the maintainer validation commands with the repository contract, and remove an external registry badge whose target still advertises an older package version. The CI, HOL scanner, release and license badges remain live.
+- Context Guard first determines whether an action is subject to release checks, then reads the corresponding private state. The mode, ticket format and host permissions do not change.
+- The English and Chinese READMEs clarify protection levels, contract adoption and maintainer checks.
 
 ### Validation
 
-Source checks pass on macOS, including 1,079 current-behavior tests and regressions against the previous implementation. Exact commit `7e5212e` passes Candidate CI on Ubuntu, macOS and Windows with Python 3.10–3.13, the required summary, HOL, and independent macOS/Windows portable checks. All five portable gates and cleanup pass on each native platform. The final documentation-only freeze does not change plugin runtime bytes and must pass its own exact-commit CI and HOL before tagging; it does not require another portable run. The 0.13.2 real-host results retain their original version identity and are not relabeled as 0.13.3 evidence. Reader documentation passes a separate exact-byte cold review; tag, GitHub Release and public readback remain separate publication gates. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
+- macOS source checks passed 1,079 behavior tests. Candidate `7e5212e` passed CI, HOL and separate portable checks on macOS and Windows. The 0.13.2 real-host results remain attached to that earlier version. See [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.13.2 - 2026-09-10
 
 ### Highlights
 
-- Ordinary work no longer triggers Context Guard execution-approval prompts. After you ask Codex to finish changes, commit and push, the guard lets that sequence proceed across compaction without reconstructing an edit-provenance chain. The executing agent follows your conversation, repository rules and host permissions; a guard allow does not grant authorization.
-- Answered questions stop replaying after compaction. Answer delivery is recorded separately from task completion: delayed or child replies, conflicting reply sources, and promises to investigate cannot close a current question. File changes and other execution obligations still need matching evidence.
-- Explicit release verification stays active when private state is damaged. A private mode record preserves the verified profile; release actions still need an exact, unexpired one-shot ticket. Unknown legacy release posture blocks recognizable publication actions while ordinary edits remain available.
-- Upgrades preserve old state and caches. Historical authorization records no longer block ordinary work, and old questions without delivery evidence remain explicitly uncertain. `context-guard status` shows the loaded product and protocol versions so an old task can be identified.
+- Ordinary work no longer triggers Context Guard execution-approval prompts. For example, a request to edit, commit and push can continue after compaction without reconstructing an edit-history chain. Your instructions, repository rules and host permissions still apply.
+- An answered question no longer returns after compaction merely because another wait remains. A promise to investigate, a delayed reply or a reply from a different source does not by itself answer the current question.
+- Explicit release verification remains active if private state is damaged. Covered release actions still need the exact, unexpired one-time ticket. If an old session's release mode is unknown, recognizable publication actions are blocked while ordinary edits can continue.
 
 ### Changes
 
-- An unresolved mechanical requirement replacement no longer forces confirmation of a clear user authorization. The executing agent follows the current conversation and asks only about real ambiguity; prior requirements are preserved, and the current instruction and answered questions are excluded from suggested old targets.
-- This release folds in the consumed, unpublished 0.13.0 and 0.13.1 implementations. Their installed caches remain unchanged. Start a fresh task after upgrading to load 0.13.2.
-- Standard and strict PreToolUse routes read mode metadata without state writes, locks, recovery or Git subprocesses. Observe records diagnostics; release verification activates only through an adopted release contract or explicit `context-guard release`, never merely from a file or selected Skill.
-- Delivery records use bounded string identities, canonical requirement associations and domain-separated SHA-256 digests. A record from a different turn cannot answer the current prompt; unknown delivery never supplies completion evidence. Reply text is not copied into this ledger.
-- GitHub Enterprise release targets keep the separator between hostname and repository. A release command without `--repo` uses a verified GitHub origin when available; an unresolved target does not establish release readiness.
-- Private schemas 11, 10 and 9 migrate to schema 12. Stop protocol is 4.0.0; Execution and Work-unit protocols are 3.0.0. Proof 1.0.0, `action-ticket/v1`, `release-readiness/v3`, classifier 3.3.0, the nine Hook events and the Python 3.10+ standard-library runtime remain unchanged from the 0.13.0 candidate.
+- Release verification is enabled by adopting a release contract or explicitly using `context-guard release`. Merely selecting a Skill or having a file present does not enable it.
+- The release includes the installed but unpublished 0.13.0 and 0.13.1 changes. Existing caches and old state are preserved; start a new task to load 0.13.2. Private schemas 9, 10 and 11 can migrate to schema 12.
+- GitHub Enterprise release targets now include the separator between the host and repository. An omitted `--repo` can use a verified GitHub origin.
 
 ### Validation
 
-Source validation on macOS passes: 1,076 current-behavior tests, 0 failures, 0 errors and 11 capability skips, plus repository/privacy checks, baseline transition audit, self-test, Ruff and compilation. Exact-commit macOS portable installation, strict second no-op, runtime parity and installed smoke pass at `9039fa7`; macOS and Windows native result review is complete (Windows: five portable gates plus cleanup, six host gates and two regressions). Windows review checks saved result files and their links, without a fresh raw-capture replay; see [acceptance boundaries](docs/LOCAL_ACCEPTANCE.md). Earlier 0.13.1 source and macOS portable results retain their original identities. Its native run exposed an answered question retained in recovery when an unrelated wait existed; this release separates question closure from inherited waits. Final-commit CI, HOL and tag/Release readback are recorded separately from these retained runtime results.
+- macOS source checks ran 1,076 behavior tests with no failures or errors and 11 capability skips. The recorded macOS portable checks and native macOS and Windows result reviews are separate evidence.
+- Windows review examined saved captures and their links; it did not recollect the original run. Earlier 0.13.1 observations retain their original version. See [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.12.4 - 2026-09-09
 
@@ -347,7 +258,7 @@ Source validation on macOS passes: 1,076 current-behavior tests, 0 failures, 0 e
 - A real correction still updates the intended requirement. If its target is unclear, the guard asks which requirement to change and keeps the existing ones until then. A child-task stop can end a wait for that child, but does not prove its result passed.
 - Private state moves to schema 11. Schemas 10 and 9 migrate; schemas 7/8 remain read-only. Migration does not invent missing wait evidence, and schema 11 cannot be written back as schema 10 with information lost. The unpublished 0.12.2 and 0.12.3 versions were used in isolated trials; their caches and evidence retain those original versions.
 - Long recovery text can be read with `recovery-page --session-id …`; recovery supplies the command. Pages belong to the requested session, and old continuation positions are rejected when the applicable requirements change.
-- Maintainers can replay recorded Hook trust, waiting and release, recovery, commit, local push, and cleanup checks. Complementary runs can be combined only for the same runtime and platform, while preserving each run’s identity. Missing evidence stays pending; contradictory evidence fails. Details and remaining host-dependent cases are in the [behavior baseline](docs/BEHAVIOR_BASELINE_0_12_4.md) and [acceptance record](docs/LOCAL_ACCEPTANCE.md).
+- Maintainers can replay checks for Hook trust, waits, recovery, commits, local pushes and cleanup. Complementary runs may be combined only when they use the same runtime and platform, with each run's identity preserved. Missing evidence remains pending; contradictory evidence fails. See the [behavior baseline](docs/BEHAVIOR_BASELINE_0_12_4.md) and [acceptance record](docs/LOCAL_ACCEPTANCE.md) for host-dependent cases.
 - The nine Hook events, public protocol versions, and Python 3.10+ standard-library runtime are unchanged.
 
 ### Validation
@@ -378,69 +289,60 @@ The recorded runtime passed independent macOS and Windows installation and porta
 
 ### Highlights
 
-- **Normal work becomes invisible again.** Allowed tool calls, safe turn endings, and private staging no longer show any Hook status text or developer receipts. Only errors, integrity failures, and denied unauthorized high-risk actions stay visible, and a completion correction can interrupt a turn at most once.
-- **The guard checks what is actually executed, not keywords.** A position-aware classifier resolves the real executable and its effect: `echo git tag v1.2.3`, text search, and `npm publish --dry-run` pass freely, while a real untagged release mutation is still denied before it runs.
-- **Authorization follows an explicit profile ladder.** The default profile checks only that a covered high-risk action was authorized by the root user for the current work unit. For example, after you say "tag v1.2.3 on this repo" in the current task, `standard` lets that exact tag through without ceremony, `release` additionally requires the adopted readiness contract and a one-shot ticket, and `observe` only records what it would have done. A later unrelated prompt cannot extend the authorization to another repository or tag.
-- **Long tasks stop accumulating historical debt.** An explicit work-unit lifecycle (schema 10) closes or isolates finished work, Stop protocol 3.0.0 ends ordinary waiting and deferred turns silently, and default feedback stays under 240 characters, naming only the current unit's pending count.
+- Ordinary successful tool calls and safe endings no longer show routine Hook status messages. Errors and rejected actions remain visible.
+- Release checks inspect what a supported command actually does. For example, printing `git tag v1.2.3` or running `npm publish --dry-run` is treated differently from creating a tag or publishing a package.
+- Authorization follows the chosen profile. In this release, `standard` checks the user's authorization for covered high-risk actions, `release` also requires its adopted readiness contract and one-time ticket, and `observe` records the decision. Authorization does not extend to another repository or tag.
+- Completed work is separated from the current work unit. Waiting or deferring can end a turn without presenting old unresolved work as current work.
 
 ### Changes
 
-- Schema 10 adds the work-unit lifecycle (`active`, `completed`, `awaiting_user`, `awaiting_external`, `deferred`, `historical_unresolved`). Old active parent chains are isolated as `historical_unresolved` instead of being silently passed or failed. Schema 9 is the full migration source; schema 7 and 8 remain read-only inputs.
-- Stop protocol 3.0.0 binds the unique successful evidence automatically when a reply verifiably completes the unit; non-unique evidence is never auto-selected, and the waiting owner comes from structured facts with a fixed priority. Private staging keeps the advanced `stage-checkpoint`/`register-proof` path for visual facts, human evidence selection, and ambiguous evidence.
-- The nine Hook definitions no longer carry `statusMessage`, and the private staging and proof receipts return the silent empty-object wire. Following the official Codex matcher contract (a regex over tool names and aliases), the `PreToolUse` matcher is shrunk from `"*"` to the gated surfaces — the Bash shell/unified-exec alias, `apply_patch` with its `Edit`/`Write` aliases, every `mcp__` name, and the bare mutation-method names — with the required pattern derived from the classifier constants and pinned by a contract test. `PostToolUse` keeps the match-everything wire for broad evidence collection. The stateless router still returns silently for every non-candidate call.
-- The runtime splits into a stateless PreToolUse router (`cg_hook.py`) over a pure classifier (`cg_actions.py`), a model/agent-agnostic protocol layer (`cg_protocol.py`) separated from the Codex Hook adapter (`cg_codex_adapter.py`), Stop-3.0 semantics (`cg_stop3.py`), and a lazily loaded release adapter (`cg_release_adapter.py`). The diagnostic classifier version is 3.2.1. Context Guard does not assume the model or agent host brings reliable long-context protection; the recovery-to-authorization loop is provided locally, and it does not replace Codex permissions, release-readiness checks, human review, or platform readbacks.
-- Schema 9 is a full migration source on the live resume path: a schema-9 state file now migrates in place at `SessionStart(resume)` instead of being quarantined and rebuilt, old active chains stay isolated as `historical_unresolved`, and the explicit-resume policy is table-deterministic — a unique waiting candidate with a resolvable `last_active_seq` reopens, missing/tied sequences or deferred/historical candidates fail closed to a one-time selection list, and naming a unit (`WU0002`) reopens exactly that unit.
-- The one-statement authorization accepts the bare Git command form and cross-clause targets: "git tag v9.9.9" and "tag v1.2.3 on this repo" bind the exact tag like the verb forms, several named versions stay two candidates (ask-once), negated and deletion phrasings never authorize creation. Deletion semantics are clause-scoped and position-independent: "删除本仓库的 tag v9.9.9", "delete the tag v1.2.3", and "git tag --delete v9.9.9" leave no creation authorization. Mixed clauses attribute each version to its own intent, so deleting `v1.0.0` and creating `v2.0.0` binds only `v2.0.0`; a sibling `release v3.0.0` cannot become a second tag target. When one sentence names both a local Git action and a GitHub Release or registry action, the runtime records parallel prompt-bound authorizations so each target keeps its own exact repository and identity fields.
+- Schema 10 adds work-unit states for active, completed, waiting, deferred and historical unresolved work. Schema 9 is a migration source; schema 7 and 8 remain read-only inputs.
+- A unique successful result can be bound automatically when the current work unit is verifiably complete. Visual facts and ambiguous evidence continue to use explicit proof controls.
+- Existing schema-9 sessions migrate on the actual resume path. If the task to resume is ambiguous, Context Guard asks for a selection rather than guessing.
+- A release instruction is bound to the stated action, repository and target. Separate actions in the same instruction retain separate authorizations.
 
 ### Validation
 
-- Phase-5 focused regressions prove the silent success wire fails on the previous bytes. The frozen benchmark reports 1140 classification calls with zero false denies across 11 categories and no persistent status-message events; the current-behavior suite passes 684 tests across 16 modules; the frozen-baseline transition audit stays at 24 fixed / 0 remaining / 1 superseded / 15 inverted; repository validation, the public-tree privacy audit (with its identity-literal rule narrowed to semantic boundaries so the HOL badge's public account slug no longer false-positives), Ruff, compilation, and the nine-Hook self-test pass. Fresh hot-path sampling over the final bytes passed the p95 < 50 ms gate (recorded run p95 36.292/35.943/35.441 ms; the six hot-path input bytes are identical to the earlier recorded run, and two desktop-load-affected sampling attempts are disclosed as history).
-- The macOS Phase-6 subset used isolated disposable Codex homes only: install/no-op/parity/lifecycle and fresh/resume tasks pass, while the observe ledger and authorization canary report no false deny or continuation. Native Windows R11 independently passes all seven required gate groups and cleanup for the same prepared runtime-tree digest. Detailed counts, provenance, and platform limits are recorded in the [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
-- Clean implementation commit `8e49604` passes the macOS portable native gate on the same runtime-tree digest; documentation-only successors preserve both native runtime results. Release commit `75e8fe1` passed Candidate CI `34018302184` and HOL `34018302110`; the annotated `v0.12.0` tag and bilingual, non-draft, non-prerelease GitHub Release were then verified by anonymous public readback. Normal user-runtime installation remains separate.
+- Source regression, performance, isolated installation and macOS and Windows native checks are documented separately in [local acceptance](docs/LOCAL_ACCEPTANCE.md). The release commit's CI and HOL, tag and GitHub Release were independently read back. Normal daily installation was a separate step.
 
 ## 0.11.1 - Unreleased
 
 ### Highlights
 
-- **Release approval works with the current readiness receipt again.** Context Guard accepts the `release-readiness/v3` result produced by a compatible publication-readiness checker, preserves explicit `v2` compatibility, and still rejects every unknown version.
-- **Upgrades can cleanly leave the old managed marketplace staging path.** The installer recognizes the exact legacy `codex-context-guard.marketplace` directory only when its repository identity matches Context Guard, then moves registration to the current commit-addressed staging copy.
-- **A future readiness version cannot silently strand release authorization.** The producer and ticket-consumer allowlist now share a machine-readable compatibility bridge that must be revalidated as a cross-repository contract.
+- This unpublished candidate lets release approval accept a compatible `release-readiness/v3` result while retaining support for `v2`. Unknown versions are rejected.
+- Its installer can migrate the old fixed-name `codex-context-guard.marketplace` staging registration when the repository identity matches.
 
 ### Changes
 
-- The migration recognizer accepts the one historical fixed-name managed directory in addition to commit-addressed staging names. Unrelated paths and repositories remain rejected.
-- A machine-readable cross-repository bridge locks the readiness producer to `v3` and the `action-ticket/v1` consumer to the exact `v2`/`v3` allowlist.
+- The readiness producer and `action-ticket/v1` consumer use a shared compatibility record for the supported `v2` and `v3` receipts. Other directories and repositories are not accepted for migration.
 
 ### Validation
 
-- Focused regressions recreate the legacy registration, exercise a complete `v3` one-shot ticket, retain `v2`, and reject an unknown `v4`. Full source and native candidate acceptance remain release gates.
+- Focused candidate tests covered the old registration, the `v2` and `v3` ticket paths, and refusal of an unknown `v4`. Full source and native candidate acceptance remained required before publication.
 
 ## 0.11.0 - 2026-09-03
 
 ### Highlights
 
-- **Covered release actions are stopped before they run unless the user authorized that exact candidate.** The authorization is valid only for the named repository, commit, release identity, and tool input; it cannot be reused for a different or changed candidate.
-- **Saying “waiting” or “deferred” no longer hides work that is still authorized and ready to do.** Context Guard checks the facts behind the claimed state, and quoted examples, code, or reply annotations cannot rewrite the user's requirements.
-- **Finishing or cleaning up one part of a task no longer closes or expands unrelated work.** Completion stays within the current work unit, ancestor constraints remain active, and large task status stays short unless a maintainer requests the full audit view.
+- Covered release actions require user authorization for the exact repository, commit, release identity and tool input before they run. Authorization for one candidate cannot be reused for another.
+- Saying “wait” or “defer” does not hide work that is still authorized and ready. Quoted examples and reply annotations do not change the user's requirements.
+- Completing one part of a task does not automatically close unrelated work. Large task status is kept short unless a full audit view is requested.
 
 ### Changes
 
-- Schema 9 adds `work-unit/v1`; Execution protocol 2.0.0 adds `action-ticket/v1` bindings and lifecycle states; Stop protocol 2.1.0 validates declared dispositions; the Hook wire now contains nine events including `PreToolUse`.
-- Command scanning normalizes quote pairs, Windows executable suffixes, and both path-separator styles before recursively inspecting shell and PowerShell command wrappers.
-- The private incident schema adds pre-action authorization, Stop-disposition, supersession-attribution, and scope-transition taxonomies. Benchmarks dispatch by protocol surface and report public regression coverage without requiring every private taxonomy to have a public fixture.
-- Four separate sanitized incidents were created outside Git before the fixes, then advanced append-only from `documented_only` through source confirmation and containment to `fixed`. They remain private and unreviewed for public export: no raw task identifier, transcript, complete prompt, or private path is stored, and no real incident has been copied into a public fixture.
+- Schema 9 introduces `work-unit/v1`, and the execution protocol adds `action-ticket/v1`. The Hook set adds `PreToolUse`, for nine events in total.
+- Command checks recognize supported shell and PowerShell wrappers, quoting and Windows path forms.
 
 ### Validation
 
-- Source regressions cover A/B/C risk tiers, ticket retry/consumption, Stop-disposition mismatch, quoted supersession, cleanup scope transition, incident runner dispatch, work-unit closure, and a 100+ item status ledger below 4 KiB with constant-size unchanged replies.
-- Runtime baseline `ea73bed` passed 412 source tests, isolated install/no-op, 68-file source/install parity, the nine-Hook self-test, lifecycle smoke, action-ticket cases, and fresh-task `PreToolUse` denial on both macOS and Windows. The Windows result has explicitly authorized remote-reported provenance; it is not a locally signed annex.
-- Release commit `558612b` passed exact-main CI run `33719603758` and HOL run `33719603393`. Annotated tag `v0.11.0` and the bilingual, non-draft, non-prerelease GitHub Release were then read back publicly; these publication identities remain separate from local and native acceptance.
+- Runtime baseline `ea73bed` passed 412 source tests and the recorded isolated installation and Hook checks on macOS and Windows. Windows evidence was reported from the authorized remote host rather than a locally signed annex.
+- The release commit passed main CI and HOL; the tag and bilingual GitHub Release were read back separately. See [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.10.0 - 2026-09-03
 
 ### Highlights
 
-- Descriptions of physical objects inside a negation or quotation no longer become requirements by mistake. When the user really asks to verify an object's physical identity, Context Guard still requires matching evidence.
+- Saying “physical identity verification is not needed”, or quoting that phrase, no longer creates a verification requirement. A direct request to verify a file or directory's physical identity still requires matching evidence.
 - Evidence must prove the operation the user actually requested. A successful read cannot stand in for a requested write, and proof for one concrete operation cannot close another.
 - If Context Guard cannot determine the requested operation, it keeps the item pending instead of dropping it. `clear-pending` clears only those unresolved operation guesses; it does not delete requirements or evidence.
 
@@ -456,6 +358,14 @@ The recorded runtime passed independent macOS and Windows installation and porta
 
 ## How protection evolved
 
+These summaries describe each release line at the time. Later versions may change its installation or behavior.
+
+- **0.17.x — manage older state and cleanup:** 0.17.0 restores optional session cleanup; 0.17.1 adds a tool to copy supported session state to the stable entry.
+- **0.16.x — protect private data:** 0.16.0 expands redaction and export protection while suspending session deletion; 0.16.1 fixes path-based test misclassification.
+- **0.15.x — preserve active sessions:** state writes use an exclusive lock, and pause and resume handling keeps unfinished work.
+- **0.14.x — retain the right work across interruptions:** completed explanations, unfinished edits, waits and recovery evidence are handled separately.
+- **0.13.x — let ordinary work continue:** ordinary tools no longer need a separate Context Guard execution approval, while explicitly adopted release checks remain available.
+- **0.12.x — keep normal work quieter:** successful Hooks and safe endings become silent, with current and historical work tracked separately.
 - **0.11.x — require authority before high-risk release actions:** covered publication mutations need a one-shot ticket bound to the exact candidate, while ordinary remote mutations need a current root-user instruction naming the action and target. Stop dispositions, quoted corrections, and cleanup-to-product scope changes are checked independently.
 - **0.10.x — require evidence for the requested operation:** proof for a read, write, UI action, or public readback closes only that operation on the bound subject; ambiguous operations remain pending.
 - **0.9.x — require complete, current evidence before finishing:** 0.9.4 makes a verified full-coverage checkpoint the only completion authority and preserves non-ASCII Hook input. 0.9.5 prepares routine file and text evidence automatically, narrows UI wording detection, and rejects evidence tied to the wrong task or path.
@@ -469,181 +379,143 @@ The recorded runtime passed independent macOS and Windows installation and porta
 
 ### Highlights
 
-- Context Guard now builds routine non-visual proof records from its private checklist when a checkpoint is staged. An Agent no longer writes a separate proof JSON for ordinary file or text results. Image inspection, UI readback, and cases that cannot be checked exactly still use the explicit `register-proof` path.
-- UI-related words are classified more narrowly, so ordinary mentions of lists or visible text no longer create unrelated UI checks. A direct request to inspect or operate the UI still does.
-- Evidence for Codex tasks, files, and Windows paths is tied to the exact item that was read. Opening or echoing a path is not enough, and unsupported Windows path forms are rejected rather than ignored.
+- For ordinary file and text results, Context Guard can prepare the proof record during a checkpoint. The agent no longer needs to write separate proof JSON for each such result.
+- Mentions of a list or visible text no longer trigger an unrelated UI check. An explicit request to inspect or operate a UI still requires it.
+- File and task evidence must come from reading the requested target. Opening a UI or echoing a path alone is not enough.
 
 ### Changes
 
-- Only an actual read of the required item counts. Registered read tools and simple read-only shell commands can provide that evidence; echoed paths, unrelated output, and reads that include extra items are rejected.
-- Proof creation and checkpoint staging are saved together. A failed checkpoint leaves no partial proof, and callers cannot add subjects or widen the requested scope.
-- UI capability now comes from verified host metadata or an exact tool list, not from a tool name or its output text.
-- Rejection messages identify the required result type, available evidence, and binding problem. Schema 7, the existing protocols, Python 3.10 support, saved session state, and privacy rules are unchanged.
+- Image inspection, UI readback and cases that cannot be checked exactly still use the explicit `register-proof` path. A failed checkpoint does not leave a partial proof.
+- Rejection messages identify the expected result and where the available evidence does not match.
 
 ### Validation
 
-- macOS passes the 343-test source matrix with 9 capability skips, isolated and daily managed installation, strict repeat/no-op checks, installed lifecycle smoke, 17-file product parity, and a fresh trusted-Hook task. Windows independently passes its native source, isolated install/no-op/parity, and fresh trusted-Hook gates.
-- The documentation-only release commit passes the 12-job main and tag CI matrices, and the same commit passes the main-branch HOL scan. Annotated tag `v0.9.5` and the bilingual, non-prerelease GitHub Release were read back publicly. Downstream adoption remains a separate consumer gate recorded in the [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+- macOS and Windows separately passed the recorded source, isolated-install and fresh trusted-Hook checks. The macOS record also includes daily managed installation. CI, public release readback and downstream adoption are separate evidence; see [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.9.4 - 2026-08-28
 
 ### Highlights
 
-- Hook payloads now decode stdin as UTF-8 explicitly, preserving non-ASCII prompt and reply text in journals and visibly rejecting invalid bytes.
-- Stop protocol 2.0.0 makes an authenticated, full-coverage checkpoint the only authority that can mark a task complete; fail-closed gates and typed waits continue to protect unresolved work.
-- A standard-library incident corpus and reviewed public fixtures provide reproducible evidence for protocol regressions, including Windows ACL behavior.
+- Hooks read input as UTF-8, preserving Chinese and other non-ASCII text in recorded prompts and replies. Invalid bytes are rejected visibly.
+- A task can be marked complete only when a verified checkpoint covers its requirements. Unresolved waits remain protected.
+- A standard-library incident library and reviewed public test cases make protocol regressions reproducible.
 
 ### Changes
 
-- The `Stop`/`UserPromptSubmit` entrypoint reads raw stdin bytes and decodes UTF-8 independently of the host locale. The eight-Hook wire, schema 7, classifier 2.3.2, Proof/Execution protocols 1.0.0, and Python 3.10+ support are unchanged; installed caches remain immutable.
-- Classifier 2.3.2 records `observed_outcome` for diagnosis only. `protocol_default` and `protocol_user_persistence` are authoritative, while in-flight Stop 1.1 controls are discarded on load and durable requirements, evidence, proofs, and decision history remain intact.
-- `scripts/incident_corpus.py` adds standard-library-only `ingest`, `validate`, `summarize`, `benchmark`, and `export-public` commands. Public CI uses reviewed, sanitized fixtures and never the private corpus.
-- Managed staging excludes local environment, test/lint cache, and build output. Incident data remains protected with exact POSIX permissions or a verified Windows DACL limited to the current user, `SYSTEM`, and Administrators; failures remain fail closed without requiring `SeSecurityPrivilege`.
+- `Stop` and `UserPromptSubmit` decode their input independently of the host's locale. Existing Hook events, saved-state format and Python support are unchanged.
+- The incident-library tool can ingest, validate, summarize and export reviewed public fixtures. CI does not read the private library.
 
 ### Validation
 
-- The reviewed public incident manifest contains eight fixtures across eight root-cause families. The immutable 0.8.12 runtime reproduces two false continuations; the 0.9 candidate produces zero, passes all eight authority expectations, and reports diagnostic accuracy separately as 1.0.
-- Native Windows and macOS independently passed source/privacy gates, 233-test suites, Hook self-tests, managed install/no-op/parity/lifecycle checks, and fresh-Hook runs; capability-specific skips and detailed platform evidence remain in the [local acceptance record](docs/LOCAL_ACCEPTANCE.md). CI, tag CI, the bilingual GitHub Release, and unauthenticated public readback passed for the published release.
+- macOS and Windows each passed the recorded source, installation and fresh-Hook checks, including 233 source tests. Platform skips and the separate CI and release results are in [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.8.12 - 2026-08-27
 
 ### Highlights
 
-- Stop no longer treats a quoted completion phrase labeled as a kind of statement, such as `“任务已完成”类声明`, as the assistant's own whole-task completion claim.
-- Direct completion assertions remain gated, including standalone quoted assertions and explicit first-person confirmations.
-- Schema 7, the Proof, Stop, and Execution protocols, Python 3.10+, and the eight Hook events are unchanged.
+- Discussing a completion phrase as a category, such as “`任务已完成` 类声明”, no longer looks like a claim that the current task is complete. A direct completion claim still receives the usual check.
 
 ### Changes
 
-- Classifier 2.3.2 recognizes a bounded Chinese meta-discussion suffix after a quoted completion phrase instead of weakening all quoted completion handling.
-- The plugin version advances because installed Hook runtime bytes are immutable; published 0.8.11 caches remain unchanged.
+- The classifier recognizes this bounded Chinese wording without weakening all handling of quoted completion statements. Existing installed 0.8.11 caches remain unchanged.
 
 ### Validation
 
-- Focused source regressions replay the reported Stop decision and preserve direct Chinese completion claims. Repository and privacy checks, 219 tests with five capability-aware skips, the eight-Hook self-test, Ruff, external-cache compilation, and `git diff --check` pass on macOS.
-- Exact candidate `c66ac824f0d9d2015f1725417a2e50f5a96f31da` passes managed installation, strict repeat/no-op readback, installed self-test, lifecycle smoke, and fresh trusted eight-Hook tasks on native macOS and Windows. Both tasks persisted clean schema-7 state and `SessionEnd` recovery after normal exit. The release-status successor changes documentation and public-contract tests only.
-- PR automation passes the 12-job OS/Python matrix, HOL Plugin Scanner, and plugin scanner. Main and tag automation, the annotated tag, GitHub Release, public readback, and downstream adoption are verified as separate release surfaces.
+- Focused regressions passed, and the macOS suite ran 219 tests with five capability skips. The recorded candidate passed managed installation and fresh trusted-Hook tasks on macOS and Windows. CI and release evidence are separate; see [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.8.11 - 2026-08-27
 
 ### Highlights
 
-- Open tasks keep their Hooks when Codex removes an older plugin cache: the Hook first uses its original plugin directory, then falls back to the newest valid managed copy.
-- Stop no longer treats clearly redacted values or short, readable token examples as leaked private metadata. Values that look like real control tokens remain blocked.
-- When historical caches are missing, the installer now explains what happened and tells the user how to restore them.
+- When Codex removes an old plugin cache, an open task first tries its original Hook directory and can fall back to the newest valid managed version.
+- Clearly redacted values and short readable token examples no longer trigger a private-token leak warning. Values that look like real control tokens remain blocked.
+- If historical caches are missing, the installer explains how to restore them.
 
 ### Changes
 
-- POSIX and Windows Hooks accept fallback directories only when they use an exact `X.Y.Z` version without leading zeros and are not symbolic links. A rescued task may therefore use a newer runtime than it first trusted; exact historical restoration still comes only from the trusted archive. If no valid copy survives, the Hook exits with a repair hint instead of running an unknown path.
-- The privacy classifier now checks the value of a serialized `token` field instead of rejecting the field name alone. Redaction placeholders and readable examples are allowed; disguised or real-looking private values still fail closed.
-- This release includes the fixes from the consumed, unpublished 0.8.9 and 0.8.10 candidates. Their installed caches remain unchanged. Schema 7, existing protocols, Python 3.10+, and the eight Hook events are unchanged.
+- A fallback directory must have a valid `X.Y.Z` name and cannot be a symbolic link. The fallback may use a newer runtime than the one originally trusted; exact old-version restoration still requires a trusted archive.
 
 ### Validation
 
-- Repository and privacy checks, 218 tests, lint, compilation, installed self-tests, lifecycle smoke tests, strict reinstall no-ops, and source/cache/archive parity pass. macOS and Windows also pass fresh interactive Hook trust on Codex CLI 0.149.0.
-- macOS reproduced the host cache cleanup and restored every indexed version from the trusted archive. The Windows fresh task did not remove its historical caches, so this cleanup is not claimed as universal behavior.
-- PR automation passes the 12-job OS/Python matrix, HOL Plugin Scanner, and plugin scanner. Main and tag automation, the annotated tag, GitHub Release, and downstream consumer pin are checked as separate release gates. See [the acceptance record](docs/LOCAL_ACCEPTANCE.md) for exact environments, skips, commits, and hashes.
+- macOS and Windows passed the recorded checks and fresh interactive Hook trust. macOS reproduced host cache removal and restored indexed versions; the Windows fresh task did not remove its old caches. See [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.8.8 - 2026-08-25
 
 ### Highlights
 
-- Hooks now select an available Python 3.10+ interpreter instead of blindly using the first `python3` or `python` on `PATH`.
-- A supported interpreter later on `PATH` is used when macOS resolves bare `python3` to Apple's unsupported Python 3.9; if none is available, the launcher fails closed with an actionable stderr message.
-- POSIX and Windows launchers preserve the existing eight-event Hook protocol, standard-library-only runtime, stdin/stdout contract, and private-state behavior.
+- Hooks choose an available Python 3.10 or newer instead of blindly using the first `python3` or `python` on PATH. On macOS, this avoids selecting the unsupported system Python 3.9 when a supported version is available later on PATH.
+- If no supported interpreter can be found, the Hook stops and reports what is needed.
 
 ### Changes
 
-- POSIX Hooks call a small `sh` launcher that probes versioned Python commands before the generic names. Windows Hooks validate the active generic command first for fast common-case startup, then try versioned commands and `py -3.x` fallbacks.
-- Focused regression coverage places an unsupported `python3` before a supported `python3.12` and requires the launcher to skip the former and pass the eight-Hook self-test with the latter.
+- POSIX and Windows use launchers that check Python versions before starting the Hook. The existing Hook protocol and private state behavior stay the same.
 
 ### Validation
 
-- Native macOS 0.8.7 installation, strict no-op, read-only audit, installed lifecycle smoke, and eight-Hook self-test passed at the final release pin. A newly trusted interactive Hook then failed because the host resolved bare `python3` to `/usr/bin/python3` 3.9.6; direct reproduction returned the same Python 3.10+ guard failure.
-- The candidate passes repository/privacy validation, 209 tests with two capability-aware skips, eight-Hook self-test, Ruff, external-cache compilation, and diff checks on macOS. A disposable Codex home passes first install, strict no-op, read-only audit, launcher self-test, lifecycle smoke, and forbidden-residue checks.
-- A fresh interactive Codex CLI 0.149.0 task reviewed and trusted all eight candidate Hooks. `UserPromptSubmit` and `Stop` ran without the earlier code-2 failure, the exact fixed reply returned, private state was written with mode `0600`, and the 0.8.8 live cache retained no Git or bytecode residue.
-- Native Windows applied exact candidate `40987d48d6a6f7a8ea8b3ae6e468c472170748a4` through the pinned consumer. The managed upgrade, strict second no-op, read-only readback, eight-Hook self-test, lifecycle smoke, PowerShell launcher, and fresh interactive trust all passed. Historical 0.8.3/0.8.5/0.8.6/0.8.7 live trees stayed byte-wise unchanged; the new staging/live/archive trees each retained 41 files with no Git or bytecode residue, and all 15 product files matched across source, staging, live cache, and archive.
-- Exact candidate PR automation passes the 12-job OS/Python matrix, HOL Scanner, and plugin scanner. Main and tag automation, the annotated tag, GitHub Release readback, and the downstream final release pin are verified separately from native runtime acceptance.
+- The earlier 0.8.7 macOS installation passed its checks but a newly trusted Hook failed when the host selected Python 3.9. A fresh trusted task using 0.8.8 ran the affected Hooks without that failure.
+- The recorded macOS and Windows checks include isolated installation and fresh Hook trust; their exact candidates and platform scope are in [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.8.7 - 2026-08-25
 
 ### Highlights
 
-- A plugin upgrade now preserves historical live-cache files that are outside the trusted product manifest, including lifecycle-generated `.pyc` evidence, even when Codex replaces the entire plugin cache root.
-- Product archives remain product-only trust authorities. Historical non-product differences are carried through a separate SHA-256-bound transaction and restored to the same versioned live path without entering the trusted archive.
-- An interrupted transaction fails closed on read-only inspection and is recovered before the next managed `--apply`. Invalid manifests, embedded Git metadata, and symlinks are rejected before the destructive plugin refresh.
+- Upgrading preserves old plugin-cache files that are outside the trusted product archive, including a `.pyc` retained as evidence, even if Codex replaces the cache directory.
+- Those extra files are backed up and restored separately. They do not become trusted product files.
 
 ### Changes
 
-- Before `codex plugin add`, the installer compares each indexed historical live tree with its archive using an all-file manifest. Only differing historical trees receive a transaction backup.
-- After Codex refreshes the cache root, the installer restores and verifies the exact historical file trees, retains the backup if verification cannot complete, and removes it only after successful restoration.
-- Focused regressions cover exact bytecode preservation, failed upgrades, interrupted recovery, read-only no-write behavior, and symlink rejection. Schema 7, the eight-Hook wire, runtime behavior, private data, and product archive hashes are unchanged.
+- The installer compares historical caches with their archives before upgrading and saves any extra files that need to survive. It removes the backup only after restoration is verified.
+- If the upgrade is interrupted, the next managed `--apply` attempts recovery before continuing. Read-only inspection reports the incomplete state without changing it.
 
 ### Validation
 
-- The public repository/privacy gates, 206 tests with two capability-aware skips, eight-Hook self-test, Ruff, external-cache compilation, and diff checks pass on macOS. A real Codex CLI 0.149.0 isolated 0.8.6-to-0.8.7 upgrade preserves an actual 339,172-byte historical `.pyc` and the complete old live-tree SHA-256 snapshot while keeping the old trusted archive product-only.
-- The isolated candidate also passes strict second apply no-op, read-only readback, installed self-test, lifecycle smoke without an outer bytecode guard, and staging/live/archive parity with no transaction or bytecode residue in the new version. PR CI passes the 12-job OS/Python matrix, HOL Scanner, and plugin scanner.
-- Native Windows acceptance installed the exact candidate in the real Codex home without changing any pre-existing 0.8.3, 0.8.5, or 0.8.6 historical live-tree snapshot. The 0.8.7 smoke left its all-file snapshot unchanged; all 13 product files match across source, staging, live cache, and archive with no forbidden residue. The already-lost 0.8.5 `.pyc` was not recreated or misreported as recovered. The exact downstream acceptance commit and CI passed separately.
+- A macOS 0.8.6-to-0.8.7 isolated upgrade preserved the previously retained `.pyc` and historical cache snapshot. Windows acceptance also preserved the recorded older cache snapshots. The 0.8.5 `.pyc` already lost during the previous upgrade was not recreated. See [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.8.6 - 2026-08-25
 
 ### Highlights
 
-- The installed lifecycle smoke no longer writes `__pycache__` or `.pyc` files into an immutable plugin root when its caller has not set `PYTHONDONTWRITEBYTECODE`.
-- Bytecode suppression is scoped to the smoke process's direct validation import. Hook subprocesses retain their existing no-bytecode environment, and the installed runtime, private data, cache, and archive contracts are otherwise unchanged.
-- Native-platform acceptance can now require both a passing lifecycle smoke and a byte-for-byte clean product root without relying on an outer `python -B` workaround.
+- The installed-plugin lifecycle check no longer creates `__pycache__` or `.pyc` files inside the plugin directory when its caller has not set `PYTHONDONTWRITEBYTECODE`.
 
 ### Changes
 
-- The smoke temporarily sets `sys.dont_write_bytecode` only while loading the installed runtime module, then restores the caller's process setting.
-- A focused regression removes the outer `PYTHONDONTWRITEBYTECODE` variable, runs the full installed lifecycle smoke against a disposable plugin root, and rejects any resulting `__pycache__`, `.pyc`, or `.pyo` artifact.
-- Schema 7, all protocol and classifier versions, the eight-Hook wire, marketplace migration, and cache/archive manifests are unchanged.
+- The check temporarily disables bytecode writes while importing the installed runtime, then restores the caller's setting. Hook subprocesses keep their existing behavior.
 
 ### Validation
 
-- Native Windows 0.8.5 successfully completed the managed 0.8.3-to-0.8.5 migration, strict no-op, read-only readback, eight-Hook self-test, lifecycle assertions, and manifest parity, but correctly failed final acceptance when the smoke's direct import wrote one `.pyc` into the live cache. It stopped without deleting that artifact or updating downstream state.
-- The public repository/privacy gates, 202 tests with two capability-aware skips, eight-Hook self-test, Ruff, compilation, and an exact-candidate isolated 0.8.6 install pass on macOS. Its second apply is a strict no-op; a full smoke without the outer bytecode environment guard leaves an all-file SHA-256 snapshot unchanged; and source, staging, live cache, and archive remain byte-identical with no Git or bytecode residue.
-- Main/tag CI, the annotated tag, GitHub Release, and downstream pin passed as separate surfaces. Native Windows 0.8.6 later failed before no-op and lifecycle verification because the managed upgrade replaced the cache root and restored only trusted product files, silently dropping the retained 0.8.5 `.pyc` evidence. Version 0.8.7 addresses that separate historical-file preservation defect.
+- On Windows, the previous 0.8.5 check produced a `.pyc` in the cache, so final acceptance failed. The 0.8.6 macOS check passed without creating bytecode.
+- A later Windows 0.8.6 upgrade lost that retained 0.8.5 `.pyc` when the cache was replaced. Version 0.8.7 addressed this separate preservation issue. The platform results and remaining limits are in [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.8.5 - 2026-08-25
 
 ### Highlights
 
-- Pinned consumers can now migrate from a previous immutable checkout or its sanitized staging root when the new release uses a different commit-addressed directory.
-- Migration remains narrowly bounded to Context Guard roots under the managed `CODEX_HOME/upstreams/context-guard` directory whose manifest repository matches the current product. Same-identity paths elsewhere are still rejected.
-- Read-only checks report the required `--apply` migration without changing marketplace, staging, plugin, cache, archive, or private task data.
+- A downstream installation pinned to a specific commit can upgrade even when its existing marketplace registration points to the previous checkout or its staging copy.
 
 ### Changes
 
-- Version 0.8.4 introduced sanitized staging but recognized only the current checkout path. A pinned downstream upgrade therefore stopped before marketplace mutation when the existing registration still named the previous pinned commit.
-- The managed-root recognizer accepts both a 40-character lowercase commit directory and its `.marketplace` staging sibling, preventing the same integration failure on later pin raises.
-- Schema 7, all protocol and classifier versions, the eight-Hook wire, and the cache/archive trust model are unchanged.
+- Migration accepts only the managed Context Guard roots under `CODEX_HOME/upstreams/context-guard` whose manifest names this repository. Other paths remain rejected.
+- A read-only check reports when `--apply` is needed without changing the installation or private task data.
 
 ### Validation
 
-- Focused regressions cover previous pinned checkouts, previous managed staging roots, read-only no-write behavior, unrelated-path rejection, current-checkout migration, fresh registration, staging parity, and temporary-directory cleanup.
-- The public repository/privacy gates, 201 tests with two capability-aware skips, eight-Hook self-test, Ruff, and compilation pass. An exact-commit isolated pinned consumer migrated from 0.8.3 to 0.8.5, preserved the old cache/archive, passed installed lifecycle and self-test, and ended with a strict no-op plus successful read-only readback.
-- Real default-home migration, main/tag CI, the annotated tag, and GitHub Release are separate acceptance surfaces and do not substitute for the isolated consumer evidence above.
+- An isolated pinned installation upgraded from 0.8.3 to 0.8.5, retained its older cache and archive, and passed its recorded installation checks. Daily-home migration and public release checks are separate evidence. See [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.8.4 - 2026-08-25
 
 ### Highlights
 
-- Context Guard now registers its marketplace from a sanitized staging copy instead of an immutable Git checkout, preventing Codex cache refreshes from copying `.git` metadata into the live plugin cache.
-- Existing checkout-based registrations migrate with one managed `--apply` run. The same run repairs an already-affected live cache from its trusted archive without deleting historical versions or private task data.
-- Read-only checks remain read-only: when migration or repair is needed, they fail with an actionable `--apply` instruction instead of silently changing the installation.
+- Marketplace registration now uses a cleaned staging copy of the source. Codex can refresh the plugin cache without copying the checkout's `.git` directory into it.
+- An existing checkout-based registration can migrate with the managed `--apply` operation. That operation also repairs an affected cache from its trusted archive.
 
 ### Changes
 
-- Staging uses the same product-tree ignore rules and manifest as cache verification, rejects embedded Git metadata, replaces stale staging atomically, and cleans temporary directories on both success and failure.
-- Marketplace registration verifies the final staging path after a fresh add or checkout-to-staging migration. A current sanitized registration is idempotent.
-- This patch changes only installation and cache lifecycle behavior. Schema 7, execution protocol 1.0.0, Proof protocol 1.0.0, Stop protocol 1.1.0, classifier 2.3.0, and the eight-Hook wire remain unchanged.
+- Read-only checks report when migration or repair is needed without changing the installation. Staging rejects embedded Git metadata and removes temporary directories after success or failure.
+- Historical plugin versions and private task data are preserved.
 
 ### Validation
 
-- Native Windows reproduction and real-CLI end-to-end testing verified fresh staging, checkout migration, live-cache repair, strict second-run no-op, read-only diagnosis, and absence of `.git` or leftover staging temp directories.
-- Native macOS source validation passed the public repository/privacy gates, 197 tests with two capability-aware skips, the eight-Hook self-test, Ruff, compilation, and an isolated install/no-op/lifecycle chain for the 0.8.4 candidate.
-- PR and merged-main CI passed the 12-job OS/Python matrix and HOL scanning. Tag CI, the annotated tag, and GitHub Release remain separate publication facts.
+- Windows real-CLI tests covered registration, migration, cache repair and a second no-op run. macOS source and isolated-install checks also passed. CI, tag and release results are recorded separately in [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.8.3 - 2026-08-24
 
@@ -737,14 +609,14 @@ The recorded runtime passed independent macOS and Windows installation and porta
 - Open-item counts are recalculated when state is loaded or saved, preventing stale counts from surviving an upgrade.
 - A same-version installed cache is trusted only after its source and archive integrity are verified.
 
-## 0.5.0 - 2026-08-09
+## 0.5.0 - 2026-08-09 — installed version, not separately released
 
 ### Added
 
 - `context-guard diagnose` explains the latest stop decision with bounded, privacy-preserving records instead of requiring maintainers to infer it from raw task text.
 - Installed Hook versions are archived with hashes so older tasks can keep using their original runtime and damaged live caches can be repaired from a trusted copy.
 
-## 0.4.16 - 2026-08-09
+## 0.4.16 - 2026-08-09 — installed version, not separately released
 
 ### Fixed
 

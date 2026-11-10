@@ -104,17 +104,19 @@ authoritative.
 
 - Write for adopters, not as a commit transcript. Lead with the concrete change
   and explain internals only when they affect behavior, compatibility, security,
-  installation, or operation. Do not use editorial headings such as
-  `User-visible changes`; follow the existing `Highlights`, `Changes`, and
-  `Validation` structure.
+  installation, or operation. Use the established `Highlights`, `Changes`,
+  and `Validation` headings or their localized equivalents when needed.
 - When a release introduces an authority or priority model, state what wins in
   a conflict instead of listing storage fields. Include a repository-proven
   example with concrete objects such as an image, selected Skill, Codex Plan,
   file, or public readback, and state the boundary the release does not enforce.
-- Keep releases newest first. Each release uses `Highlights`, `Changes`, and
-  `Validation` in that order. Put three to five highlights in descending
-  importance: correctness or safety first, then compatibility and operations,
-  then maintenance. Do not give every change equal weight.
+- Keep releases newest first and keep their sections in the order above.
+  Lead with the main improvements the release delivers. Put secondary rollout
+  decisions, paused features, and carried-forward limitations in `Changes`
+  unless they are the main purpose of the release. Substantial releases usually
+  need three to five highlights. A small patch can have a single highlight
+  and omit sections that would repeat it. Keep material upgrade steps and
+  limitations beside the change they qualify.
 - Keep `Validation` compact and evidence-bounded. Distinguish native macOS,
   native Windows, CI, HOL, installation, tag, and GitHub Release evidence; one
   does not substitute for another.

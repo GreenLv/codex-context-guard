@@ -1,7 +1,9 @@
-# Independent answer review — 0.14.2 source candidate
+# Independent answer review — 0.14.2 design and evidence
 
-This is an explicit, bounded interface under development, not accepted native
-behavior. It does not automatically call a model from a Hook.
+This page records the explicit, bounded interface and its evidence at the
+0.14.2 source-candidate boundary. The implementation was included in the
+published 0.14.2 source. Native evidence is tracked separately in
+[local acceptance](LOCAL_ACCEPTANCE.md); Hooks do not automatically call a model.
 
 The operator must first configure a private `answer-reviews/policy.json` for
 the session, with `version`, `active`, `binary` and `binary_sha256`. The binary

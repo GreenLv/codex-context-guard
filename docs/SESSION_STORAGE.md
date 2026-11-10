@@ -1,19 +1,42 @@
-# Session storage and upgrades
+# Session storage, upgrades and cleanup
 
-New 0.15.0 sessions use `sessions-v2/<id>` beneath the private plugin data root.
-Existing `sessions/<id>` trees and consumed versioned plugin caches remain with
-their original runtime. There is no migration command, automatic import or
-legacy cleanup in this version.
+In 0.17.1, installing or updating Context Guard leaves its task records in place. Upgrading within the same plugin entry can read existing schema 13 records. Switching entries leaves those records under the entry that wrote them. If you want to look up a task from the new entry, the [migration tool](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md) can preview and copy supported `sessions-v2` records on the same machine. Older `sessions` directories stay with the original plugin.
 
-Here, HOME means the Codex configuration and task-data directory selected by
-`CODEX_HOME`, not the operating system user directory. Since the 0.16.0
-release line, direct commands without an explicit data root resolve their private
-state under the active `CODEX_HOME` (`<home>/context-guard`), so isolated
-homes never share state; with `CODEX_HOME` unset the historical default is
-unchanged. The same directory also carries the optional existing
-`interpreter.conf` (one absolute interpreter path) that the Hook launchers
-consult on GUI hosts whose PATH lacks the installed Python; the launchers re-verify it on every start. The marketplace-only version
-does not create this file; GUI Python discovery still needs verification.
+Session cleanup was disabled in 0.16.0 and 0.16.1. Version 0.17.0 restored it as an opt-in maintenance command, and 0.17.1 keeps that behavior. The command previews by default. Installing the plugin neither enables a retention policy nor creates a scheduled job. Ending a session saves state and performs no sweep.
+
+## Keep old tasks working
+
+Finish tasks that still need the old plugin before changing its entry. If they need more time, keep them in a separately configured Codex environment that still loads that version. Check the Hook source in the actual client. A cache directory on disk does not tell you which version a running task loads. For example, Codex CLI 0.158.0 on Windows was observed loading the new Hook on an old task's next turn after an in-place upgrade.
+
+The [0.17.1 upgrade guide](UPGRADE_0_17_1.md) covers which installation routes switch entries, how to review the new Hooks, and when copying records is useful. Copying supported records does not transfer Hook trust or move an active task into a different environment. See [compatibility](COMPATIBILITY.md) and [local acceptance](LOCAL_ACCEPTANCE.md) for exact host results.
+
+## Preview cleanup
+
+First identify the entry with `codex plugin list --json` in the Codex environment you want to inspect. If you have more than one entry or data directory, run the [migration tool's read-only inventory](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md#stages) against that environment's configuration directory. Use the data-root path listed for the intended entry. Keep the inventory and any cleanup report on your machine.
+
+From the extracted release directory, run the following with that private data-root path. On Windows, replace `python3` with `py -3`.
+
+```shell
+python3 scripts/context_guard.py cleanup --data-dir "/path/to/plugin-data"
+```
+
+Preview reports eligible sessions and why it keeps others. It makes no changes to session data. The command requires `--data-dir` and exits with code 2 when it is missing. Use `--policy show` with the same data root to see whether maintenance and permanent deletion are allowed.
+
+When you first enable the default policy, apply can move eligible sessions to quarantine after 30 days and permanently delete them after seven further days in quarantine. To enable quarantine without permanent deletion, run the first command below. The second command saves a preview. Inspect it before running the third command, which applies only the saved selection. Use an unused local filename for the preview.
+
+```shell
+python3 scripts/context_guard.py cleanup --data-dir "/path/to/plugin-data" --policy enable --no-purge
+python3 scripts/context_guard.py cleanup --data-dir "/path/to/plugin-data" --save-manifest "/path/to/cleanup-preview.json"
+python3 scripts/context_guard.py cleanup --data-dir "/path/to/plugin-data" --apply-manifest "/path/to/cleanup-preview.json"
+```
+
+`--apply` instead uses the selection built by that invocation. To put back a quarantined session, pass `--restore <name>` with the same data root. Restore checks the identity and contents and requires a free destination. Scheduled maintenance is a separate choice. Use `--maintenance-status` to check whether a job is present and enabled.
+
+## Where the records live
+
+Here, `CODEX_HOME` is the Codex configuration and task-data directory. A direct command without an explicit plugin data root uses the active `CODEX_HOME` for its fallback data directory, `<home>/context-guard`. An existing `interpreter.conf` there can point a Hook at a Python interpreter when the GUI host's PATH cannot find it. The launcher checks that interpreter on each start. The marketplace installation does not create a binding.
+
+New sessions use `sessions-v2/<id>` beneath the plugin data root. The current runtime looks there first, then reads legacy `sessions/<id>` records for status, diagnostics or recovery. It leaves legacy records read-only. Looking up a missing session creates no directory or lock. A legacy `ended_at` value says the session ended once. A later prompt can still reopen it, so age alone cannot make it safe to migrate or clean up.
 
 Session identities are validated before any directory is used: a missing or
 empty id is refused rather than merged into one shared directory, and ids are
@@ -23,44 +46,6 @@ Windows device names are rejected, a new directory whose name differs from a
 sibling only by letter case is refused, and loading verifies that the
 persisted session identity equals the event's identity before any write.
 UUID-shaped ids map exactly as before.
-
-## Continue existing work
-
-Keep the old task's original cache and session data. Continue it under the
-original loaded runtime, and check the actual Hook source path and identity.
-Keeping a directory on disk does not prove that the host loaded that version.
-Codex CLI 0.158.0 on Windows was observed switching an existing task to the
-new Hook on its next turn after an in-place plugin upgrade, even while the
-original host process remained alive. Finish old tasks before changing that
-HOME's selected plugin, or keep a separate HOME explicitly configured for the
-original version while new work uses a fresh HOME. Do not copy Hook trust or
-session data into the new HOME; review its Hooks normally. A fresh task can use
-the new version independently. Cold-resuming an arbitrary old task through a
-newly selected runtime does not import its ledger.
-See [compatibility](COMPATIBILITY.md) for the supported boundary and
-[local acceptance](LOCAL_ACCEPTANCE.md) for observed host routes.
-
-The marketplace-only version proposes a distinct market identity for new
-work. It has not established old-task continuation, independent enable/disable
-or strict no-op preservation through official installation. A second HOME is
-not proof of task or trust transfer. Keep old objects and daily configuration
-unchanged until the relevant native acceptance is complete. See
-[the installer removal record](INSTALLER_REMOVAL.md).
-
-The new runtime resolves existing v2 state first, then legacy state; only a
-new session creates a v2 directory. Its legacy access is strictly read-only:
-no repair, new prompt, recovery write, migration marker or cleanup. Status,
-diagnose and recovery-page can read old records; write commands refuse them.
-An absent-session read creates no directory or lock. Ordinary business tools
-keep the approval-free path. Unverifiable completion or explicitly adopted
-release evidence cannot be certified; Stop and PreCompact return bounded
-instructions for continuing with the original runtime.
-
-A legacy `ended_at` value records SessionEnd, not an irreversible terminal
-state. The old runtime accepts later prompts and may still write after that
-field is saved. File age, lock absence, an old marker or time between Hooks
-therefore cannot establish a safe migration window. A future migration needs
-an enforceable quiescence and immutable-source contract.
 
 ## One writer and retained session data
 
@@ -74,21 +59,19 @@ for its current-session lock, further limited by a valid remaining Hook budget.
 Descriptor/path identity checks harden commits, and a zero inode fails closed.
 Identity checks do not provide a sandbox against arbitrary same-user mutation.
 
-SessionEnd saves current state and, when active, recovery content. In the
-0.17.0, session retention maintenance returns under a new
-versioned contract while SessionEnd itself still runs no sweep: no full
-enumeration, deletion, scheduling registration or waiting worker happens
-inside the 3-second host budget. The public `cleanup` command is an
-inspectable maintenance command (`cg-retention-report/v1`):
+SessionEnd saves current state and, when active, recovery content. The separate
+maintenance command reports its work as `cg-retention-report/v1`. It uses the
+following checks:
 
 - Preview is the default: `cleanup --data-dir <root>` scans, adjudicates and
   reports without touching session data. Without an explicit `--data-dir` the
   command refuses (exit 2) before resolving or creating any default home.
 - Deletion requires an explicitly enabled retention policy
   (`cg-retention-policy/v1`; defaults: 30 days after session end, 7 days in
-  recoverable quarantine, both clamped, purge optional) plus an explicit apply
-  bound to an exact manifest. A policy object is never created automatically;
-  an upgraded installation stays preview-only until the user enables a policy.
+  recoverable quarantine, both clamped, purge enabled by default) plus an
+  explicit apply using this pass's selection or a saved preview manifest.
+  A policy object is never created automatically;
+  a data root with no enabled policy stays preview-only.
 - Eligible objects move to recoverable quarantine; `cleanup --restore <name>`
   puts one quarantined object back and refuses to overwrite a live successor.
   Permanent purge runs only after the quarantine grace period, is bounded and
@@ -174,12 +157,9 @@ inspectable maintenance command (`cg-retention-report/v1`):
   that this data root cannot prove it owns is reported as foreign and is
   never overwritten, unloaded or deleted.
 
-The disabled-cleanup era of 0.16.0/0.16.1, its retained history and the
-restoration conditions are recorded in
-[Retention cleanup follow-up](RETENTION_CLEANUP_FOLLOWUP.md). That page's
-conditions describe what this candidate implements; native macOS/Windows
-retention acceptance, real-lock/permission/crash controls and installed-artifact
-verification remain separate gates for the release stage.
+[Retention cleanup history](RETENTION_CLEANUP_FOLLOWUP.md) explains why
+0.16.x disabled deletion. [Local acceptance](LOCAL_ACCEPTANCE.md) records
+the subsequent source, native-platform and installation checks separately.
 
 The private permission boundary remains mandatory for state and recovery
 writes. A permission failure is still an error. Retention maintenance does not

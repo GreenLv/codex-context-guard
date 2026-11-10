@@ -1,9 +1,13 @@
 # Local Release Acceptance
 
+Each version section records results for its named source, artifact and host.
+Earlier candidate sections retain their original pending gates and failures;
+later outcomes do not retroactively change those observations. For the public
+release identity, follow the version's GitHub Release separately.
+
 ## 0.17.1 — release-source evidence (2026-11-09)
 
-The final release acceptance assets identify the source commit, the full ZIP
-and its file inventory. The GitHub Release is the independent public record.
+The [published acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.1/context-guard-0.17.1-acceptance.json) identifies the source and ZIP and records the three upgrade routes tested with the final package on macOS and Windows. Those runs used isolated Codex CLI environments. Migration and undo used sample session records. Daily Desktop use and migration of existing daily data have separate evidence.
 
 The pre-release artifact built from `865a2a0` completed the 0.16.1 wrapper,
 0.17.0 stable in-place and 0.15.1 historical upgrade routes on macOS and
@@ -1020,6 +1024,9 @@ installation is claimed by these checks.
 
 
 ## 0.14.0 release-line source (2026-09-21; public identity pending)
+
+The pending public identity in this heading refers to the recorded candidate
+boundary, before the later 0.14.0 release.
 
 Committed candidate `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed its complete deterministic source matrix, all 16 jobs in [candidate CI](https://github.com/GreenLv/codex-context-guard/actions/runs/35523280198), and the [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/35523420917). Its 35-file runtime tree has SHA-256 `b1887c837722c41049d86e194a5859ec667a77ca7726f1d2adb7dc5e08bfd1ea`; the macOS portable native profile passed five gates with cleanup.
 

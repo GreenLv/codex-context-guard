@@ -1,6 +1,6 @@
 # Protocol-authoritative completion
 
-Status: proposed design target for 0.9; not implemented by the 0.8.x runtime.
+Status: historical design proposal for 0.9, written against the 0.8.x runtime. The 0.9 line was later released. For the current contract, see [architecture](ARCHITECTURE.md) and [compatibility](COMPATIBILITY.md).
 
 ## Objective
 

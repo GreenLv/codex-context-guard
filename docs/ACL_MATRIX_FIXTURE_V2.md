@@ -1,6 +1,6 @@
 # Protected ACL matrix fixture construction v2
 
-This unreleased 0.15.1 validation contract constructs protected test objects while retaining the permissions supplied by their controlled inheritance source. It uses the new `explicit-retained32` profile and `incident-acl-mechanism-matrix/v2` report schema. The construction contract is `protected-explicit-retention/v2`; it does not change the product runtime or normalize user ACLs.
+This 0.15.1 validation contract constructs protected test objects while retaining the permissions supplied by their controlled inheritance source. It uses the `explicit-retained32` profile and `incident-acl-mechanism-matrix/v2` report schema. The construction contract is `protected-explicit-retention/v2`; it does not change the product runtime or normalize user ACLs.
 
 A protected file with four explicit allow ACEs and three inherited allow ACEs keeps all seven entries. Construction clears only the three ACE `INHERITED_ACE` bits (`I`, `0x10`), so the result has seven explicit entries. Returning four entries is still a failure. Descriptor `AUTO_INHERITED` (`AI`, `0x400`) is a separate control bit: `1004` and `1404` remain distinct targets.
 
@@ -22,7 +22,7 @@ Protected descendants are assigned deepest first. Every step verifies the exact 
 
 Select `--cell-profile explicit-retained32` with the existing `--mechanism-matrix` entrypoint in `tests/test_incident_acl_family.py`. Supply the full source commit, helper SHA-256, runner SHA-256, distinct collector and ordinary actor SID, exclusive output and fixture parent; run `--preflight` with the actual arguments first. Preflight emits all 32 mapped cells and their descriptor plans without Windows APIs, tokens or model calls. It checks inputs, not native feasibility.
 
-A successful v2 report proves only its new construction contract. Legacy `full32` and `protected8` profiles retain v1 semantics; their earlier failures are not converted into passes. In particular, raw DACL assignment losing AI, protection returning no P bit, and protection deleting the inherited tail remain negative evidence. The v2 matrix uses no model and cannot establish a real restricted subprocess token or complete Windows host acceptance. Native v2 acceptance remains pending for this source candidate.
+A successful v2 report proves only its construction contract. Legacy `full32` and `protected8` profiles retain v1 semantics; their earlier failures are not converted into passes. In particular, raw DACL assignment losing AI, protection returning no P bit, and protection deleting the inherited tail remain negative evidence. The v2 matrix uses no model and cannot establish a real restricted subprocess token or complete Windows host acceptance. Native v2 acceptance was pending when this contract was drafted. See the [0.15.1 acceptance record](LOCAL_ACCEPTANCE.md#0151--2026-10-05) for later, separately bound Windows results.
 
 ## One-to-one legacy mapping
 

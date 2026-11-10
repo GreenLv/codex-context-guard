@@ -7,7 +7,7 @@ Status: **Completed**
 
 Target: plugin `0.9.4`, Stop protocol `2.0.0`
 
-Latest published release: `0.9.4`
+Published release at this plan's closeout: `0.9.4`
 
 This is the authoritative continuation plan for the 0.9 line. It is updated at
 phase boundaries, not as a command transcript. The protocol rationale is in

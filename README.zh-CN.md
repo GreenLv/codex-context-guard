@@ -8,97 +8,34 @@
 
 [English](README.md) | [介绍文章](https://blog.csdn.net/LvGreat/article/details/163534498) | [更新日志](CHANGELOG.zh-CN.md)
 
-Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要求。它在上下文压缩或恢复任务后还原私有检查表，并核对已记录的证据，再判断任务是否完成。
+Context Guard 帮 Codex 在长任务里记住你交代过的要求。执行 `/compact` 或恢复任务后，它会找回尚未完成的事项。Codex 说整个任务完成时，它会核对有没有对应的证据。
 
-它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
+例如，你要求改一个文件并运行测试。读取文件成功，不能证明改过文件，也不能证明测试跑过。平时修改文件、提交和推送，仍按 Codex 的权限运行。
 
-> **0.17.1 — 2026-11-09。** 可升级到稳定市场入口，并按需复制本机其他插件身份下的私有任务状态。迁移工具默认只预览。同 ID 的会话内容有冲突时，保留目标原件并将源副本隔离。更改日常入口前，请先结束仍依赖旧运行时的任务。[发布说明](docs/releases/v0.17.1.md) · [升级指南](docs/UPGRADE_0_17_1.zh-CN.md)
-
-> **0.17.0 — 2026-11-06。** 只规划内容的任务不再因历史修改、建议引用或否定表述被推导出文件修改义务；当前 Desktop 的 `aggregated_output` 终端结果按身份与退出码绑定接入；无关超大历史输出不再使后续终端证据失效；会话保留清理在新版本化合同下恢复——默认只预览，策略授权后进入可恢复隔离，宽限期后才永久回收。修改安装前，请阅读[发布说明](docs/releases/v0.17.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。本产品线市场身份从实验性 `codex-context-guard-v016` 切换到稳定 `codex-context-guard`，见[稳定身份合同](tools/validation/STABLE_MARKETPLACE_IDENTITY.md)。
-
-> **0.16.1 — 2026-11-03。** 文件名或路径中的验收词不再凭空增加义务。本版还新增显式历史覆盖发布门、补全插件上架元数据，并继续停用会话保留清理。修改安装前，请阅读[发布说明](docs/releases/v0.16.1.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
-
-> **0.16.0 — 2026-11-01。** 上一版本加强凭据脱敏和私有状态权限保护，并改用 Codex 官方市场安装。升级动作见其[发布说明](docs/releases/v0.16.0.md)。
+**最新发布版是 0.17.1。** 如果你已经装过，请先处理还依赖旧插件的任务。升级指南会说明哪些版本可以在原入口升级，哪些需要换入口。 [发布说明](docs/releases/v0.17.1.md) · [升级指南](docs/UPGRADE_0_17_1.zh-CN.md)
 
 ## 用 Codex 安装
 
-**0.17.1 — 2026-11-09。** 首次安装请按下列命令操作。已有安装时，先核对当前启用的入口，再按对应路线升级。稳定入口为 `context-guard@codex-context-guard`。[发布 ZIP](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.1) · [升级指南](docs/UPGRADE_0_17_1.zh-CN.md)
+需要 Python 3.10 或更新版本，以及能加载插件和自动脚本（Hook）的 Codex 客户端。先运行 `codex plugin list --json`。如果列表里已有任何 Context Guard 入口，请按[升级指南](docs/UPGRADE_0_17_1.zh-CN.md)选择路线。下面是首次安装的步骤。
 
-在新目录中下载 GitHub Release 附件里具名的 ZIP：
+1. 从[发布附件](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.1)下载 `context-guard-0.17.1.zip`，核对发布页公布的 SHA-256。把 ZIP 解压到自己管理的目录，之后保留这个目录作为市场来源。发行 ZIP 带有核验用的文件清单。
+2. 在解压后的目录运行以下命令，注册市场并安装插件：
 
-```shell
-gh release download v0.17.1 --repo GreenLv/codex-context-guard --pattern context-guard-0.17.1.zip
-```
+   ```shell
+   codex plugin marketplace add .
+   codex plugin add context-guard@codex-context-guard --json
+   codex plugin list --json
+   ```
 
-将发行 ZIP 解压到自己控制的稳定目录并一直保留；官方市场后续读取和刷新仍依赖此来源。
-不要把 Git 检出目录或 GitHub 自动生成的源码 ZIP 注册为市场。
+3. 核对列表里只有一条 `context-guard@codex-context-guard` 记录，版本是 `0.17.1`，已安装且已启用，市场来源指向刚才的解压目录。保存安装命令返回的 `installedPath`。核对已安装文件时，将下例双引号里的路径替换成该值。Windows 上用 `py -3` 代替 `python3`。
 
-Windows 的 Python 命令请把 `python3` 替换为 `py -3`。还需要支持插件的
-Codex CLI 和能加载生命周期 Hook 的宿主。从稳定的解压目录先读官方状态：
+   ```shell
+   python3 scripts/artifact_identity.py --compare-to "/path/from/installedPath"
+   ```
 
-```shell
-codex plugin list --json
-```
+4. 用同一份 Codex 配置新开一个 CLI 任务，输入 `/hooks`。确认九项 Context Guard Hook 都来自 `<installedPath>/hooks/hooks.json`，再信任它们。条目缺失或来源不符时先检查安装。然后回到自己日常使用的客户端试用，Desktop 可能需要重启后才加载新入口。
 
-如果原 `context-guard@codex-context-guard` 仍已启用，且未完成任务依赖它，
-请先停在这里，等这些任务完成。暂不接受切换时保持原设置，或另行配置独立
-HOME；本版本不能证明旧任务会自动续接。
-
-如果实验性市场身份下已经安装 0.16.x，此流程是一次身份切换，不是原地升级。在稳定 `codex-context-guard` 身份下注册市场并安装属于官方操作；它不迁移私有状态，并可能移除旧实验缓存。请先完成依赖现有运行时的任务，或为新任务另行配置独立 HOME；保留任何版本缓存，并在新 HOME 中正常审阅 Hook。
-
-只有当 `context-guard@codex-context-guard` 不存在时，才注册并安装：
-
-```shell
-codex plugin marketplace add .
-codex plugin add context-guard@codex-context-guard --json
-codex plugin list --json
-```
-
-请保存首次 add 的返回结果，用其中的 `installedPath` 确认待核验缓存。
-`plugin list` 提供身份、版本、已安装/已启用状态及市场来源，不提供缓存路径。
-必须恰好有一条完整身份匹配的记录，版本为 `0.17.1`，两项状态均为 true，
-来源是该稳定解压目录。请把下例双引号内的占位路径替换为完整的
-`installedPath` 返回值，并保留双引号，以支持路径中的空格：
-
-```shell
-python3 scripts/artifact_identity.py --compare-to "/path/from/installedPath"
-```
-
-目标已经安装时，只执行同样的状态、身份和完整文件核对，然后停止，不再注册
-或 add。首次安装读回丢失、身份不唯一、版本或来源不符、任何文件漂移都应
-报错停止，不猜测路径，也不通过重装修复。裸重复 `plugin add` 可能重建缓存
-对象；只有完整的先检查流程才可能在第二次达到 no-op，不声称 CLI add 幂等。
-原生门比较整个 HOME 最终的路径、模式与文件字节，不证明期间从未写入；
-合成旧缓存额外核对对象身份。
-
-本版本删除项目自有安装器、事务回滚、归档修复和自动解释器绑定，由 Codex
-负责安装。升级全程请保留既有版本缓存和日常配置。新市场名
-本身不能证明缓存保护或旧任务续接。信任新版 Hook 前，再检查实验性
-`context-guard@codex-context-guard-v016` 标识；若它仍已启用，先结束所有依赖旧版的
-任务，再通过官方 Plugins UI 只禁用该实验身份，保持
-`context-guard@codex-context-guard` 已启用。不要 remove 旧插件或删除旧缓存，
-也不要把同时信任两套 Hook 当作升级流程。桌面端可能需要重启；随后使用相同
-`CODEX_HOME` 和项目启动新的 Codex CLI 任务，输入 `/hooks`。逐项核对九个
-Context Guard 事件显示的来源，应为首次 add 返回的
-`<installedPath>/hooks/hooks.json`，再通过正常界面检查并信任。若条目缺失、
-来源不符或界面不显示来源，请停止。[Hook 浏览器](https://learn.chatgpt.com/docs/hooks)
-展示的是定义和信任状态，不能证明 Hook 已执行或桌面端已加载。真实
-macOS/Windows 切换及旧任务观察分别记于[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
-
-### Python 与升级
-
-既有 `<CODEX_HOME>/context-guard/interpreter.conf` 仍可读取并运行时验证，
-但本版本不创建绑定，错误绑定仍明确失败。PATH 发现失败后，POSIX 启动器
-只探测固定的全局安装位置：Homebrew（`/opt/homebrew/bin` 或 `/usr/local/bin`，
-含 Python 3.10–3.14 的版本名）、`/opt/anaconda3/bin` 和 Python.framework。
-每个候选都必须通过隔离的 Python 3.10+ 探针并返回唯一标识；不会搜索个人
-目录或写入绑定，其他位置仍需 PATH 或有效显式绑定。Windows 仍需原有
-PATH/launcher 或绑定；启动和查找缺失解释器时不再扫描无关 PowerShell 模块。受限 PATH 测试不等于任一平台的实际 GUI
-重启验收。
-
-更改所选插件前，应先在原运行时完成旧任务；旧缓存本身不能固定旧任务 Hook。
-本版本不迁移会话或信任数据，独立 HOME 与旧任务结果分别绑定精确宿主和制品。
-详见[升级边界](docs/SESSION_STORAGE.md)和[安装变更](docs/INSTALLER_REMOVAL.md)。
+如果新任务找不到 Python，或仍加载旧版，请查[兼容性](docs/COMPATIBILITY.md)和[升级指南](docs/UPGRADE_0_17_1.zh-CN.md)。复查安装时，重新看列表和比较文件即可。重复运行 `plugin add` 可能重建缓存。
 
 ## 试用
 
@@ -115,7 +52,7 @@ context-guard status
 context-guard diagnose
 ```
 
-验证恢复链时，请使用一个非简单的合成任务，执行 `/compact`，并确认未完成要求随即恢复出来。
+想试一下恢复，可以在新任务里交代两三条要求，保留一项未完成，然后执行 `/compact`。压缩后，请 Codex 列出还没完成的要求，核对它是否还记得。
 
 完整操作示例见 [HOL 上的 Context Guard 实践教程（英文）](https://hol.org/blog/context-guard-codex-compaction-evidence-workflow)：先定义文档要求，再压缩任务，最后核对恢复出的要求和完成的文档。
 
@@ -129,7 +66,7 @@ context-guard diagnose
 - 含糊输出保持 `unknown`（未知）；私有状态损坏或无法验证时，不能通过完成核验。
 - 导出必须显式触发并经过脱敏。图片字节、凭据和会话正文不会复制进需求记录。
 
-只有目标足够具体时，Context Guard 才会自动核对，例如指定文件、URL、修改后的图片或必须全部覆盖的对象清单。如果无法精确验证，它会保留待办，而不是猜测结果。等待用户、外部结果或后续处理不会关闭未完成要求。
+如果目标是指定文件、URL、修改后的图片或完整对象清单，Context Guard 可以要求对应的证据。缺少证据时，这项检查保持待办。遇到无法这样核验的请求，它会标明 `legacy_fallback`，改用较通用的完成检查。等待用户、外部结果或后续处理时，未完成的要求仍保留。
 
 ## 谁决定什么
 
@@ -236,11 +173,11 @@ flowchart TB
 
 ## 私有数据与保留期
 
-运行时数据写入 Codex 管理的 `PLUGIN_DATA`。提示正文、任务状态、证据摘要和恢复文件都属于本地运行时数据，不属于本仓库。
+Context Guard 把任务记录保存在本机的插件数据目录。只有你要求导出时，它才生成脱敏交接文件，并保留目标位置已有的文件。具体遮盖哪些信息见[隐私说明](docs/PRIVACY.md)。命令行未指定插件数据目录时，使用当前 `CODEX_HOME` 下的数据。
 
-SessionEnd 保存当前状态，并在启用时保存恢复内容。0.17.0 中，会话保留维护在新版本化合同下恢复，而 SessionEnd 本身仍不执行任何清扫：`cleanup --data-dir <根目录>` 默认只预览，不满足「显式启用的保留策略 + 绑定精确清单的 apply」时不会改动任何会话数据。合格结束会话（默认 30 天）进入可恢复隔离并提供恢复命令；恢复只在证明对象完整后才搬回；永久回收只在再 7 天宽限期后进行，并留下到期退役的墓碑记录。定时维护需要用户显式开启，且不会改动不属于本产品的调度条目。活动、可恢复、未完成、锁占用、部分删除、旧版本、链接与范围外对象都会以明确原因被保护。无法验证创建身份的对象也会保留；自动清理要求文件系统支持读取创建时间。请保留活动任务、会话数据、生命周期锁和既有插件缓存。停用时代的记录与恢复条件见[保留清理跟进说明](docs/RETENTION_CLEANUP_FOLLOWUP.md)。
+0.17.0 恢复了清理命令，0.17.1 也可以用。在发行包解压目录运行 `python3 scripts/context_guard.py cleanup --data-dir "/path/to/plugin-data"` 只会预览。要实际处理会话，先开启保留策略，再明确执行清理。按默认设置，执行清理可以把结束满 30 天且符合条件的会话移到隔离区，隔离满 7 天后可以永久删除。希望隔离后仍可恢复，请在启用策略时加 `--no-purge`。定时维护要单独开启。结束任务时只保存状态，不做清扫。
 
-脱敏导出只在显式请求时创建，绝不覆盖既有文件，并省略原始提示、会话正文、凭据、认证头、URL 查询参数、URL userinfo 和插件私有路径；文档化脱敏域见[隐私说明](docs/PRIVACY.md)。未提供插件数据目录时，直接 CLI 回退状态存放在当前生效的 `CODEX_HOME` 之下。
+还在使用、尚未完成、可以续接或采用旧格式的会话会保留。清理工具也会保留无法确认身份的目录。[会话存储与清理](docs/SESSION_STORAGE.md)说明如何操作、怎么恢复，以及哪些情况下扫描会报告尚未完成。
 
 ## 更新与卸载
 
@@ -248,9 +185,7 @@ SessionEnd 保存当前状态，并在启用时保存恢复内容。0.17.0 中�
 完成依赖当前版本的任务后，再按该版本的升级说明操作。不要覆盖已消费缓存，
 也不要在安装本版本时刷新旧市场。
 
-移除插件会删除所选插件的缓存。活动任务仍可能依赖它时不要移除。
-这些任务结束后，下列命令仅指定稳定身份；真实 0.15.1 缓存对象是否
-保持不变仍未验证：
+移除插件会删除所选插件的缓存。先结束依赖它的任务，再用下面的命令移除稳定入口：
 
 ```shell
 codex plugin remove context-guard@codex-context-guard
@@ -260,33 +195,18 @@ codex plugin marketplace remove codex-context-guard
 0.16.x 留下的实验性 `codex-context-guard-v016` 条目有自己的缓存和卸载命令；
 在其任务或缓存仍被依赖时不要移除。
 
-私有运行数据单独保存，此流程不迁移或删除它。
+私有运行数据单独保存，卸载后，任务记录仍在原目录。
 
 ## 文档
 
-- [架构](docs/ARCHITECTURE.md)
-- [隐私](docs/PRIVACY.md)
-- [兼容性](docs/COMPATIBILITY.md)
-- [版本策略](docs/VERSIONING.md)
-- [本地验收](docs/LOCAL_ACCEPTANCE.md)
+- [升级到 0.17.1](docs/UPGRADE_0_17_1.zh-CN.md)
+- [会话存储与清理](docs/SESSION_STORAGE.md)
+- [文档索引](docs/README.md)
 - [更新日志](CHANGELOG.zh-CN.md)
 
 ## 验证
 
-```shell
-python3 scripts/validate_public_repo.py .
-python3 scripts/audit_public_tree.py .
-python3 scripts/run_current_behavior_suite.py
-python3 scripts/check_phase3_transition.py
-python3 scripts/context_guard.py self-test
-ruff check .
-python3 -m compileall -q scripts tests tools
-git diff --check
-```
-
-current-behavior runner 会发现除字节冻结的 0.11.x 观察基线外的全部当前 `test_*.py` 模块。transition 审计会单独运行该历史基线，并且只有 fixed/inverted 精确清单一致时才成功；若把冻结文件当成普通的“全部应通过”套件直接发现，它会按设计报告失败与 unexpected success。
-
-Hook 运行时只使用 Python 标准库。CI 覆盖 Ubuntu、macOS、Windows 和 Python 3.10–3.14；CI 不能替代原生 Hook 信任或已安装生命周期证据。
+开发检查命令见[贡献指南](CONTRIBUTING.md)，实际测过的平台和版本见[本地验收](docs/LOCAL_ACCEPTANCE.md)。CI 覆盖 Ubuntu、macOS、Windows 及 Python 3.10–3.14。安装后 Hook 的实际表现另有验收记录。
 
 ## 明确不做
 

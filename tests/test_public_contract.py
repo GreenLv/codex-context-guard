@@ -663,7 +663,10 @@ class PublicContractTests(unittest.TestCase):
         ]
         self.assertEqual(english_line_order, sorted(english_line_order))
         self.assertEqual(chinese_line_order, sorted(chinese_line_order))
-        version_heading = re.compile(r"^## (0\.\d+\.\d+)(?:\s+-|$)", re.MULTILINE)
+        version_heading = re.compile(
+            r"^## (0\.\d+\.\d+) [-—] (?:(\d{4}-\d{2}-\d{2})\b)?",
+            re.MULTILINE,
+        )
         self.assertEqual(
             version_heading.findall(changelog), version_heading.findall(changelog_zh)
         )

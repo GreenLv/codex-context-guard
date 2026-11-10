@@ -1,11 +1,17 @@
 # Compatibility and Verification Status
 
+The newest section describes the current release. Older version sections retain
+their original compatibility and acceptance boundaries; a pending item in a
+historical section describes that point in time.
+
 ## 0.17.1 — 2026-11-09
 
-Compatible with schema-13 states written by 0.14–0.17.0; no migration. Schema
-13, Stop protocol 5.0.0, all nine Hooks and the default business-tool path
-without execution approval are unchanged. The marketplace identity remains the
-stable `codex-context-guard`; no new versioned identity is introduced.
+0.17.1 reads schema 13 records written by 0.14–0.17.0 without converting
+them. If you switch plugin entries, each entry still has its own data root.
+Use the optional copy tool below if you want supported records in the new
+root. The release uses the stable `codex-context-guard` marketplace identity,
+Stop protocol 5.0.0 and all nine Hooks. Ordinary tools continue to use Codex's
+existing permissions.
 
 - Routes maintained for native verification include the public 0.16.1 identity
   (`codex-context-guard-v016`) and its local wrapper (`codex-context-guard-v0161`)
@@ -61,8 +67,8 @@ changes:
 
 ## 0.16.0 — 2026-11-01
 
-This document described version 0.16.0; the boundaries below remain current
-except where 0.16.1 or 0.17.0 changes them.
+This section records version 0.16.0. For current upgrade and state-copy
+boundaries, see the 0.17.1 section above.
 
 Compatible with schema-13 states written by 0.14–0.15.1; no migration. Schema
 13, Stop protocol 5.0.0, the nine Hooks, and the default business-tool path
@@ -285,7 +291,7 @@ for exact evidence; HOL scores and publication remain separate.
 Compatibility statements are evidence-bounded. Passing unit tests on one
 platform does not prove a fresh installed runtime on another platform.
 
-The 0.14.0 release-line source uses schema 13 and Stop 5.0.0. Its public availability remains subject to tag and Release readback. Commit `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed the source matrix, all 16 candidate CI jobs, HOL scanning and a five-gate macOS portable run. That result does not establish the six-gate native Host path, native Windows, fixed-model behavior, daily installation, tag or Release for this runtime. Source and runtime changes require their own exact-subject checks.
+At the recorded 0.14.0 release-line source boundary, public availability was still subject to tag and Release readback. Commit `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` uses schema 13 and Stop 5.0.0 and passed the source matrix, all 16 candidate CI jobs, HOL scanning and a five-gate macOS portable run. That result does not establish the six-gate native Host path, native Windows, fixed-model behavior, daily installation, tag or Release for this runtime. Source and runtime changes require their own exact-subject checks.
 
 Local
 synthetic Hook tests include lexical Windows drive-path binding and unsupported

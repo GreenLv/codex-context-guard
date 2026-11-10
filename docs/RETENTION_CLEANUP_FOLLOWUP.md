@@ -1,6 +1,6 @@
-# Session retention cleanup: disabled gap and restoration conditions
+# Session cleanup history
 
-Status: **opt-in restoration in 0.17.0**. Native, artifact and public-release
+Cleanup returned as opt-in maintenance in **0.17.0** and remains available in **0.17.1**. Native, artifact and public-release
 evidence is recorded separately in [local acceptance](LOCAL_ACCEPTANCE.md) and
 the release assets.
 
@@ -65,7 +65,7 @@ The following checklist motivated the 0.17.0 restoration. Its unconditional disc
 | Understandable bounds | The automatic and manual scopes, outputs, exit codes, any preview/retention period, and any restore path must be stated and implemented as promised |
 | Old caches and upgrades | Consumed caches are never modified; new tools must not delete data an older runtime still depends on; cross-version states have explicit compatibility and rejection paths |
 
-## Conditions for re-enabling cleanup in a future version
+## Acceptance criteria for the 0.17.0 restoration (historical)
 
 - A new versioned contract defines the deletion authority, object scope,
   retention and recovery policy; the old switch is not simply reopened.
@@ -73,7 +73,7 @@ The following checklist motivated the 0.17.0 restoration. Its unconditional disc
   on its original risk, and every one of the 30 retired nodes is individually
   accounted for as restored, replaced, or not applicable, with review.
 - Positive evidence shows complete multi-batch backlog processing; negative
-  evidence shows active, resumable, busy-locked, unprovened and out-of-scope
+  evidence shows active, resumable, busy-locked, unverified and out-of-scope
   objects are not deleted; adversarial cases cover identity replacement and
   concurrency.
 - Official readers re-open every should-keep fixture — with a controlled
@@ -95,7 +95,6 @@ The following checklist motivated the 0.17.0 restoration. Its unconditional disc
 
 - The 0.17.0 contract restores opt-in maintenance under explicit capacity and creation-identity boundaries.
 - Exact release and native results are tracked in local acceptance and the release acceptance assets.
-- This page is the discoverable public entry point for the gap. It is
-  linked from the session storage documentation, the documentation map and
-  both READMEs; changelog and release notes for each affected version
-  restate the user-visible bounds.
+- This page is the discoverable public entry point for the gap. The
+  [session storage guide](SESSION_STORAGE.md) has the current commands and
+  policy. The changelog and release notes describe what each version did.
