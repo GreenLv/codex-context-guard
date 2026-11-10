@@ -1,12 +1,40 @@
 # Session cleanup history
 
-Cleanup returned as opt-in maintenance in **0.17.0** and remains available in **0.17.1**. Native, artifact and public-release
+Cleanup returned as opt-in maintenance in **0.17.0**. Since **0.17.2** it is
+automatic by default: a root with no configured policy runs bounded
+maintenance after SessionEnd (30-day threshold, 7-day recoverable quarantine,
+then real purge on later passes), explicit choices (disabled policy, custom
+periods, purge-off, durable opt-out) still win, and a corrupted policy never
+authorizes deletion. Native, artifact and public-release
 evidence is recorded separately in [local acceptance](LOCAL_ACCEPTANCE.md) and
 the release assets.
 
 Version 0.17.0 implements preview by default, policy-gated apply, recoverable
 quarantine and bounded purge. The disabled-era record below is historical;
 current behavior and capacity limits are defined in [session storage](SESSION_STORAGE.md).
+
+## 0.17.2 default-automatic restoration
+
+The 0.17.2 restoration addresses the storage-growth gap without reviving the
+retired synchronous sweep:
+
+- The trigger is a decision plus one detached spawn inside the SessionEnd
+  hook budget, not a scan: the hook never lists the namespace, deletes
+  anything, or writes a policy object. The detached child runs the same
+  budgeted maintenance executor the manual command and the opt-in scheduler
+  use, under the same locks, transactions and creation-identity checks.
+- Absence of a policy object now means "never configured" and resolves to
+  the automatic default; every disable path writes a real policy object plus
+  the durable opt-out, so absence stays unambiguous and later upgrades never
+  re-enable on their own. Historical limitation, stated honestly: a 0.17.1
+  `--maintenance-disable` removed its scheduler entry and ownership record
+  without leaving any other durable marker, so that act alone cannot prove a
+  user chose to keep cleanup off forever; such roots upgrade to the automatic
+  default, and `--maintenance-disable` now writes the durable opt-out.
+- A corrupted, unreadable or boundary-failing policy still disables
+  everything with the failing fact named; it is never interpreted as consent.
+- The platform scheduler entry remains opt-in and is not auto-registered;
+  the background trigger is the single automatic path.
 
 ## 0.16.x disabled-era behavior and user impact (historical)
 
@@ -94,6 +122,7 @@ The following checklist motivated the 0.17.0 restoration. Its unconditional disc
 ## Tracking
 
 - The 0.17.0 contract restores opt-in maintenance under explicit capacity and creation-identity boundaries.
+- The 0.17.2 contract makes maintenance automatic by default with the durable opt-out; the trigger probe (`tools/validation/retention_trigger_probe.py`) is the per-platform no-model evidence source.
 - Exact release and native results are tracked in local acceptance and the release acceptance assets.
 - This page is the discoverable public entry point for the gap. The
   [session storage guide](SESSION_STORAGE.md) has the current commands and

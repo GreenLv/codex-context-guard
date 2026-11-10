@@ -1,6 +1,7 @@
 """Cheap fail-closed controls; no real trust, model, install, or network."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import importlib.util
@@ -2855,6 +2856,897 @@ class VersionTableContract(unittest.TestCase):
 
     def test_target_version_constant_is_a_pinned_release_shape(self):
         self.assertRegex(U.NEW_VERSION, r"[0-9]+\.[0-9]+\.[0-9]+")
+
+
+class _FakeTransitionClient:
+    """Journal-faithful fake app-server bound to one _TransitionHarness."""
+
+    harness = None
+
+    def __init__(self, cplan, outdir, sources=None, **kwargs):
+        h = self.harness
+        h.clients.append(self)
+        self.is_cold = len(h.clients) == 2
+        if self.is_cold and "live-closed" not in h.events:
+            raise RuntimeError("old owner still active")
+        h.events.append("cold-start" if self.is_cold else "live-start")
+        self.plan, self.rows, self.seq = cplan, [], 0
+        self.kwargs = kwargs
+        self.owned = mock.Mock()
+        self.owned.process.pid = 456 if self.is_cold else 123
+        self.owned.process.poll.return_value = None
+        self.log = (outdir / "rpc.jsonl").open("x", encoding="utf8")
+        self.guard_diagnostic = None
+        self.observation_inventory = self.observation_thread = None
+        source = h.new_source if self.is_cold else h.old_source
+        self.approved = U._inventory(inventory(source),
+                                     {source: U.NEW_VERSION if self.is_cold else h.old_version})
+        self.rpc("hooks/list", {"cwds": [str(h.workspace)]})
+
+    def emit(self, direction, message):
+        self.log.write(json.dumps({"direction": direction, "message": message}) + "\n")
+        self.log.flush()
+        if direction == "response":
+            self.rows.append(message)
+
+    def event(self, method, thread, turn, data):
+        params = {"threadId": thread, **({"turnId": turn} if turn else {}), **data}
+        self.emit("response", {"method": method, "params": params})
+
+    def hooks(self, thread, turn, event_name, source=None):
+        h = self.harness
+        source = source or (h.new_source if h.state["new_registered"] else h.old_source)
+        for status in ("started", "completed"):
+            run = (hook(event_name + thread, source, event_name, "completed", 1)
+                   if status == "completed" else hook(event_name + thread, source, event_name))
+            self.event("hook/" + status, thread, turn, {"run": run})
+
+    def rpc(self, method, params):
+        h = self.harness
+        self.seq += 1
+        self.emit("request", {"id": self.seq, "method": method, "params": params})
+        if method == "thread/archive":
+            self.hooks(params["threadId"], None, "sessionEnd")
+        if method == "config/batchWrite":
+            if not self.is_cold:
+                raise RuntimeError("write in wrong process")
+            h.events.append("cold-disable")
+            h.state["new_enabled"] = False
+            h.state["hooks_disabled"] = True
+        value = {"data": [{"hooks": h.hooks_payload()}]} if method == "hooks/list" else {}
+        self.emit("response", {"id": self.seq, "result": value})
+        if method == "thread/resume":
+            self.hooks(params["threadId"], None, "sessionStart")
+        return value
+
+    def start(self):
+        h = self.harness
+        thread = "F" if h.state["new_registered"] else ("A" if not hasattr(self, "started") else "B")
+        self.started = True
+        self.seq += 1
+        self.emit("request", {"id": self.seq, "method": "thread/start", "params": {}})
+        self.emit("response", {"id": self.seq, "result": {"thread": {"id": thread}}})
+        return thread
+
+    def observed_turn(self, thread, prompt):
+        h = self.harness
+        names = {"A": ["A1", "A2", "AC"], "B": ["B1", "BC"], "F": ["F1", "F2", "F3", "F4"]}
+        counters = h.state.setdefault("turncounts", {})
+        index = counters.get(thread, 0)
+        counters[thread] = index + 1
+        turn = names[thread][index]
+        self.seq += 1
+        self.emit("request", {"id": self.seq, "method": "turn/start",
+                              "params": {"threadId": thread,
+                                         "input": [{"type": "text", "text": prompt}]}})
+        self.emit("response", {"id": self.seq, "result": {"turn": {"id": turn}}})
+        begin = len(self.rows)
+        self.event("turn/started", thread, None, {"turn": {"id": turn}})
+        if turn in ("A1", "F1"):
+            self.hooks(thread, turn, "preToolUse")
+            item = {"id": "read", "type": "commandExecution",
+                    "command": ("Get-Content -LiteralPath native-read.txt"
+                                if U.platform.system() == "Windows" else "cat native-read.txt"),
+                    "cwd": str(h.workspace)}
+            self.event("item/started", thread, turn, {"item": item})
+            self.event("item/completed", thread, turn, {"item": {**item, "exitCode": 0}})
+            self.hooks(thread, turn, "postToolUse")
+        self.hooks(thread, turn, "stop")
+        self.event("turn/completed", thread, None, {"turn": {"id": turn, "status": "completed"}})
+        if prompt == "取消当前任务。":
+            h.state["cancelled"].add(thread)
+        return turn, [{"direction": "response", "message": x} for x in self.rows[begin:]]
+
+    def observed_compact(self, thread):
+        self.rpc("thread/compact/start", {"threadId": thread})
+        turn = "C" + thread
+        self.event("turn/started", thread, None, {"turn": {"id": turn}})
+        self.hooks(thread, turn, "preCompact")
+        for stage in ("started", "completed"):
+            self.event("item/" + stage, thread, turn,
+                       {"item": {"id": "compact-" + thread, "type": "contextCompaction"}})
+        self.event("thread/status/changed", thread, None, {"status": {"type": "idle"}})
+        self.harness.state["compacted"].add(thread)
+
+    def close(self):
+        h = self.harness
+        h.events.append("cold-closed" if self.is_cold else "live-closed")
+        self.log.close()
+        return {"owned_process_exited": True, "owned_tree_no_running_members": True,
+                "process_group_cleanup_error": None, "cleanup_complete": True,
+                "job_close_confirmed": True}
+
+
+class _TransitionHarness:
+    """Stateful fake host for one full finish-old transition.
+
+    Unlike the template-pop fakes above, official readbacks are answered from
+    modeled marketplace/plugin state, so wait loops can poll indefinitely and
+    knobs can inject an unreadable add summary, a missing stable install, a
+    late old-plugin disable, and a pending Hook review. One POSIX fake clock
+    drives every wait so tests stay instant and deterministic.
+    """
+
+    def __init__(self, base, old_version, *, review_timeout=4):
+        self.base = base
+        self.old_version = old_version
+        self.market = U.OLD_MARKETS[old_version]
+        self.old_id = "context-guard@" + self.market
+        self.stable_id = "context-guard@" + U.NEW_MARKET
+        self.sentinel_name = "cg-u01-sentinel-test"
+        home, old, new, workspace, product = (base / name for name in
+                                              ("home", "old", "new", "workspace", "product"))
+        for path in (home, old, new, workspace, product):
+            path.mkdir()
+        self.home, self.old, self.new, self.workspace = home, old, new, workspace
+        self.codex = base / "codex"
+        self.codex.write_text("synthetic-cli")
+        self.codex.chmod(0o700)
+        read = workspace / "native-read.txt"
+        read.write_text("synthetic read")
+        self.old_cache = home / "plugins/cache" / self.market / "context-guard" / old_version
+        self.old_cache.mkdir(parents=True)
+        self.new_cache = home / "plugins/cache" / U.NEW_MARKET / "context-guard" / U.NEW_VERSION
+        self.old_source = str(self.old_cache / "hooks/hooks.json")
+        self.new_source = str(self.new_cache / "hooks/hooks.json")
+        self.old_hooks = inventory(self.old_source)["data"][0]["hooks"]
+        self.new_hooks = inventory(self.new_source)["data"][0]["hooks"]
+        self.untrusted_new = [{**item, "enabled": False, "trustStatus": "untrusted"}
+                              for item in self.new_hooks]
+        sentinel_facts = {"marketplace": self.sentinel_name,
+                          "cache_marker": {"path": str(base / "safe/cache")},
+                          "data_marker": {"path": str(base / "safe/data")}}
+        self.subject = {"codex": str(self.codex), "old_version": old_version,
+                        "old_artifact": str(old), "new_artifact": str(new),
+                        "home": str(home), "workspace": str(workspace), "product_root": str(product),
+                        "sentinel": sentinel_facts, "old_data_root": str(home / "old-data"),
+                        "new_data_root": str(home / "new-data"), "transition_strategy": "finish-old",
+                        "platform": U.platform.system(), "read_file_sha256": U.sha(read),
+                        "codex_sha256": U.sha(self.codex), "product_commit": "a" * 40,
+                        "toolkit_commit": "b" * 40, "review_timeout_seconds": review_timeout}
+        self.plan = dict(self.subject)
+        self.state = {"new_registered": False, "old_registered": True, "old_enabled": True,
+                      "new_enabled": True, "new_installed": False, "hooks_disabled": False,
+                      "review_ready": True, "old_polls": 0, "disable_after_poll": None,
+                      "add_garbage": False, "new_list_empty_once": False,
+                      "cancelled": set(), "compacted": set(), "turncounts": {}}
+        self.events, self.clients = [], []
+        self.now = 1000.0
+        for root, threads in ((home / "old-data", ("A", "B")), (home / "new-data", ("F",))):
+            for name in threads:
+                path = root / "sessions" / name / "state.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}")
+        self.prepare_path = self._write_prepare(base)
+
+    def _write_prepare(self, base):
+        codex = self.subject["codex"]
+        old, sentinel = self.subject["old_artifact"], self.subject["sentinel"]
+        ml = [codex, "plugin", "marketplace", "list", "--json"]
+        old_pl = [codex, "plugin", "list", "--marketplace", self.market, "--json"]
+        markets_empty = {"marketplaces": [{"name": self.sentinel_name}]}
+        markets_old = {"marketplaces": [{"name": self.sentinel_name},
+            {"name": self.market, "root": old,
+             "marketplaceSource": {"sourceType": "local", "source": old}}]}
+        old_add = {"pluginId": self.old_id, "name": "context-guard", "marketplaceName": self.market,
+                   "version": self.old_version, "installedPath": str(self.old_cache)}
+        old_entry = {**old_add, "installed": True, "enabled": True,
+                     "source": {"source": "local", "path": old},
+                     "marketplaceSource": {"sourceType": "local", "source": old}}
+        commands = [command_fact([codex, "--version"], {"version": "codex-cli 0.165.0"}),
+                    command_fact(ml, markets_empty),
+                    command_fact([codex, "plugin", "list", "--marketplace", self.sentinel_name, "--json"],
+                                 {"installed": []}),
+                    command_fact([codex, "plugin", "marketplace", "add", old]),
+                    command_fact(ml, markets_old),
+                    command_fact([codex, "plugin", "add", self.old_id, "--json"], old_add),
+                    command_fact(ml, markets_old), command_fact(old_pl, {"installed": [old_entry]}),
+                    command_fact(ml, markets_old)]
+        prepared = {"schema": U.REPORT, "status": "pending", "stage": "prepare",
+                    "subject": self.subject, "commands": commands, "official_add": old_add,
+                    "sentinel_before": sentinel, "sentinel_after": sentinel,
+                    "installed": {"path": str(self.old_cache)},
+                    "before": {"sentinel_installed_count": 0, "target_marketplace_absent": True,
+                               "target_cache_absent": True,
+                               "target_cache_path": str(self.old_cache.parent)},
+                    "sentinel_phases": {name: sentinel for name in
+                                        ("after_marketplace_add", "after_plugin_add", "after_plugin_list")}}
+        path = base / "prepare.json"
+        path.write_text(json.dumps(prepared))
+        return path
+
+    def hooks_payload(self):
+        state = self.state
+        if state["hooks_disabled"]:
+            return []
+        if state["new_registered"] and state["review_ready"]:
+            return self.new_hooks
+        if state["new_registered"] and not state["old_enabled"]:
+            return self.untrusted_new
+        if state["new_registered"]:
+            return self.old_hooks + self.untrusted_new
+        return self.old_hooks
+
+    def command(self, _native, _root, argv, **_kwargs):
+        state = self.state
+        if argv[1:] == ["--version"]:
+            return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
+        if argv[2:5] == ["marketplace", "list", "--json"]:
+            rows = [{"name": self.sentinel_name}]
+            if state["old_registered"]:
+                rows.append({"name": self.market, "root": str(self.old),
+                             "marketplaceSource": {"sourceType": "local", "source": str(self.old)}})
+            if state["new_registered"]:
+                rows.append({"name": U.NEW_MARKET, "root": str(self.new),
+                             "marketplaceSource": {"sourceType": "local", "source": str(self.new)}})
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"marketplaces": rows}).encode(), b"")
+        if argv[2:4] == ["marketplace", "add"]:
+            if argv[4] == str(self.new):
+                state["new_registered"] = True
+            return subprocess.CompletedProcess(argv, 0, b"{}", b"")
+        if argv[2:4] == ["marketplace", "remove"]:
+            if state["new_registered"] and argv[4] == U.NEW_MARKET:
+                state["new_registered"] = False
+            else:
+                state["old_registered"] = False
+            return subprocess.CompletedProcess(argv, 0, b"{}", b"")
+        if argv[2:4] == ["list", "--marketplace"]:
+            market = argv[4]
+            if market == self.sentinel_name:
+                return subprocess.CompletedProcess(argv, 0, b'{"installed": []}', b"")
+            if market == U.NEW_MARKET and state["new_registered"]:
+                if state["new_list_empty_once"]:
+                    state["new_list_empty_once"] = False
+                    return subprocess.CompletedProcess(argv, 0, b'{"installed": []}', b"")
+                if state["new_installed"]:
+                    row = {"pluginId": self.stable_id, "name": "context-guard",
+                           "marketplaceName": U.NEW_MARKET, "version": U.NEW_VERSION,
+                           "installed": True, "enabled": state["new_enabled"],
+                           "source": {"source": "local", "path": str(self.new)},
+                           "marketplaceSource": {"sourceType": "local", "source": str(self.new)}}
+                    return subprocess.CompletedProcess(argv, 0, json.dumps({"installed": [row]}).encode(), b"")
+                return subprocess.CompletedProcess(argv, 0, b'{"installed": []}', b"")
+            if market == self.market and state["old_registered"]:
+                state["old_polls"] += 1
+                if state["disable_after_poll"] is not None and state["old_polls"] >= state["disable_after_poll"]:
+                    state["old_enabled"] = False
+                row = {"pluginId": self.old_id, "name": "context-guard", "marketplaceName": self.market,
+                       "version": self.old_version, "installed": True, "enabled": state["old_enabled"],
+                       "source": {"source": "local", "path": str(self.old)},
+                       "marketplaceSource": {"sourceType": "local", "source": str(self.old)}}
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"installed": [row]}).encode(), b"")
+            return subprocess.CompletedProcess(argv, 0, b'{"installed": []}', b"")
+        if argv[2] == "add":
+            state["new_installed"] = True
+            self.new_cache.mkdir(parents=True, exist_ok=True)
+            if state["add_garbage"] and argv[3] == self.stable_id:
+                return subprocess.CompletedProcess(argv, 0, b"\x00\xff-not-json-at-all", b"")
+            added = {"pluginId": argv[3], "name": "context-guard",
+                     "marketplaceName": U.NEW_MARKET, "version": U.NEW_VERSION,
+                     "installedPath": str(self.new_cache)}
+            return subprocess.CompletedProcess(argv, 0, json.dumps(added).encode(), b"")
+        if argv[2] == "remove":
+            state["new_installed"] = False
+            shutil.rmtree(self.new_cache, ignore_errors=True)
+            return subprocess.CompletedProcess(argv, 0, b"{}", b"")
+        raise AssertionError("unexpected official command " + repr(argv))
+
+    def state_at(self, _home, root, thread):
+        state = self.state
+        original = {"id": "R1", "sha256": "a" * 64, "work_unit_id": "WU1", "status": "pending"}
+        compact = thread in state["compacted"]
+        payload = {"session": {"id": thread}, "requirements": [original],
+                   "compactions": [{}] if compact else [],
+                   "pending": {"recovery": {"state": "consumed"}} if compact else {},
+                   "mode": {"active": True}}
+        if thread in state["cancelled"]:
+            cancel_sha = hashlib.sha256("取消当前任务。".encode()).hexdigest()
+            payload["requirements"].append({"id": "R2", "sha256": cancel_sha, "work_unit_id": "WU1",
+                                            "prompt_id": "P2", "status": "answered"})
+            payload["prompts"] = [{"id": "P2", "sha256": cancel_sha, "record_sha256": "f" * 64,
+                                   "core_event_seq": 4, "origin": "human"}]
+            payload["root_controls"] = [{"kind": "cancel", "source_prompt_id": "P2",
+                "scope_kind": "current_unit", "source_record_sha256": "f" * 64, "source_seq": 4,
+                "work_unit_id": "WU1", "catalog_sha256": "c" * 64,
+                "items": [{"id": "R1", "source_sha256": "a" * 64, "work_unit_id": "WU1"}]}]
+            payload["work_units"] = [{"id": "WU1", "status": "historical_unresolved"}]
+        return Path(root), payload
+
+    def clock_now(self):
+        return self.now
+
+    def clock_sleep(self, seconds):
+        self.now += max(float(seconds), 0.25)
+
+    def patches(self):
+        manager = mock.Mock()
+        manager.distribution_manifest.return_value = {"public": "b" * 64}
+        bound = type("BoundTransitionClient", (_FakeTransitionClient,), {"harness": self})
+        return (
+            mock.patch.object(U, "preflight", return_value=self.subject),
+            mock.patch.object(U, "_verify_replay_subject",
+                              side_effect=lambda plan, probe: (U.preflight(plan, probe), "c" * 40, "d" * 64)),
+            mock.patch.object(U, "UpgradeClient", bound),
+            mock.patch.object(U.scheduler, "_command", side_effect=self.command),
+            mock.patch.object(U, "_state_at", side_effect=self.state_at),
+            mock.patch.object(U, "_old_scope", return_value={"current": [], "ancestor": [], "waiting": 0}),
+            mock.patch.object(U, "source_files", return_value={"public": "b" * 64}),
+            mock.patch.object(U, "_cache_identity", return_value="c" * 64),
+            mock.patch.object(U, "_load_artifacts_no_pyc", return_value=manager),
+            mock.patch.object(U.native, "exact_artifact_parity"),
+            mock.patch.object(U.host, "verify_recovery"),
+            mock.patch.object(U, "_sentinel_files", return_value=self.subject["sentinel"]),
+            mock.patch.object(U, "_selected_states", return_value={"synthetic": "a" * 64}),
+            mock.patch.object(U.time, "monotonic", self.clock_now),
+            mock.patch.object(U.time, "sleep", self.clock_sleep),
+        )
+
+    @contextlib.contextmanager
+    def patched(self):
+        """Enter every fake seam; verify() must run inside, like the producer."""
+        with contextlib.ExitStack() as stack:
+            for patch in self.patches():
+                stack.enter_context(patch)
+            yield
+
+    def run_transition(self, name="out"):
+        """Drive the real finish-old producer; caller holds ``patched()``."""
+        out = self.base / name
+        return out, U.run_open_transition(self.plan, out, self.prepare_path)
+
+    def add_fact(self, result):
+        facts = [fact for fact in result["commands"] if fact.get("argv")[1:3] == ["plugin", "add"]
+                 and fact.get("argv")[3] == self.stable_id]
+        assert len(facts) == 1, facts
+        return facts[0]
+
+
+class SummaryParseControls(unittest.TestCase):
+    """Fix 1: an unreadable exit-0 add summary never fails the destructive add."""
+
+    def test_run_official_marks_add_summary_only_in_transition_stages(self):
+        argv = ["/safe/codex", "plugin", "add", "context-guard@codex-context-guard", "--json"]
+        garbage = b"\x00\xff-not-json-at-all"
+        for stage, expect_marker in (("open_transition", True), ("observe_open", True), ("prepare", False)):
+            result = {"commands": []}
+            with mock.patch.object(U.scheduler, "_command",
+                                   return_value=subprocess.CompletedProcess(argv, 0, garbage, b"")):
+                if expect_marker:
+                    run = U._run_official(result, argv, {}, {"codex-context-guard"}, stage)
+                    self.assertEqual(0, run.returncode)
+                    fact = result["commands"][0]
+                    self.assertEqual("completed", fact["status"], fact)
+                    self.assertIs(True, fact["summary_parse_failed"])
+                    self.assertEqual(hashlib.sha256(garbage).hexdigest(), fact["stdout_sha256"])
+                    self.assertEqual(len(garbage), fact["stdout_bytes"])
+                    self.assertNotIn("observation", fact)
+                else:
+                    with self.assertRaises(ValueError):
+                        U._run_official(result, argv, {}, {"codex-context-guard"}, stage)
+                    fact = result["commands"][0]
+                    self.assertEqual("failed", fact["status"])
+                    self.assertNotIn("summary_parse_failed", fact)
+        list_argv = ["/safe/codex", "plugin", "marketplace", "list", "--json"]
+        result = {"commands": []}
+        with mock.patch.object(U.scheduler, "_command",
+                               return_value=subprocess.CompletedProcess(list_argv, 0, garbage, b"")):
+            with self.assertRaises(ValueError):
+                U._run_official(result, list_argv, {}, {"codex-context-guard"}, "open_transition")
+        self.assertEqual("failed", result["commands"][0]["status"])
+        self.assertNotIn("summary_parse_failed", result["commands"][0])
+
+    def test_installed_identity_uses_readback_row_and_single_cache_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home, new = root / "home", root / "new"
+            new.mkdir()
+            cache = home / "plugins/cache" / U.NEW_MARKET / "context-guard"
+            installed = cache / U.NEW_VERSION
+            installed.mkdir(parents=True)
+            stable_id = "context-guard@" + U.NEW_MARKET
+            row = {"pluginId": stable_id, "name": "context-guard", "marketplaceName": U.NEW_MARKET,
+                   "version": U.NEW_VERSION, "installed": True, "enabled": True,
+                   "source": {"source": "local", "path": str(new)},
+                   "marketplaceSource": {"sourceType": "local", "source": str(new)}}
+            added = {"pluginId": stable_id, "name": "context-guard", "marketplaceName": U.NEW_MARKET,
+                     "version": U.NEW_VERSION, "installedPath": str(installed)}
+            self.assertEqual(installed, U._installed_identity({"installed": [row]}, None, new, home))
+            self.assertEqual(installed, U._installed_identity({"installed": [row]}, added, new, home))
+            for label, bad in (("missing_row", {"installed": []}),
+                               ("disabled", {"installed": [{**row, "enabled": False}]}),
+                               ("wrong_version", {"installed": [{**row, "version": "0.0.1"}]}),
+                               ("foreign_source", {"installed": [{**row, "source": {"source": "local",
+                                                                                  "path": str(root)}}]}),
+                               ("ambiguous_cache", None)):
+                with self.subTest(case=label), self.assertRaises(U.UpgradeError):
+                    subject = bad if bad is not None else {"installed": [row]}
+                    if bad is None:
+                        (cache / "local").mkdir()
+                    U._installed_identity(subject, None, new, home)
+
+    def test_unreadable_add_summary_lets_transition_complete_and_verify_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.15.1")
+            harness.state["add_garbage"] = True
+            with harness.patched():
+                out, result = harness.run_transition()
+                self.assertEqual("pending", result["status"], result)
+                fact = harness.add_fact(result)
+                self.assertIs(True, fact.get("summary_parse_failed"))
+                self.assertEqual(hashlib.sha256(b"\x00\xff-not-json-at-all").hexdigest(),
+                                 fact.get("stdout_sha256"))
+                self.assertEqual(len(b"\x00\xff-not-json-at-all"), fact.get("stdout_bytes"))
+                self.assertNotIn("observation", fact)
+                verified = U.verify(harness.plan, out, harness.prepare_path)
+            self.assertEqual("passed", verified["status"])
+            self.assertEqual("cancelled_old_before_transition", verified["observed_boundary"])
+
+    def test_readable_add_summary_keeps_the_strict_verified_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.15.1")
+            with harness.patched():
+                out, result = harness.run_transition()
+                self.assertEqual("pending", result["status"], result)
+                fact = harness.add_fact(result)
+                self.assertNotIn("summary_parse_failed", fact)
+                self.assertEqual(str(harness.new_cache), fact["observation"]["installedPath"])
+                self.assertEqual("passed", U.verify(harness.plan, out, harness.prepare_path)["status"])
+                # A forged marker beside a real summary is refused by the consumer.
+                forged = json.loads((out / "result.json").read_text())
+                for row in forged["commands"]:
+                    if row["argv"][1:3] == ["plugin", "add"]:
+                        row.update(summary_parse_failed=True, stdout_sha256="e" * 64, stdout_bytes=3)
+                forged_out = root / "forged"
+                shutil.copytree(out, forged_out)
+                (forged_out / "result.json").write_text(json.dumps(forged))
+                with self.assertRaisesRegex(U.UpgradeError, "summary or marker differs"):
+                    U.verify(harness.plan, forged_out, harness.prepare_path)
+
+    def test_unreadable_add_summary_with_missing_install_still_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.15.1")
+            harness.state["add_garbage"] = True
+            harness.state["new_list_empty_once"] = True
+            with harness.patched():
+                out, result = harness.run_transition()
+                self.assertEqual("failed", result["status"], result)
+                self.assertEqual("UpgradeError", result["failure"])
+                fact = harness.add_fact(result)
+                self.assertIs(True, fact.get("summary_parse_failed"))
+                self.assertEqual("completed", fact["status"])
+                with self.assertRaises(U.UpgradeError):
+                    U.verify(harness.plan, out, harness.prepare_path)
+
+
+class WaitResumeControls(unittest.TestCase):
+    """Fix 2: bounded waits record wait_pending plus a resumable receipt."""
+
+    def _pending(self, root, *, disable_after_poll=None):
+        """Run the 0.16.1 finish-old producer into a timed-out official wait."""
+        harness = _TransitionHarness(root, "0.16.1", review_timeout=4)
+        harness.state["review_ready"] = False
+        harness.state["disable_after_poll"] = disable_after_poll
+        with harness.patched():
+            out, result = harness.run_transition()
+        return harness, out, result
+
+    @contextlib.contextmanager
+    def _resume_seams(self, harness, client=None):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(U.scheduler, "_command", side_effect=harness.command))
+            stack.enter_context(mock.patch.object(U.time, "monotonic", harness.clock_now))
+            stack.enter_context(mock.patch.object(U.time, "sleep", harness.clock_sleep))
+            if client is not None:
+                stack.enter_context(mock.patch.object(U, "UpgradeClient", client))
+            yield
+
+    def test_disable_wait_timeout_records_wait_pending_and_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            harness, out, result = self._pending(Path(directory).resolve())
+            self.assertEqual("wait_pending", result["status"], result)
+            self.assertNotIn("failure", result)
+            self.assertEqual("old_plugin_disable", result["wait"]["wait"])
+            self.assertEqual(U.WAIT_RECEIPT_NAME, result["wait"]["receipt"])
+            self.assertEqual(["old_plugin_disable"], result["pending"])
+            receipt = json.loads((out / U.WAIT_RECEIPT_NAME).read_text())
+            self.assertEqual(U.WAIT_RECEIPT, receipt["schema"])
+            self.assertEqual("wait_pending", receipt["status"])
+            self.assertEqual("open_transition", receipt["phase"])
+            self.assertEqual("old_plugin_disable", receipt["wait"])
+            self.assertEqual("finish-old", receipt["strategy"])
+            self.assertEqual(U.digest(harness.plan), receipt["plan_sha256"])
+            self.assertEqual(U.digest(harness.subject), receipt["subject_sha256"])
+            self.assertEqual(U.sha(harness.prepare_path), receipt["prepare_sha256"])
+            self.assertEqual(4, receipt["wait_budget_seconds"])
+            self.assertIsInstance(receipt["started_at"], float)
+            observed = receipt["observed"]
+            # The transition already landed; only the operator step is pending.
+            self.assertEqual({harness.sentinel_name, harness.market, U.NEW_MARKET},
+                             {row["name"] for row in observed["marketplaces"]})
+            old_rows = observed["plugins"][harness.market]
+            self.assertEqual(1, len(old_rows))
+            self.assertIs(True, old_rows[0]["enabled"])
+            self.assertIs(True, observed["plugins"][U.NEW_MARKET][0]["enabled"])
+            self.assertNotIn("enabled", receipt["stable_identity"]["plugins"][harness.market][0])
+            self.assertEqual(harness.old_source, receipt["reviewed"]["old_source"])
+            self.assertEqual("wait_pending", json.loads((out / "result.json").read_text())["status"])
+            # A wait_pending run is never accepted by the independent consumer.
+            with harness.patched(), self.assertRaises(U.UpgradeError):
+                U.verify(harness.plan, out, harness.prepare_path)
+
+    def test_review_wait_timeout_records_new_hook_review_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            harness, out, result = self._pending(Path(directory).resolve(), disable_after_poll=2)
+            self.assertEqual("wait_pending", result["status"], result)
+            self.assertEqual("new_hook_review", result["wait"]["wait"])
+            receipt = json.loads((out / U.WAIT_RECEIPT_NAME).read_text())
+            self.assertEqual("new_hook_review", receipt["wait"])
+            self.assertEqual(harness.new_source, receipt["reviewed"]["new_source"])
+            self.assertIsNone(receipt["reviewed"]["old_source"])
+            self.assertIs(False, receipt["observed"]["plugins"][harness.market][0]["enabled"])
+            self.assertFalse(harness.state["old_enabled"])
+
+    def test_resume_wait_resolves_disable_and_matches_uninterrupted_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness, out, pending = self._pending(root)
+            self.assertEqual("wait_pending", pending["status"])
+            resume_out = root / "resume-out"
+            harness.state["old_enabled"] = False
+            with self._resume_seams(harness):
+                resumed = U.resume_wait(harness.plan, resume_out, harness.prepare_path,
+                                        out / U.WAIT_RECEIPT_NAME)
+            self.assertEqual("wait_resolved", resumed["status"], resumed)
+            self.assertEqual("resume_wait", resumed["stage"])
+            self.assertEqual(["independent_consumer"], resumed["pending"])
+            self.assertEqual(U.sha(out / U.WAIT_RECEIPT_NAME), resumed["wait"]["receipt_sha256"])
+            # Only read-only official inventory ran: nothing was re-registered,
+            # re-added, removed or re-prepared.
+            self.assertEqual({("marketplace", "list"), ("list", "--marketplace")},
+                             {tuple(fact["argv"][2:4]) for fact in resumed["commands"]})
+            self.assertEqual([], harness.clients[2:])
+            self.assertFalse((resume_out / U.WAIT_RECEIPT_NAME).exists())
+            self.assertEqual("wait_resolved", json.loads((resume_out / "result.json").read_text())["status"])
+            # Same terminal identity as a wait that was never interrupted.
+            direct_root = root / "direct"
+            direct_root.mkdir(mode=0o700)
+            direct, direct_out, _ = self._pending(direct_root, disable_after_poll=2)
+            uninterrupted = json.loads((direct_out / U.WAIT_RECEIPT_NAME).read_text())["observed"]
+
+            def identity(rows):
+                return [{key: row[key] for key in ("name", "marketplaceName", "version", "installed", "enabled")}
+                        for row in rows]
+
+            self.assertEqual(identity(uninterrupted["plugins"][direct.market]),
+                             identity(resumed["resolved"]["plugins"][harness.market]))
+            self.assertEqual(identity(uninterrupted["plugins"][U.NEW_MARKET]),
+                             identity(resumed["resolved"]["plugins"][U.NEW_MARKET]))
+            self.assertEqual([row["name"] for row in uninterrupted["marketplaces"]],
+                             [row["name"] for row in resumed["resolved"]["marketplaces"]])
+
+    def test_resume_wait_refuses_changed_plan_identity_or_receipts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness, out, _pending = self._pending(root)
+            receipt_path = out / U.WAIT_RECEIPT_NAME
+            with self._resume_seams(harness):
+                with self.assertRaisesRegex(U.UpgradeError, "plan differs"):
+                    U.resume_wait({**harness.plan, "review_timeout_seconds": 5}, root / "r1",
+                                  harness.prepare_path, receipt_path)
+                for label, knob in (("unregistered", "old_registered"), ("uninstalled", "new_installed")):
+                    previous = harness.state[knob]
+                    harness.state[knob] = False
+                    with self.subTest(identity=label), self.assertRaisesRegex(U.UpgradeError, "identity changed"):
+                        U.resume_wait(harness.plan, root / "r2", harness.prepare_path, receipt_path)
+                    harness.state[knob] = previous
+                tampered = root / "prepare-tampered.json"
+                tampered.write_text(harness.prepare_path.read_text() + "\n")
+                with self.assertRaisesRegex(U.UpgradeError, "prepare receipt differs"):
+                    U.resume_wait(harness.plan, root / "r3", tampered, receipt_path)
+                with self.assertRaisesRegex(U.UpgradeError, "receipt path invalid"):
+                    U.resume_wait(harness.plan, root / "r4", harness.prepare_path, out / "result.json")
+            # A refused resume creates nothing and issues no mutation.
+            self.assertEqual([], [name for name in ("r1", "r2", "r3", "r4") if (root / name).exists()])
+            self.assertTrue(harness.state["old_enabled"])
+
+    def test_resume_wait_still_pending_writes_refreshed_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness, out, _pending = self._pending(root)
+            resume_out = root / "resume-out"
+            before = harness.now
+            with self._resume_seams(harness):
+                resumed = U.resume_wait(harness.plan, resume_out, harness.prepare_path,
+                                        out / U.WAIT_RECEIPT_NAME)
+            self.assertEqual("wait_pending", resumed["status"], resumed)
+            self.assertEqual(["old_plugin_disable"], resumed["pending"])
+            # The resumed wait stays bounded by the recorded budget.
+            self.assertLessEqual(harness.now - before, 4 + 2)
+            refreshed = json.loads((resume_out / U.WAIT_RECEIPT_NAME).read_text())
+            self.assertEqual(U.WAIT_RECEIPT, refreshed["schema"])
+            self.assertEqual(U.digest(harness.plan), refreshed["plan_sha256"])
+            self.assertIsInstance(refreshed["started_at"], float)
+            self.assertEqual("wait_pending", json.loads((resume_out / "result.json").read_text())["status"])
+
+    def test_resume_wait_new_hook_review_uses_observing_client(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness, out, pending = self._pending(root, disable_after_poll=2)
+            self.assertEqual("new_hook_review", pending["wait"]["wait"])
+            resume_out = root / "resume-out"
+            seen = {}
+
+            class ResumeClient:
+                def __init__(self, cplan, outdir, sources=None, **kwargs):
+                    seen["kwargs"], seen["sources"] = kwargs, sources
+                    if kwargs.get("require_trusted") is not False:
+                        raise AssertionError("resume client must observe pending trust, not require it")
+                    self.plan, self.seq, self.approved = cplan, 0, {}
+                    self.owned = mock.Mock()
+                    self.owned.process.pid = 789
+                    self.log = (outdir / "rpc.jsonl").open("x", encoding="utf8")
+
+                def rpc(self, method, params):
+                    self.seq += 1
+                    self.log.write(json.dumps({"direction": "request", "message":
+                                               {"id": self.seq, "method": method, "params": params}}) + "\n")
+                    if self.seq >= 2:
+                        harness.state["review_ready"] = True
+                    return {"data": [{"hooks": harness.hooks_payload()}]}
+
+                def close(self):
+                    self.log.close()
+                    return {"owned_process_exited": True, "owned_tree_no_running_members": True,
+                            "process_group_cleanup_error": None, "cleanup_complete": True,
+                            "job_close_confirmed": True}
+
+            with self._resume_seams(harness, ResumeClient):
+                resumed = U.resume_wait(harness.plan, resume_out, harness.prepare_path,
+                                        out / U.WAIT_RECEIPT_NAME)
+            self.assertEqual("wait_resolved", resumed["status"], resumed)
+            self.assertIs(False, seen["kwargs"]["require_trusted"])
+            self.assertEqual({harness.new_source: U.NEW_VERSION}, seen["sources"])
+            journal = (resume_out / "resume" / "rpc.jsonl").read_text()
+            self.assertEqual({"hooks/list"}, {json.loads(line)["message"]["method"]
+                                              for line in journal.splitlines()})
+            self.assertEqual([{"role": "resume_wait", "pid": 789}],
+                             [{key: row[key] for key in ("role", "pid")} for row in resumed["cleanup"]])
+
+
+class CommandPreflightControls(unittest.TestCase):
+    """Fix 3: --preflight-commands probes the exact commands, never a real CLI."""
+
+    def _subject(self, root, *, old_version="0.15.1", strategy="finish-old", wrapper=False):
+        codex = root / "codex"
+        codex.write_text("synthetic")
+        sentinel = {"marketplace": "cg-u01-sentinel-test"}
+        subject = {"codex": str(codex), "old_version": old_version,
+                   "old_artifact": str(root / "old"), "new_artifact": str(root / "new"),
+                   "home": str(root / "home"), "workspace": str(root / "workspace"),
+                   "sentinel": sentinel, "transition_strategy": strategy,
+                   "codex_hardlink_count": 1}
+        if wrapper:
+            subject["old_marketplace_root"] = str(root / "wrapper")
+        return subject
+
+    def test_planned_commands_bind_prepare_transition_and_strategy_families(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            distinct = self._subject(root, old_version="0.16.1")
+            codex, sentinel = distinct["codex"], "cg-u01-sentinel-test"
+            self.assertEqual([
+                [codex, "--version"],
+                [codex, "plugin", "marketplace", "list", "--json"],
+                [codex, "plugin", "list", "--marketplace", sentinel, "--json"],
+                [codex, "plugin", "marketplace", "add", distinct["old_artifact"]],
+                [codex, "plugin", "add", "context-guard@codex-context-guard-v016", "--json"],
+                [codex, "plugin", "list", "--marketplace", "codex-context-guard-v016", "--json"],
+                [codex, "plugin", "marketplace", "add", distinct["new_artifact"]],
+                [codex, "plugin", "add", "context-guard@codex-context-guard", "--json"],
+                [codex, "plugin", "list", "--marketplace", "codex-context-guard", "--json"],
+                [codex, "plugin", "remove", "context-guard@codex-context-guard"],
+                [codex, "plugin", "marketplace", "remove", "codex-context-guard"],
+            ], U._planned_official_commands(distinct))
+            # The stable-identity route removes the old marketplace first and
+            # shares its add/list argv with the new one, so each is listed once.
+            same_name = self._subject(root)
+            self.assertEqual([
+                [codex, "--version"],
+                [codex, "plugin", "marketplace", "list", "--json"],
+                [codex, "plugin", "list", "--marketplace", sentinel, "--json"],
+                [codex, "plugin", "marketplace", "add", same_name["old_artifact"]],
+                [codex, "plugin", "add", "context-guard@codex-context-guard", "--json"],
+                [codex, "plugin", "list", "--marketplace", "codex-context-guard", "--json"],
+                [codex, "plugin", "marketplace", "remove", "codex-context-guard"],
+                [codex, "plugin", "marketplace", "add", same_name["new_artifact"]],
+                [codex, "plugin", "remove", "context-guard@codex-context-guard"],
+            ], U._planned_official_commands(same_name))
+            wrapper = self._subject(root, old_version="0.16.1", wrapper=True)
+            wrapper_commands = U._planned_official_commands(wrapper)
+            self.assertIn([wrapper["codex"], "plugin", "marketplace", "add", wrapper["old_marketplace_root"]],
+                          wrapper_commands)
+            self.assertIn([wrapper["codex"], "plugin", "add", "context-guard@codex-context-guard-v0161", "--json"],
+                          wrapper_commands)
+            observe = self._subject(root, old_version="0.16.1", strategy="observe-open")
+            observe_commands = U._planned_official_commands(observe)
+            self.assertNotIn([observe["codex"], "plugin", "remove", "context-guard@codex-context-guard"],
+                             observe_commands)
+            self.assertNotIn([observe["codex"], "plugin", "marketplace", "remove", "codex-context-guard"],
+                             observe_commands)
+            self.assertNotIn([observe["codex"], "plugin", "marketplace",
+                              "remove", "codex-context-guard-v016"], observe_commands)
+            # The same-name route removes the old marketplace mid-transition in
+            # every strategy; only the finish-old cleanup stays strategy-bound.
+            same_name_observe = self._subject(root, strategy="observe-open")
+            self.assertIn([same_name_observe["codex"], "plugin", "marketplace",
+                           "remove", "codex-context-guard"], U._planned_official_commands(same_name_observe))
+            self.assertNotIn([same_name_observe["codex"], "plugin", "remove",
+                              "context-guard@codex-context-guard"],
+                             U._planned_official_commands(same_name_observe))
+
+    def _patched_preflight(self, stack, harness_subject, probe):
+        stack.enter_context(mock.patch.object(U, "preflight", return_value=harness_subject))
+        stack.enter_context(mock.patch.object(U, "_resolve_executable", side_effect=lambda path, env: str(path)))
+        stack.enter_context(mock.patch.object(U, "_probe_run", side_effect=probe))
+        stack.enter_context(mock.patch.object(U.platform, "system", return_value="Darwin"))
+
+    def test_preflight_commands_passes_with_fake_probes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            subject = self._subject(root)
+            plan_path = root / "plan.json"
+            plan_path.write_text("{}")
+            out = root / "out"
+
+            def probe(argv, env=None, timeout=30.0):
+                if argv[1:] == ["--version"]:
+                    return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
+                if argv[0] == "sh" and "-n" in argv:
+                    return subprocess.CompletedProcess(argv, 0, b"", b"")
+                if argv[0] == "sh":
+                    lines = ["upgrade"] + argv[5:]
+                    return subprocess.CompletedProcess(argv, 0, "".join(line + "\n" for line in lines).encode(), b"")
+                if argv[1:3] == ["-I", "-B"]:
+                    return subprocess.CompletedProcess(argv, 0, b"1\n", b"")
+                raise AssertionError("unexpected probe " + repr(argv))
+
+            with contextlib.ExitStack() as stack:
+                self._patched_preflight(stack, subject, probe)
+                summary = U.preflight_commands({"cli_version": "codex-cli 0.165.0"}, out, plan_path)
+            self.assertEqual(U._planned_official_commands(subject), summary["planned_commands"])
+            self.assertEqual("sh", summary["launcher"]["probed"])
+            self.assertEqual(subject["codex"], summary["executable"])
+            self.assertEqual("codex-cli 0.165.0", summary["entry_probe"]["version"])
+            self.assertIsNone(summary["entry_flags"])
+            self.assertEqual(str(out.parent), summary["writable_parent"])
+            self.assertEqual("skip_off_platform", summary["launcher"]["off_platform"]["recorded"])
+            self.assertFalse(out.exists())
+
+    def test_preflight_commands_refuses_with_concrete_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            subject = self._subject(root)
+            plan_path = root / "plan.json"
+            plan_path.write_text("{}")
+            out = root / "out"
+
+            def refused_version(argv, env=None, timeout=30.0):
+                if argv[1:] == ["--version"]:
+                    return subprocess.CompletedProcess(argv, 7, b"", b"boom")
+                raise AssertionError("unexpected probe " + repr(argv))
+
+            with contextlib.ExitStack() as stack:
+                self._patched_preflight(stack, subject, refused_version)
+                with self.assertRaisesRegex(U.UpgradeError, r"entry probe failed: \[.*codex, --version\] exit 7"):
+                    U.preflight_commands({"cli_version": "codex-cli 0.165.0"}, out, plan_path)
+
+            def refused_parse(argv, env=None, timeout=30.0):
+                if argv[1:] == ["--version"]:
+                    return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
+                if argv[0] == "sh" and "-n" in argv:
+                    return subprocess.CompletedProcess(argv, 2, b"", b"syntax error near unexpected token")
+                raise AssertionError("unexpected probe " + repr(argv))
+
+            with contextlib.ExitStack() as stack:
+                self._patched_preflight(stack, subject, refused_parse)
+                with self.assertRaisesRegex(U.UpgradeError, "sh launcher parse probe failed: sh -n "):
+                    U.preflight_commands({"cli_version": "codex-cli 0.165.0"}, out, plan_path)
+
+            def refused_utf8(argv, env=None, timeout=30.0):
+                if argv[1:] == ["--version"]:
+                    return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
+                if argv[0] == "sh" and "-n" in argv:
+                    return subprocess.CompletedProcess(argv, 0, b"", b"")
+                if argv[0] == "sh":
+                    lines = ["upgrade"] + argv[5:]
+                    return subprocess.CompletedProcess(argv, 0, "".join(line + "\n" for line in lines).encode(), b"")
+                if argv[1:3] == ["-I", "-B"]:
+                    return subprocess.CompletedProcess(argv, 0, b"0\n", b"")
+                raise AssertionError("unexpected probe " + repr(argv))
+
+            with contextlib.ExitStack() as stack:
+                self._patched_preflight(stack, subject, refused_utf8)
+                with self.assertRaisesRegex(U.UpgradeError, "UTF-8 child environment probe failed"):
+                    U.preflight_commands({"cli_version": "codex-cli 0.165.0"}, out, plan_path)
+            self.assertFalse(out.exists())
+
+    def test_preflight_commands_probes_windows_entry_flags_and_ps1_launcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            subject = self._subject(root)
+            plan_path = root / "plan.json"
+            plan_path.write_text("{}")
+            out = root / "out"
+            passthrough = ["--preflight", "--plan", str(plan_path), "--output", str(out)]
+            expected_lines = "".join(line + "\n" for line in ["upgrade"] + passthrough).encode()
+
+            def probe(argv, env=None, timeout=30.0):
+                if argv[1:] == ["--version"]:
+                    return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
+                if argv[0] == "powershell" and "-EncodedCommand" in argv:
+                    seen_env.update(env or {})
+                    return subprocess.CompletedProcess(argv, 0, expected_lines, b"")
+                if argv[1:2] == ["-c"] and argv[-1:] == ["--version"]:
+                    return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
+                if argv[1:3] == ["-I", "-B"]:
+                    return subprocess.CompletedProcess(argv, 0, b"1\n", b"")
+                raise AssertionError("unexpected probe " + repr(argv[:2]))
+
+            seen_env = {}
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(U, "preflight", return_value=subject))
+                stack.enter_context(mock.patch.object(U, "_resolve_executable",
+                                                      side_effect=lambda path, env: str(path)))
+                stack.enter_context(mock.patch.object(U, "_probe_run", side_effect=probe))
+                stack.enter_context(mock.patch.object(U.platform, "system", return_value="Windows"))
+                summary = U.preflight_commands({"cli_version": "codex-cli 0.165.0"}, out, plan_path)
+            self.assertEqual("powershell", summary["launcher"]["probed"])
+            self.assertEqual(["upgrade"] + passthrough, summary["launcher"]["argv_echo"])
+            self.assertNotIn("off_platform", summary["launcher"])
+            # The real launcher is parsed, never run: only its path is handed over.
+            self.assertEqual(str(U.PS1_LAUNCHER), seen_env["CG_LAUNCHER_PROBE"])
+            self.assertEqual("\n".join(passthrough), seen_env["CG_PASSTHROUGH_PROBE"])
+            self.assertEqual([subject["codex"], "-c"], summary["entry_flags"]["argv"][:2])
+            self.assertEqual('windows.sandbox="mxc"', summary["entry_flags"]["argv"][2])
+
+            def refused_flags(argv, env=None, timeout=30.0):
+                if argv[1:] == ["--version"]:
+                    return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
+                if argv[1:2] == ["-c"] and argv[-1:] == ["--version"]:
+                    return subprocess.CompletedProcess(argv, 2, b"", b"unknown configuration key")
+                raise AssertionError("unexpected probe " + repr(argv[:2]))
+
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(U, "preflight", return_value=subject))
+                stack.enter_context(mock.patch.object(U, "_resolve_executable",
+                                                      side_effect=lambda path, env: str(path)))
+                stack.enter_context(mock.patch.object(U, "_probe_run", side_effect=refused_flags))
+                stack.enter_context(mock.patch.object(U.platform, "system", return_value="Windows"))
+                with self.assertRaisesRegex(U.UpgradeError, "entry-parameter probe failed"):
+                    U.preflight_commands({"cli_version": "codex-cli 0.165.0"}, out, plan_path)
 
 
 if __name__ == "__main__":

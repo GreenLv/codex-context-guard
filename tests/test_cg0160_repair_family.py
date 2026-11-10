@@ -96,6 +96,9 @@ class IsolatedEnvironment(unittest.TestCase):
         self.os_home = self.root / "os-home"
         self._env = dict(os.environ)
         os.environ["CONTEXT_GUARD_DATA_DIR"] = str(self.data_dir)
+        # Fixture runs never dispatch real detached maintenance children;
+        # trigger behavior has dedicated tests that patch the spawn seam.
+        os.environ["CONTEXT_GUARD_DISABLE_RETENTION_TRIGGER"] = "1"
         os.environ["CODEX_HOME"] = str(self.codex_home)
         os.environ["HOME"] = str(self.os_home)
         os.environ["USERPROFILE"] = str(self.os_home)

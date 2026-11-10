@@ -231,9 +231,13 @@ prompt as an unverified obligation; it does not infer a missing unit binding.
   requirement, acceptance, or evidence IDs, which stay in `diagnose` and
   explicit audit views.
 - Version 0.17.0 restores opt-in retention maintenance. Installation
-  and upgrades leave the policy disabled; `cleanup` previews by default.
-  Explicitly authorized maintenance can quarantine eligible v2 sessions and
-  later permanently purge them. SessionEnd performs no sweep. Legacy sessions,
+  and upgrades leave the policy disabled; 0.17.2 makes maintenance
+  automatic by default. `cleanup` previews by default. The automatic path
+  can quarantine eligible v2 sessions and later permanently purge them.
+  SessionEnd performs no sweep and writes no session content; its trigger
+  bookkeeping (below) stays under the private data root. A durable opt-out
+  (`cleanup --maintenance-disable`) stops the automatic path, and a
+  corrupted policy never authorizes deletion. Legacy sessions,
   unfinished work and unverifiable objects remain protected, and no session or
   consumed-cache migration is introduced. See [session storage](SESSION_STORAGE.md).
 - Retention policy, selection manifests, quarantine transaction records,
@@ -241,7 +245,14 @@ prompt as an unverified obligation; it does not infer a missing unit binding.
   root. Discovery journals and snapshots contain encoded object names,
   checksums and progress metadata, without copying prompt or tool content.
   Transaction records retain object identities, state/tree hashes, timestamps
-  and policy bindings needed for recovery. Opt-in scheduler ownership records
+  and policy bindings needed for recovery. Since 0.17.2 the automatic path
+  adds three bounded maintenance bookkeeping objects under the same private
+  `.locks` area: the trigger state record (`cg-retention-trigger/v1`,
+  wall-clock timestamps and a bounded outcome summary), the dispatch claim
+  (token, process id and timestamps), and the durable opt-out record
+  (`disabled_at` plus a short reason). None of them copies prompt or tool
+  content. Skip details persist failure class names only, never raw
+  exception text or paths. Opt-in scheduler ownership records
   additionally retain local interpreter and script paths. Explicit maintenance
   JSON/status output can include object names or local scheduler paths; it is
   operator evidence, not a public export. Default redacted diagnostics do not

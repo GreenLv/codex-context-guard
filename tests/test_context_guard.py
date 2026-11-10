@@ -45,7 +45,8 @@ class ContextGuardTests(unittest.TestCase):
         self.turn_index = 0
         self.current_turn = "turn-0"
         self.environment = mock.patch.dict(
-            os.environ, {"CONTEXT_GUARD_DATA_DIR": str(self.root / "private")}
+            os.environ, {"CONTEXT_GUARD_DATA_DIR": str(self.root / "private"),
+                         "CONTEXT_GUARD_DISABLE_RETENTION_TRIGGER": "1"}
         )
         self.environment.start()
 

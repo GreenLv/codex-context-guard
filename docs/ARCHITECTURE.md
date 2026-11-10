@@ -159,10 +159,13 @@ caller deadline. Existing directories use the unchanged lifecycle lock alone.
 Descriptor/path identity, nonzero object identity and private-permission checks
 remain mandatory. No elapsed lock age authorizes displacing a writer.
 
-Version 0.17.0 restores opt-in retention maintenance. Installation
-and upgrades do not adopt a policy or register a scheduler. `cleanup` previews
-by default; an explicit apply requires an enabled versioned policy and
-re-verifies each selected object's identity, state and lifecycle lock. Eligible
+Version 0.17.0 restores opt-in retention maintenance; 0.17.2 makes it
+automatic by default. Installation and upgrades do not register a scheduler
+and do not adopt a policy until the first detached maintenance child runs
+(a compare-and-set adoption under the maintenance lock: a disable landing
+first always wins). `cleanup` previews by default; an explicit apply
+requires the effective policy to authorize it, refuses under the durable
+opt-out, and re-verifies each selected object's identity, state and lifecycle lock. Eligible
 objects first move into recoverable quarantine. Separate restore and purge
 intents preserve interrupted operations; a purged name retains a bounded
 anti-resurrection tombstone. Purge binds a quarantined object by its file
@@ -198,9 +201,11 @@ becomes "partially removed by me". The creation-time binding is invariant
 under removals, so budget-cut removals, crashes and restarts resume
 without any re-sampling. Filesystems without creation times keep their
 data and lose only automatic cleanup; capable platforms keep the full
-quarantine, restore and purge lifecycle. SessionEnd only saves current
-state and recovery;
-it does not scan, delete, register or wait for maintenance.
+quarantine, restore and purge lifecycle. SessionEnd saves current
+state and recovery, then dispatches at most one bounded, deduplicated,
+detached maintenance child per minimum interval; the hook itself never
+scans, deletes, registers or waits for maintenance, and every trigger
+failure degrades to a recorded skip.
 
 An adopted root records content-free discovery hints in private journals,
 snapshots and generation state; snapshots are LF-separated bytes on every
@@ -296,7 +301,9 @@ SessionEnd uses the lightweight Hook entry and loads the
 stateful core in that same Python process. A fresh monotonic anchor precedes
 stdin parsing and the heavy import; the core does not reset it after loading
 or locking. Current state and recovery remain mandatory. Retention maintenance
-runs separately, so no cleanup sweep runs after persistence. The current-session lock
+runs separately: after persistence the trigger decision plus one detached
+spawn must fit the remaining budget, and no scan or deletion runs in the
+hook process. The current-session lock
 budget remains bounded; mandatory writes and synchronous filesystem calls are
 not preemptible. The complete installed command must separately pass the
 three-second native gate; this Python anchor does not measure prior shell or
@@ -779,7 +786,7 @@ record, and an ambiguous prompt boundary remains an integrity failure.
 | `SubagentStart` | record delegated lifecycle and inject contract | bounded delegated contract |
 | `SubagentStop` | record bounded result envelope | warnings only when needed |
 | `Stop` | apply work-unit completion truthfulness, waiting-owner facts, integrity, and one-visible-interruption priority | correction only for verified hard gates, at most once per turn |
-| `SessionEnd` | mark session ended, write final recovery; no retention sweep | none |
+| `SessionEnd` | mark session ended, write final recovery; dispatch one bounded detached maintenance pass (never scans or deletes in-process) | none |
 
 Normal success paths are invisible: the nine Hook definitions carry no
 persistent `statusMessage`, every allow path returns the plain empty object

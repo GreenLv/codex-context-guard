@@ -8,6 +8,7 @@ is pending, never a pass. Evidence is private and belongs outside the checkout.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import hashlib
 import io
@@ -60,6 +61,13 @@ OLD_0170_ZIP_SHA256 = "3c92503b8f0b7f2bf406804d9c348fb5375f836984b25e00d1979a0cd
 # stable-identity in-place upgrade (old marketplace name == NEW_MARKET) is
 # accepted for versions listed here.
 OLD_ZIP_SHA256 = {"0.16.1": OLD_0161_ZIP_SHA256, "0.17.0": OLD_0170_ZIP_SHA256}
+# A bounded official-confirmation wait that times out records this receipt
+# beside result.json; --resume-wait re-enters only that wait.
+WAIT_RECEIPT = "cg-native-upgrade-wait-pending/v1"
+WAIT_RECEIPT_NAME = "wait-pending.json"
+WAIT_PENDINGS = frozenset({"old_plugin_disable", "new_hook_review"})
+SH_LAUNCHER = ROOT / "tools/validation/run_native_acceptance.sh"
+PS1_LAUNCHER = ROOT / "tools/validation/run_native_acceptance.ps1"
 
 
 class UpgradeError(ValueError):
@@ -68,6 +76,15 @@ class UpgradeError(ValueError):
 
 class CapabilityPending(UpgradeError):
     """A native capability requires separate evidence before execution."""
+
+
+class WaitPending(UpgradeError):
+    """A bounded official-confirmation wait timed out; the run is resumable."""
+
+    def __init__(self, wait: str, phase: str, detail: str = "") -> None:
+        super().__init__("normal " + wait + " wait pending" + (": " + detail if detail else ""))
+        self.wait = wait
+        self.phase = phase
 
 
 def require(value: Any, message: str) -> None:
@@ -429,7 +446,8 @@ def _distinct_homes(homes: list[Path]) -> None:
 
 def _invocation_paths(plan_path: Path, output: Path, home_value: Path,
                       other_values: list[Path], prepared: Path | None,
-                      verify_output: Path | None = None) -> tuple[Path, list[Path]]:
+                      verify_output: Path | None = None, *,
+                      receipt: Path | None = None) -> tuple[Path, list[Path]]:
     """Establish HOME boundaries from CLI args before opening any plan file."""
     home = _absolute_real(str(home_value), "isolated authentication HOME")
     require(1 <= len(other_values) <= 32, "other authentication HOME arguments required")
@@ -441,7 +459,8 @@ def _invocation_paths(plan_path: Path, output: Path, home_value: Path,
     if inherited and Path(inherited).is_absolute():
         protected.append(Path(inherited).resolve())
     for candidate in (plan_path, output, *([prepared] if prepared is not None else []),
-                      *([verify_output] if verify_output is not None else [])):
+                      *([verify_output] if verify_output is not None else []),
+                      *([receipt] if receipt is not None else [])):
         _reject_credential_path(candidate)
         require(candidate.is_absolute(), "external input/output must be absolute")
         _no_link_ancestors(candidate if candidate.exists() else candidate.parent)
@@ -899,7 +918,8 @@ class UpgradeClient(host.Client):
     """Existing owned app-server transport with source-aware Hook validation."""
 
     def __init__(self, plan: dict[str, Any], directory: Path,
-                 sources: dict[str, str] | None = None, sequence_base: int = 0, *, turn_limit: int):
+                 sources: dict[str, str] | None = None, sequence_base: int = 0, *, turn_limit: int,
+                 require_trusted: bool = True):
         require(type(turn_limit) is int and 1 <= turn_limit <= 7, "invalid model turn limit")
         self.turn_limit = turn_limit
         self.approved: dict[tuple[str, str], dict[str, Any]] = {}
@@ -930,10 +950,21 @@ class UpgradeClient(host.Client):
             self.send({"method": "initialized", "params": {}})
             inventory = self.rpc("hooks/list", {"cwds": [plan["cwd"]]})
             rows = inventory.get("data") if isinstance(inventory, dict) else None
-            require(isinstance(rows, list) and len(rows) == 1, "initial Hook inventory unavailable")
-            self.initial_approved = _inventory(inventory, self.initial_sources)
-            self.inventory = {h["eventName"]: h for h in self.initial_approved.values()}
-            self.approved = self.initial_approved
+            if require_trusted:
+                require(isinstance(rows, list) and len(rows) == 1, "initial Hook inventory unavailable")
+                self.initial_approved = _inventory(inventory, self.initial_sources)
+                self.inventory = {h["eventName"]: h for h in self.initial_approved.values()}
+                self.approved = self.initial_approved
+            else:
+                # Wait-only resume client: pending trust is observed, never
+                # assumed; approved stays empty so any Hook notification is
+                # still refused and no turn can run.
+                require(isinstance(rows, list) and len(rows) == 1
+                        and isinstance(_object(rows[0]).get("hooks"), list),
+                        "pending Hook inventory unavailable")
+                self.initial_approved = {}
+                self.inventory = {}
+                self.approved = {}
         except BaseException:
             self.close()
             raise
@@ -1253,6 +1284,164 @@ def _launch_environment(home: Path):
         os.environ.update(previous)
 
 
+def _probe_run(argv: list[str], env: dict[str, str] | None,
+               timeout: float = 30.0) -> Any:
+    """Seam for no-model command probes; tests replace this, never a real CLI."""
+    return scheduler._command(native, ROOT, argv, env=env, timeout=timeout)
+
+
+def _resolve_executable(path: Path, env: dict[str, str]) -> str:
+    """Resolve the run's CLI argv[0] under the child environment PATH."""
+    require(path.is_absolute(), "command executable must be absolute")
+    if os.name == "posix":
+        require(os.access(path, os.X_OK), "command executable is not executable")
+    resolved = shutil.which(str(path), path=env.get("PATH"))
+    require(resolved is not None
+            and native._official_path_matches(resolved, path, windows=os.name == "nt"),
+            "command executable does not resolve: " + str(path))
+    return resolved
+
+
+def _planned_official_commands(subject: dict[str, Any]) -> list[list[str]]:
+    """The exact official argv families this run can issue, in issue order."""
+    codex = subject["codex"]
+    old_market = _old_market(subject)
+    sentinel_market = _object(subject.get("sentinel")).get("marketplace")
+    require(isinstance(sentinel_market, str), "sentinel marketplace unavailable")
+    old_root, new = str(_old_market_root(subject)), subject["new_artifact"]
+    planned = [
+        [codex, "--version"],
+        [codex, "plugin", "marketplace", "list", "--json"],
+        [codex, "plugin", "list", "--marketplace", sentinel_market, "--json"],
+        [codex, "plugin", "marketplace", "add", old_root],
+        [codex, "plugin", "add", "context-guard@" + old_market, "--json"],
+        [codex, "plugin", "list", "--marketplace", old_market, "--json"],
+    ]
+    if old_market == NEW_MARKET:
+        planned.append([codex, "plugin", "marketplace", "remove", old_market])
+    planned += [
+        [codex, "plugin", "marketplace", "add", new],
+        [codex, "plugin", "add", "context-guard@" + NEW_MARKET, "--json"],
+        [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"],
+    ]
+    if subject["transition_strategy"] != "observe-open":
+        planned += [
+            [codex, "plugin", "remove", "context-guard@" + NEW_MARKET],
+            [codex, "plugin", "marketplace", "remove", NEW_MARKET],
+        ]
+    unique: list[list[str]] = []
+    for argv in planned:
+        if argv not in unique:
+            unique.append(argv)
+    return unique
+
+
+def _writable_directory(path: Path) -> None:
+    """Prove a future output location is writable without creating it."""
+    require(path.is_dir() and not path.is_symlink(), "output parent must be a real directory")
+    probe = path / (".cg-command-preflight-probe-" + str(os.getpid()))
+    fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
+    try:
+        require(probe.is_file(), "writability probe file unavailable")
+    finally:
+        probe.unlink()
+
+
+def _probe_sh_launcher(launcher: Path, passthrough: list[str]) -> dict[str, Any]:
+    """Parse-only POSIX sh launcher probe; the real launcher never executes."""
+    parsed = _probe_run(["sh", "-n", str(launcher)], {})
+    require(parsed.returncode == 0, "sh launcher parse probe failed: sh -n " + str(launcher))
+    echo_argv = ["sh", "-c", 'for word in "$@"; do printf \'%s\\n\' "$word"; done',
+                 "probe", "upgrade", *passthrough]
+    replay = _probe_run(echo_argv, {})
+    lines = replay.stdout.decode("utf-8").splitlines()
+    require(replay.returncode == 0 and lines == ["upgrade", *passthrough],
+            "sh launcher argument vector probe failed: " + " ".join(echo_argv[:3]) + " ...")
+    return {"probed": "sh", "parse": ["sh", "-n", str(launcher)],
+            "argv_echo": ["upgrade", *passthrough]}
+
+
+def _probe_ps1_launcher(launcher: Path, passthrough: list[str]) -> dict[str, Any]:
+    """Parse-only PowerShell launcher probe with a mirrored param block.
+
+    The launcher file is checked with the PowerShell parser and this run's
+    argument vector is echoed back through a synthetic param mirror; the real
+    launcher batch is never invoked.
+    """
+    script = (
+        '$ErrorActionPreference = "Stop"\n'
+        '$tokens = $null; $parseErrors = $null\n'
+        '[void][System.Management.Automation.Language.Parser]::ParseFile($env:CG_LAUNCHER_PROBE, '
+        '[ref]$tokens, [ref]$parseErrors)\n'
+        'if ($parseErrors.Count -gt 0) { Write-Output "PARSE-FAILED"; exit 1 }\n'
+        '$mirror = [scriptblock]::Create(\'param([Parameter(Mandatory=$true)]'
+        '[ValidateSet("upgrade","acceptance","retention","scheduler")][string]$Target,'
+        '[Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments=@()) '
+        '$Target; $Arguments\')\n'
+        '$rest = @($env:CG_PASSTHROUGH_PROBE -split "`n" | Where-Object { $_ -ne "" })\n'
+        '& $mirror -Target $env:CG_TARGET_PROBE @rest\n')
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    argv = ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+    env = {key: value for key, value in os.environ.items()
+           if not re.search(r"TOKEN|PASSWORD|SECRET|API_KEY|CREDENTIAL", key, re.I)}
+    env.update(CG_LAUNCHER_PROBE=str(launcher), CG_TARGET_PROBE="upgrade",
+               CG_PASSTHROUGH_PROBE="\n".join(passthrough))
+    replay = _probe_run(argv, env, timeout=60.0)
+    lines = replay.stdout.decode("utf-8-sig").splitlines()
+    require(replay.returncode == 0 and lines == ["upgrade", *passthrough],
+            "PowerShell launcher parse probe failed: " + str(launcher))
+    return {"probed": "powershell", "parse": "Parser::ParseFile " + str(launcher),
+            "argv_echo": ["upgrade", *passthrough]}
+
+
+def preflight_commands(plan: dict[str, Any], output: Path, plan_path: Path) -> dict[str, Any]:
+    """No-model, no-login, no-trust probe of the exact commands a run will issue.
+
+    Before any operator trust step this verifies: every official argv builds
+    and its executable resolves under the child environment; the platform
+    launcher parses this run's argument vector; the driver cwd, module search
+    path, UTF-8 child env and the future output location are usable; and the
+    installed CLI accepts its entry parameters in a --version-style probe.
+    Any failed probe is refused with the concrete command, and no operator
+    trust stage is reached.
+    """
+    subject = preflight(plan, output)
+    if subject.get("codex_hardlink_count", 1) != 1:
+        raise CapabilityPending("public CLI hard-link aliases require review")
+    planned = _planned_official_commands(subject)
+    codex = subject["codex"]
+    env = isolated_env(Path(subject["home"]))
+    resolved = _resolve_executable(Path(codex), env)
+    entry = _probe_run([codex, "--version"], env)
+    require(entry.returncode == 0 and entry.stdout.decode("utf-8-sig").strip() == plan["cli_version"],
+            "CLI entry probe failed: [" + codex + ", --version] exit " + str(entry.returncode))
+    entry_flags = None
+    if platform.system() == "Windows":
+        flags_argv = [codex, "-c", 'windows.sandbox="mxc"', "-c", "allow_login_shell=false", "--version"]
+        flags = _probe_run(flags_argv, env)
+        require(flags.returncode == 0 and flags.stdout.decode("utf-8-sig").strip() == plan["cli_version"],
+                "CLI entry-parameter probe failed: " + repr(flags_argv))
+        entry_flags = {"argv": flags_argv, "version": plan["cli_version"]}
+    passthrough = ["--preflight", "--plan", str(plan_path), "--output", str(output)]
+    if platform.system() == "Windows":
+        launcher = _probe_ps1_launcher(PS1_LAUNCHER, passthrough)
+    else:
+        launcher = _probe_sh_launcher(SH_LAUNCHER, passthrough)
+        launcher["off_platform"] = {"launcher": "powershell", "recorded": "skip_off_platform"}
+    utf8 = _probe_run([sys.executable, "-I", "-B", "-c", "import sys; print(sys.flags.utf8_mode)"], env)
+    require(utf8.returncode == 0 and utf8.stdout.strip() == b"1",
+            "UTF-8 child environment probe failed for [" + sys.executable + ", -I, -B, -c]")
+    require(str(ROOT) in sys.path and Path.cwd().is_dir(), "driver cwd or module search path unavailable")
+    _writable_directory(output.parent)
+    return {"planned_commands": planned, "executable": resolved,
+            "entry_probe": {"argv": [codex, "--version"], "version": plan["cli_version"]},
+            "entry_flags": entry_flags, "launcher": launcher,
+            "environment": {"driver_cwd": str(Path.cwd()), "module_search_path": str(ROOT),
+                            "utf8_child_mode": 1},
+            "writable_parent": str(output.parent)}
+
+
 def _official_install_identity(added: Any, listed: Any, old: Path, home: Path,
                                version: str, wrapper: Path | None = None) -> Path:
     market = OLD_0161_WRAPPER_MARKET if wrapper is not None else OLD_MARKETS[version]
@@ -1285,6 +1474,66 @@ def _json_output(result: Any) -> dict[str, Any]:
     value = adoption.strict_json(result.stdout.decode("utf-8-sig"))
     require(isinstance(value, dict), "official command did not emit an object")
     return value
+
+
+def _summary_dict(result: Any) -> dict[str, Any] | None:
+    """Exit-0 summary read that tolerates an unreadable official summary.
+
+    Used only for the destructive stable plugin add: the host change has
+    already happened when the summary is read, so the run continues and the
+    scoped list readback decides. ValueError covers strict_json refusals and
+    undecodable bytes.
+    """
+    require(result.returncode == 0, "official command failed")
+    try:
+        value = adoption.strict_json(result.stdout.decode("utf-8-sig"))
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _installed_identity(listed: Any, added: dict[str, Any] | None,
+                        source: Path, home: Path) -> Path:
+    """Bind the stable install from the readback row when no add summary exists.
+
+    Without the summary the official list row and the single on-disk trusted
+    cache candidate decide; exact cache parity is checked by the caller right
+    after, so a summary-less add never widens what counts as installed.
+    """
+    rows = _object(listed).get("installed")
+    require(isinstance(rows, list), "official plugin inventory unavailable")
+    stable_id = "context-guard@" + NEW_MARKET
+    matches = [row for row in rows if isinstance(row, dict) and row.get("pluginId") == stable_id]
+    require(len(matches) == 1, "official installed identity is missing or ambiguous")
+    if added is not None:
+        return native.official_identity(listed, added, source, home, NEW_VERSION)
+    row = matches[0]
+    require(row.get("name") == "context-guard" and row.get("marketplaceName") == NEW_MARKET
+            and row.get("version") == NEW_VERSION and row.get("installed") is True
+            and row.get("enabled") is True, "official installed identity differs")
+    _plugin_source(row, source)
+    cache = home / "plugins" / "cache" / NEW_MARKET / "context-guard"
+    present = [cache / name for name in (NEW_VERSION, "local")
+               if (cache / name).is_dir() and not (cache / name).is_symlink()]
+    require(len(present) == 1, "official installed cache is missing or ambiguous")
+    return present[0]
+
+
+def _stable_add_and_list(command: Any, codex: str,
+                         observe: Any = None) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Destructive stable add plus its scoped readback.
+
+    An unreadable add summary is marked on the command fact and never fails
+    the transition; the following marketplace-scoped list readback must still
+    parse, because it is the structural evidence verify() judges.
+    """
+    added = _summary_dict(command([codex, "plugin", "add", "context-guard@" + NEW_MARKET, "--json"]))
+    if observe is not None:
+        observe("after_new_plugin_add")
+    listed = _json_output(command([codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"]))
+    if observe is not None:
+        observe("after_new_plugin_list")
+    return added, listed
 
 
 def _market_names(result: Any) -> set[str]:
@@ -1426,6 +1675,15 @@ def _run_official(result: dict[str, Any], argv: list[str], env: dict[str, str],
         run = scheduler._command(native, ROOT, argv, env=env, timeout=90)
         fact.update(exit_code=run.returncode, stderr_nonempty=bool(run.stderr))
         require(run.returncode == 0, "official command failed")
+        if (argv[1:3] == ["plugin", "add"] and stage in ("observe_open", "open_transition")
+                and _summary_dict(run) is None):
+            # Exit 0 with an unreadable summary: the destructive add already
+            # happened, so the transition continues; the scoped list readback
+            # and journals decide the phase. Only the raw stdout shape is
+            # recorded, never its bytes.
+            fact.update(summary_parse_failed=True, stdout_sha256=hashlib.sha256(run.stdout).hexdigest(),
+                        stdout_bytes=len(run.stdout), status="completed")
+            return run
         fact["observation"] = _project_cli(argv, run, selected)
         fact["status"] = "completed"
         return run
@@ -1434,6 +1692,52 @@ def _run_official(result: dict[str, Any], argv: list[str], env: dict[str, str],
         raise
     finally:
         fact["completed_monotonic_ns"] = _receipt_clock_ns()
+
+
+def _wait_identity_snapshot(command: Any, selected: set[str], codex: str,
+                            markets: list[str]) -> dict[str, Any]:
+    """Observed marketplace and scoped plugin identity, projected like the run."""
+    list_argv = [codex, "plugin", "marketplace", "list", "--json"]
+    observed: dict[str, Any] = {"marketplaces": _project_cli(list_argv, command(list_argv), selected)["marketplaces"],
+                                "plugins": {}}
+    for market in markets:
+        argv = [codex, "plugin", "list", "--marketplace", market, "--json"]
+        observed["plugins"][market] = _project_cli(argv, command(argv), selected)["installed"]
+    return observed
+
+
+def _stable_identity(observed: dict[str, Any]) -> dict[str, Any]:
+    """Registration and installation identity only.
+
+    The wait-governed enabled flag is excluded: the operator's manual action
+    between timeout and resume is the expected change, while a moved root,
+    version, installation, or registration is a refused identity change.
+    """
+    plugins = _object(observed.get("plugins"))
+    return {"marketplaces": observed.get("marketplaces"),
+            "plugins": {market: [{key: value for key, value in row.items() if key != "enabled"}
+                                 for row in rows if isinstance(row, dict)]
+                        for market, rows in plugins.items() if isinstance(rows, list)}}
+
+
+def _raise_wait_pending(output: Path, plan: dict[str, Any], subject: dict[str, Any],
+                        prepared: Path | None, phase: str, wait: str, command: Any,
+                        selected: set[str], codex: str, markets: list[str],
+                        started_at: float, budget: int,
+                        reviewed: dict[str, Any]) -> None:
+    """Snapshot the observed identity, write the pending receipt, then mark."""
+    require(wait in WAIT_PENDINGS, "invalid pending wait name")
+    receipt: dict[str, Any] = {"schema": WAIT_RECEIPT, "status": "wait_pending", "phase": phase,
+                               "wait": wait, "strategy": subject["transition_strategy"],
+                               "plan_sha256": digest(plan), "subject_sha256": digest(subject),
+                               "observed": _wait_identity_snapshot(command, selected, codex, markets),
+                               "reviewed": reviewed, "started_at": started_at,
+                               "wait_budget_seconds": budget}
+    if prepared is not None:
+        receipt["prepare_sha256"] = sha(prepared)
+    receipt["stable_identity"] = _stable_identity(receipt["observed"])
+    _write_new(output / WAIT_RECEIPT_NAME, receipt)
+    raise WaitPending(wait, phase)
 
 
 def prepare(plan: dict[str, Any], output: Path) -> dict[str, Any]:
@@ -1547,7 +1851,8 @@ def _write_bound_state(path: Path, state: dict[str, Any], raw_sha: str) -> None:
 
 
 def _reviewed_sources(client: UpgradeClient, allowed: dict[str, str], required: str,
-                      timeout: float = DEFAULT_REVIEW_TIMEOUT_SECONDS) -> dict[tuple[str, str], dict[str, Any]]:
+                      timeout: float = DEFAULT_REVIEW_TIMEOUT_SECONDS, *,
+                      phase: str) -> dict[tuple[str, str], dict[str, Any]]:
     """Wait for normal external review; an operator signal is never evidence."""
     deadline = time.monotonic() + timeout
     last_error = "Hook inventory unavailable"
@@ -1566,7 +1871,7 @@ def _reviewed_sources(client: UpgradeClient, allowed: dict[str, str], required: 
             except UpgradeError as exc:
                 last_error = str(exc)
         time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
-    raise UpgradeError("normal Hook review pending: " + last_error)
+    raise WaitPending("new_hook_review", phase, last_error)
 
 
 def _pre_disable_projection(value: Any, old_source: str, new_source: str) -> list[dict[str, Any]]:
@@ -1784,8 +2089,13 @@ def _validate_root_snapshot_map(value: Any) -> None:
 
 
 def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any],
-                     previous: dict[str, Any], installed: Path) -> dict[str, Any]:
-    """Observe one deliberately open old task; never certify safe migration."""
+                     previous: dict[str, Any], installed: Path,
+                     prepared_path: Path | None = None) -> dict[str, Any]:
+    """Observe one deliberately open old task; never certify safe migration.
+
+    ``prepared_path`` binds the prepare receipt into a pending-wait receipt;
+    without it a timed-out wait is still recorded but cannot be resumed.
+    """
     home, old, new, workspace, codex = (Path(plan[k]).resolve(strict=True) for k in
                                         ("home", "old_artifact", "new_artifact", "workspace", "codex"))
     old_market = _old_market(plan)
@@ -1801,10 +2111,13 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
                               "limitations": ["deliberately open old task is observation only; no safe-upgrade claim"]}
     env = isolated_env(home)
     live = cold = None
+    # Distinct names: this function's own locals `markets` and (in the
+    # finish-old leg) `selected` must never rebind what `command` closes over.
+    scoped = {old_market, NEW_MARKET, _object(plan.get("sentinel")).get("marketplace")}
+    wait_markets = sorted({old_market, NEW_MARKET})
     try:
         def command(argv: list[str]) -> Any:
-            return _run_official(result, argv, env, {old_market, NEW_MARKET,
-                                 _object(plan.get("sentinel")).get("marketplace")}, "observe_open")
+            return _run_official(result, argv, env, scoped, "observe_open")
         sentinel = _sentinel_files(home, plan.get("sentinel"))
         require(sentinel == subject.get("sentinel") == previous.get("sentinel_after"), "sentinel changed")
         markets = _market_entries(command([str(codex), "plugin", "marketplace", "list", "--json"]))
@@ -1843,9 +2156,8 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
         if old_market == NEW_MARKET:
             command([str(codex), "plugin", "marketplace", "remove", old_market])
         command([str(codex), "plugin", "marketplace", "add", str(new)])
-        added = _json_output(command([str(codex), "plugin", "add", "context-guard@" + NEW_MARKET, "--json"]))
-        listed = _json_output(command([str(codex), "plugin", "list", "--marketplace", NEW_MARKET, "--json"]))
-        new_installed = native.official_identity(listed, added, new, home, NEW_VERSION)
+        added, listed = _stable_add_and_list(command, str(codex))
+        new_installed = _installed_identity(listed, added, new, home)
         public_files = _load_artifacts_no_pyc(Path(plan["product_root"])).distribution_manifest(Path(plan["product_root"]))
         native.exact_artifact_parity(new_installed, public_files)
         require(source_files(new_installed) == public_files, "new cache bytes differ")
@@ -1864,13 +2176,18 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
             "then review the stable Hooks in the official CLI TUI." if old_market != NEW_MARKET
             else "Review Hooks normally in the official CLI TUI."), "timeout_seconds_per_step": review_timeout})
         if old_market != NEW_MARKET:
+            wait_started_at = time.time()
             deadline = time.monotonic() + review_timeout
             while True:
                 old_list = _json_output(command([str(codex), "plugin", "list", "--marketplace", old_market, "--json"]))
                 row = _selected_plugin(old_list, "context-guard@" + old_market)
                 if row is not None and row.get("version") == plan["old_version"] and row.get("installed") is True and row.get("enabled") is False:
                     break
-                require(time.monotonic() < deadline, "normal old-plugin disable pending")
+                if time.monotonic() >= deadline:
+                    _raise_wait_pending(output, plan, subject, prepared_path, "observe_open",
+                                        "old_plugin_disable", command, scoped, str(codex), wait_markets,
+                                        wait_started_at, review_timeout,
+                                        {"new_source": new_source, "old_source": old_source})
                 time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
             stable = _json_output(command([str(codex), "plugin", "list", "--marketplace", NEW_MARKET, "--json"]))
             row = _selected_plugin(stable, "context-guard@" + NEW_MARKET)
@@ -1882,7 +2199,14 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
             live.log.write(json.dumps({"direction": "observation", "event": "old_identity_disabled",
                 "pid": live.owned.process.pid, "monotonic_ns": _receipt_clock_ns()}) + "\n")
             live.log.flush()
-        new_inventory = _reviewed_sources(live, {new_source: NEW_VERSION}, new_source, timeout=review_timeout)
+        wait_started_at = time.time()
+        try:
+            new_inventory = _reviewed_sources(live, {new_source: NEW_VERSION}, new_source,
+                                              timeout=review_timeout, phase="observe_open")
+        except WaitPending:
+            _raise_wait_pending(output, plan, subject, prepared_path, "observe_open", "new_hook_review",
+                                command, scoped, str(codex), wait_markets, wait_started_at, review_timeout,
+                                {"new_source": new_source, "old_source": None})
         result["new_inventory"] = list(new_inventory.values())
         live.observation_thread = thread
         live.observation_inventory = {**old_inventory, **new_inventory}
@@ -2025,6 +2349,10 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
         result["status"] = ("observation_complete" if statuses == ("observed", "observed") and ledgers == ("preserved", "preserved") else
                             "observation_pending" if any(s in ("root_unobserved", "session_start_unobserved") for s in statuses)
                             else "unsupported_continuity")
+    except WaitPending as pending:
+        result["status"] = "wait_pending"
+        result["wait"] = {"wait": pending.wait, "phase": pending.phase, "receipt": WAIT_RECEIPT_NAME}
+        result["pending"] = [pending.wait]
     except BaseException as exc:
         result["status"], result["failure"] = "failed", type(exc).__name__
         diagnostic = next((getattr(client, "last_rpc_failure", None) for client in (cold, live)
@@ -2075,7 +2403,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
     require(_within(installed, home / "plugins/cache" / old_market / "context-guard")
             and source_files(installed) == source_files(old), "old installed cache differs")
     if plan["transition_strategy"] == "observe-open":
-        return _run_observation(plan, output, subject, previous, installed)
+        return _run_observation(plan, output, subject, previous, installed, prepared)
     review_timeout = subject.get("review_timeout_seconds", DEFAULT_REVIEW_TIMEOUT_SECONDS)
     output.mkdir(mode=0o700)
     live_dir, cold_dir = output / "live", output / "cold"
@@ -2091,10 +2419,13 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
                                           "disable", "removal", "unrelated_sentinel"]}
     env = isolated_env(home)
     live = cold = None
+    # Distinct names: this function's own locals `markets` and `selected`
+    # must never rebind what the late-bound `command` closure reads.
+    scoped = {old_market, NEW_MARKET, _object(plan.get("sentinel")).get("marketplace")}
+    wait_markets = sorted({old_market, NEW_MARKET})
     try:
         def command(argv: list[str]) -> Any:
-            return _run_official(result, argv, env, {old_market, NEW_MARKET,
-                                 _object(plan.get("sentinel")).get("marketplace")}, "open_transition")
+            return _run_official(result, argv, env, scoped, "open_transition")
 
         sentinel = _sentinel_files(home, plan.get("sentinel"))
         require(sentinel == subject.get("sentinel") == previous.get("sentinel_after"),
@@ -2197,12 +2528,9 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         command([str(codex), "plugin", "marketplace", "add", str(new)])
         markets = observe_sentinel("after_new_marketplace_add")
         _market_source(markets, NEW_MARKET, new)
-        added = _json_output(command([str(codex), "plugin", "add", "context-guard@" + NEW_MARKET, "--json"]))
-        observe_sentinel("after_new_plugin_add")
-        listed = _json_output(command([str(codex), "plugin", "list", "--marketplace", NEW_MARKET, "--json"]))
-        observe_sentinel("after_new_plugin_list")
+        added, listed = _stable_add_and_list(command, str(codex), observe=observe_sentinel)
         _mark(live, "transition_completed")
-        new_installed = native.official_identity(listed, added, new, home, NEW_VERSION)
+        new_installed = _installed_identity(listed, added, new, home)
         public_files = _load_artifacts_no_pyc(Path(plan["product_root"])).distribution_manifest(Path(plan["product_root"]))
         native.exact_artifact_parity(new_installed, public_files)
         actual_files = source_files(new_installed)
@@ -2234,6 +2562,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
             "then review the stable Hooks in the official CLI TUI." if old_market != NEW_MARKET and strategy == "finish-old"
             else "Review Hooks normally in the official CLI TUI."), "timeout_seconds_per_step": review_timeout})
         if old_market != NEW_MARKET and strategy == "finish-old":
+            wait_started_at = time.time()
             deadline = time.monotonic() + review_timeout
             while True:
                 old_readback = _json_output(command([str(codex), "plugin", "list", "--marketplace", old_market, "--json"]))
@@ -2241,7 +2570,11 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
                 if (old_row is not None and old_row.get("installed") is True and old_row.get("enabled") is False
                         and old_row.get("version") == plan["old_version"]):
                     break
-                require(time.monotonic() < deadline, "normal old-plugin disable pending")
+                if time.monotonic() >= deadline:
+                    _raise_wait_pending(output, plan, subject, prepared, "open_transition",
+                                        "old_plugin_disable", command, scoped, str(codex), wait_markets,
+                                        wait_started_at, review_timeout,
+                                        {"new_source": new_source, "old_source": old_source})
                 time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
             after_disable = {"files_sha256": digest(source_files(installed)), "objects_sha256": _cache_identity(installed)}
             require(after_disable == old_cache_before, "old cache changed during normal disable")
@@ -2257,7 +2590,15 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         allowed_sources = {new_source: NEW_VERSION}
         if strategy == "observe-open" and old_market != NEW_MARKET:
             allowed_sources[old_source] = plan["old_version"]
-        approved = _reviewed_sources(live, allowed_sources, new_source, timeout=review_timeout)
+        wait_started_at = time.time()
+        try:
+            approved = _reviewed_sources(live, allowed_sources, new_source, timeout=review_timeout,
+                                         phase="open_transition")
+        except WaitPending:
+            _raise_wait_pending(output, plan, subject, prepared, "open_transition", "new_hook_review",
+                                command, scoped, str(codex), wait_markets, wait_started_at, review_timeout,
+                                {"new_source": new_source,
+                                 "old_source": old_source if old_source in allowed_sources else None})
         result["new_inventory"] = list(approved.values())
         require(live.owned.process.poll() is None, "original app-server exited during transition")
         continuation = "请继续保留之前未完成的要求，不执行它，只回复等待。"
@@ -2393,6 +2734,10 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         require(_selected_states(home, tracked_states) == before_removal, "selected data changed on marketplace removal")
         result["selected_data_after_removal"] = before_removal
         result["pending"] = ["independent_consumer"]
+    except WaitPending as pending:
+        result["status"] = "wait_pending"
+        result["wait"] = {"wait": pending.wait, "phase": pending.phase, "receipt": WAIT_RECEIPT_NAME}
+        result["pending"] = [pending.wait]
     except BaseException as exc:
         result["status"] = "failed"
         result["failure"] = type(exc).__name__
@@ -2419,6 +2764,127 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
                      "cancel-a.json", "cancel-b.json", "guard-diagnostic.json")
         result["artifacts"] = {name: sha(output / name) for name in artifacts if (output / name).is_file()}
         _write_new(output / "result.json", result)
+    return result
+
+
+def resume_wait(plan: dict[str, Any], output: Path, prepared: Path,
+                receipt_path: Path) -> dict[str, Any]:
+    """Re-enter only the bounded official wait named by a pending receipt.
+
+    Refuses a changed plan or a changed registration/installation identity and
+    never re-runs prepare, marketplace registration, plugin add, or any other
+    destructive step. Official confirmation stays manual, no new HOME is
+    created, and the interrupted phase's task observations are not re-executed;
+    the original wait_pending result stays the authoritative phase record.
+    """
+    require(receipt_path.name == WAIT_RECEIPT_NAME and receipt_path.is_absolute()
+            and not receipt_path.is_symlink(), "pending-wait receipt path invalid")
+    _no_link_ancestors(receipt_path)
+    receipt = _read_json(receipt_path)
+    require(receipt.get("schema") == WAIT_RECEIPT and receipt.get("status") == "wait_pending"
+            and receipt.get("phase") in ("observe_open", "open_transition")
+            and receipt.get("wait") in WAIT_PENDINGS
+            and receipt.get("strategy") in ("observe-open", "finish-old"),
+            "invalid pending-wait receipt")
+    require(receipt.get("plan_sha256") == digest(plan), "plan differs from the pending-wait receipt")
+    budget = receipt.get("wait_budget_seconds")
+    require(type(budget) is int and 1 <= budget <= MAX_REVIEW_TIMEOUT_SECONDS, "pending-wait budget invalid")
+    require(type(receipt.get("started_at")) is float, "pending-wait start time unavailable")
+    result_dir = receipt_path.parent
+    original = _read_json(_evidence_path(result_dir, "result.json"))
+    require(original.get("schema") == REPORT and original.get("stage") == receipt.get("phase")
+            and original.get("status") == "wait_pending"
+            and digest(_object(original.get("subject"))) == receipt.get("subject_sha256"),
+            "original result does not bind the pending-wait receipt")
+    subject = _object(original.get("subject"))
+    require(receipt.get("prepare_sha256") == sha(prepared), "prepare receipt differs from the pending wait")
+    prepare_receipt = _read_json(prepared)
+    require(prepare_receipt.get("schema") == REPORT and prepare_receipt.get("stage") == "prepare"
+            and digest(_object(prepare_receipt.get("subject"))) == receipt.get("subject_sha256"),
+            "prepare receipt does not bind the pending-wait subject")
+    home = _absolute_real(plan.get("home"), "isolated Codex HOME")
+    codex = _absolute_real(plan.get("codex"), "Codex CLI", file=True, allow_hardlinks=True)
+    workspace = _absolute_real(plan.get("workspace"), "workspace")
+    daily = (Path.home() / ".codex").resolve()
+    others = [_absolute_real(value, "other isolated HOME") for value in plan.get("other_homes", [])]
+    _distinct_homes([home, *others])
+    _cli_scope(codex, daily, [home, *others])
+    require(sha(codex) == subject.get("codex_sha256"), "CLI differs since the pending wait")
+    read_file = workspace / "native-read.txt"
+    require(not read_file.is_symlink() and read_file.is_file() and read_file.stat().st_nlink == 1
+            and sha(read_file) == subject.get("read_file_sha256"), "controlled read fixture changed")
+    _new_outside(output, [home, daily, *others, ROOT.resolve(), workspace])
+    old_market = _old_market(subject)
+    sentinel_market = _object(subject.get("sentinel")).get("marketplace")
+    require(isinstance(sentinel_market, str), "sentinel marketplace unavailable")
+    scoped = {old_market, NEW_MARKET, sentinel_market}
+    wait_markets = sorted({old_market, NEW_MARKET})
+    env = isolated_env(home)
+    record: dict[str, Any] = {"commands": []}
+
+    def command(argv: list[str]) -> Any:
+        return _run_official(record, argv, env, scoped, "resume_wait")
+
+    require(_stable_identity(_wait_identity_snapshot(command, scoped, subject["codex"], wait_markets))
+            == _object(receipt.get("stable_identity")), "official identity changed since the pending wait")
+    # Created only after every refusal above, so a refused resume leaves nothing.
+    output.mkdir(mode=0o700)
+    started_at = time.time()
+    result: dict[str, Any] = {"schema": REPORT, "stage": "resume_wait", "status": "wait_pending",
+                              "subject": subject,
+                              "wait": {"wait": receipt["wait"], "phase": receipt["phase"],
+                                       "receipt_sha256": sha(receipt_path), "started_at": started_at,
+                                       "wait_budget_seconds": budget},
+                              "commands": record["commands"], "cleanup": [], "pending": [receipt["wait"]],
+                              "limitations": ["wait-only resume; the interrupted phase's task "
+                                              "observations were not re-executed"]}
+    try:
+        if receipt["wait"] == "old_plugin_disable":
+            old_argv = [subject["codex"], "plugin", "list", "--marketplace", old_market, "--json"]
+            deadline = time.monotonic() + budget
+            while True:
+                row = _selected_plugin(_json_output(command(old_argv)), "context-guard@" + old_market)
+                if (row is not None and row.get("version") == subject["old_version"]
+                        and row.get("installed") is True and row.get("enabled") is False):
+                    break
+                if time.monotonic() >= deadline:
+                    raise WaitPending("old_plugin_disable", receipt["phase"])
+                time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
+        else:
+            reviewed = _object(receipt.get("reviewed"))
+            new_source = reviewed.get("new_source")
+            require(isinstance(new_source, str) and bool(new_source), "pending review source unavailable")
+            sources = {new_source: NEW_VERSION}
+            old_source = reviewed.get("old_source")
+            if isinstance(old_source, str) and bool(old_source):
+                sources[old_source] = subject["old_version"]
+            installed = _absolute_real(_object(original.get("installed_new")).get("path"),
+                                       "stable installed cache")
+            require(Path(new_source) == installed / "hooks/hooks.json",
+                    "reviewed source differs from the stable cache")
+            client_plan = {"codex": subject["codex"], "cwd": str(workspace), "home": str(home),
+                           "plugin_root": str(installed)}
+            resume_dir = output / "resume"
+            resume_dir.mkdir(mode=0o700)
+            with _launch_environment(home):
+                client = UpgradeClient(client_plan, resume_dir, sources=sources,
+                                       turn_limit=1, require_trusted=False)
+            try:
+                _reviewed_sources(client, sources, new_source, timeout=budget, phase=receipt["phase"])
+            finally:
+                result["cleanup"].append(_close_observation(client, "resume_wait", subject["platform"]))
+        resolved = _wait_identity_snapshot(command, scoped, subject["codex"], wait_markets)
+        result["resolved"] = resolved
+        result["wait"]["resolved_at"] = time.time()
+        result["status"] = "wait_resolved"
+        result["pending"] = ["independent_consumer"]
+    except WaitPending:
+        refreshed = {key: value for key, value in receipt.items() if key != "observed"}
+        refreshed["observed"] = _wait_identity_snapshot(command, scoped, subject["codex"], wait_markets)
+        refreshed["stable_identity"] = _stable_identity(refreshed["observed"])
+        refreshed["started_at"] = started_at
+        _write_new(output / WAIT_RECEIPT_NAME, refreshed)
+    _write_new(output / "result.json", result)
     return result
 
 
@@ -2702,11 +3168,18 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
     index, _ = _command_index(commands, [codex, "plugin", "marketplace", "add", str(new_source)], index)
     market_add_index = index
     index, added = _command_index(commands, [codex, "plugin", "add", stable_id, "--json"], index)
+    add_fact = commands[index]
+    unreadable = add_fact.get("summary_parse_failed") is True
+    forged = unreadable and _object(add_fact.get("observation"))
     index, new_list = _command_index(commands, [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"], index)
     new_row = _selected_plugin(new_list, stable_id)
-    require(added.get("pluginId") == stable_id and added.get("version") == NEW_VERSION
-            and added.get("installedPath") == _object(result.get("installed_new")).get("path")
-            and new_row is not None and new_row.get("version") == NEW_VERSION
+    require(not forged and ((unreadable and _sha(add_fact.get("stdout_sha256"))
+                             and type(add_fact.get("stdout_bytes")) is int)
+                            or (not unreadable and added.get("pluginId") == stable_id
+                                and added.get("version") == NEW_VERSION
+                                and added.get("installedPath") == _object(result.get("installed_new")).get("path"))),
+            "new official installation summary or marker differs")
+    require(new_row is not None and new_row.get("version") == NEW_VERSION
             and new_row.get("installed") is True and new_row.get("enabled") is True,
             "new official installation readback differs")
     _plugin_source(new_row, new_source)
@@ -3085,10 +3558,18 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
         old_list_index, _ = _command_index(commands, [codex, "plugin", "marketplace", "remove", old_market], old_list_index)
     add_index, _ = _command_index(commands, [codex, "plugin", "marketplace", "add", subject["new_artifact"]], old_list_index)
     add_index, added = _command_index(commands, [codex, "plugin", "add", "context-guard@" + NEW_MARKET, "--json"], add_index)
+    add_fact = commands[add_index]
+    unreadable = add_fact.get("summary_parse_failed") is True
+    forged = unreadable and _object(add_fact.get("observation"))
     _index, new_list = _command_index(commands, [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"], add_index)
     new_row = _selected_plugin(new_list, "context-guard@" + NEW_MARKET)
-    require(added.get("pluginId") == "context-guard@" + NEW_MARKET and added.get("version") == NEW_VERSION
-            and added.get("installedPath") == new_installed and new_row is not None
+    require(not forged and ((unreadable and _sha(add_fact.get("stdout_sha256"))
+                             and type(add_fact.get("stdout_bytes")) is int)
+                            or (not unreadable and added.get("pluginId") == "context-guard@" + NEW_MARKET
+                                and added.get("version") == NEW_VERSION
+                                and added.get("installedPath") == new_installed)),
+            "new observation add summary or marker differs")
+    require(new_row is not None
             and new_row.get("installed") is True and new_row.get("enabled") is True and new_row.get("version") == NEW_VERSION
             and _object(new_row.get("source")).get("source") == "local"
             and _object(new_row.get("marketplaceSource")).get("sourceType") == "local"
@@ -3633,20 +4114,25 @@ def main(argv: list[str] | None = None) -> int:
                         help="another isolated authentication HOME; repeat for each HOME")
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument("--preflight", action="store_true")
+    actions.add_argument("--preflight-commands", action="store_true",
+                         help="no-model, no-login, no-trust probe of the exact commands a run will issue")
     actions.add_argument("--prepare", action="store_true")
     actions.add_argument("--run-open-transition", action="store_true")
     actions.add_argument("--verify", action="store_true")
+    actions.add_argument("--resume-wait", type=Path, metavar="WAIT-PENDING-JSON",
+                         help="pending-wait receipt; re-enters only the bounded official wait")
     parser.add_argument("--prepared-result", type=Path)
     parser.add_argument("--verify-output", type=Path,
                         help="new external result for the independent consumer")
     args = parser.parse_args(argv)
-    if (args.run_open_transition or args.verify) != (args.prepared_result is not None):
-        parser.error("--run-open-transition and --verify require --prepared-result")
+    if (args.run_open_transition or args.verify or args.resume_wait is not None) != (args.prepared_result is not None):
+        parser.error("--run-open-transition, --verify and --resume-wait require --prepared-result")
     if args.verify != (args.verify_output is not None):
         parser.error("--verify requires --verify-output; other actions must omit it")
     try:
         home, other_homes = _invocation_paths(args.plan, args.output, args.auth_home,
-                                               args.other_auth_home, args.prepared_result, args.verify_output)
+                                               args.other_auth_home, args.prepared_result, args.verify_output,
+                                               receipt=args.resume_wait)
         plan = _read_json(args.plan)
         require(_absolute_real(plan.get("home"), "plan HOME") == home
                 and sorted(_absolute_real(item, "plan other HOME") for item in plan.get("other_homes", []))
@@ -3656,6 +4142,18 @@ def main(argv: list[str] | None = None) -> int:
             if subject["codex_hardlink_count"] != 1:
                 raise CapabilityPending("public CLI hard-link aliases require review")
             print("upgrade_preflight=passed; installation_and_native_acceptance_not_run")
+            return 0
+        if args.preflight_commands:
+            try:
+                summary = preflight_commands(plan, args.output, args.plan)
+            except CapabilityPending as exc:
+                print("upgrade_preflight_commands=pending; " + str(exc), file=sys.stderr)
+                return 1
+            except UpgradeError as exc:
+                print("upgrade_preflight_commands=refused; " + str(exc), file=sys.stderr)
+                return 2
+            print("upgrade_preflight_commands=passed; "
+                  + json.dumps(summary, ensure_ascii=False, sort_keys=True))
             return 0
         if args.verify:
             result = verify(plan, args.output, args.prepared_result)
@@ -3668,6 +4166,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if result["status"] in ("passed", "observation_complete") else 1
         if args.prepare:
             result = prepare(plan, args.output)
+        elif args.resume_wait is not None:
+            result = resume_wait(plan, args.output, args.prepared_result, args.resume_wait)
         else:
             result = run_open_transition(plan, args.output, args.prepared_result)
     except CapabilityPending as exc:
@@ -3679,7 +4179,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(json.dumps({"status": result["status"], "stage": result["stage"],
                       "pending": result["pending"]}))
-    if result["status"] == "failed" or (args.run_open_transition and result["status"] != "passed"):
+    if result["status"] == "failed" or (args.run_open_transition and result["status"] != "passed") \
+            or (args.resume_wait is not None and result["status"] != "wait_resolved"):
         return 1
     return 0
 

@@ -85,6 +85,9 @@ class RetentionFixtureBase(unittest.TestCase):
         self.os_home = self.root / "os-home"
         self._env = dict(os.environ)
         os.environ["CONTEXT_GUARD_DATA_DIR"] = str(self.data_dir)
+        # Fixture runs never dispatch real detached maintenance children;
+        # trigger behavior has dedicated tests that patch the spawn seam.
+        os.environ["CONTEXT_GUARD_DISABLE_RETENTION_TRIGGER"] = "1"
         os.environ["CODEX_HOME"] = str(self.codex_home)
         os.environ["HOME"] = str(self.os_home)
         os.environ["USERPROFILE"] = str(self.os_home)
@@ -202,17 +205,23 @@ class RetentionFixtureBase(unittest.TestCase):
 
 
 class RetentionPolicyTests(RetentionFixtureBase):
-    def test_default_policy_is_disabled_and_absent_file_never_authorizes(self):
+    def test_absent_policy_resolves_the_automatic_default_without_a_file(self):
+        # 0.17.2: absence means "never configured", which resolves to the
+        # automatic default policy -- never to a user opt-out. Every disable
+        # path writes a real policy object, so absence stays unambiguous.
         policy = cg.read_retention_policy(self.data_dir)
-        self.assertFalse(policy["enabled"])
-        self.assertFalse((self.data_dir / "sessions-v2" / ".locks").exists()
-                         and (cg._retention_policy_path(self.data_dir)).exists())
+        self.assertTrue(policy["enabled"])
+        self.assertEqual(policy["policy_version"], 0)
+        self.assertEqual(policy["policy_source"], "default")
+        self.assertIsNone(policy.get("policy_invalid"))
+        self.assertFalse((cg._retention_policy_path(self.data_dir)).exists())
 
-    def test_enable_disable_round_trip_is_readable_and_no_op_repeat(self):
+    def test_explicit_policy_wins_and_disable_round_trip_is_readable(self):
         first = cg.write_retention_policy(self.data_dir, enabled=True)
         self.assertTrue(first["enabled"])
-        self.assertEqual(first["min_age_days"], 30)
-        self.assertEqual(first["quarantine_days"], 7)
+        self.assertEqual((first["min_age_days"], first["quarantine_days"]), (30, 7))
+        self.assertEqual(first["policy_source"], "explicit")
+        self.assertEqual(first["policy_version"], 1)
         again = cg.write_retention_policy(self.data_dir, enabled=True)
         self.assertEqual(
             {key: again[key] for key in
@@ -225,6 +234,12 @@ class RetentionPolicyTests(RetentionFixtureBase):
         disabled = cg.write_retention_policy(self.data_dir, enabled=False)
         self.assertFalse(cg.read_retention_policy(self.data_dir)["enabled"])
         self.assertGreater(disabled["policy_version"], again["policy_version"])
+        # A custom retention period in an explicit policy is honored verbatim.
+        custom = cg.write_retention_policy(self.data_dir, enabled=True,
+                                           min_age_days=90, quarantine_days=14,
+                                           purge_enabled=False)
+        self.assertEqual((custom["min_age_days"], custom["quarantine_days"],
+                          custom["purge_enabled"]), (90, 14, False))
 
     def test_policy_values_are_clamped_on_write_and_invalid_on_read(self):
         # The explicit write path clamps into the documented safe ranges.
@@ -264,13 +279,24 @@ class RetentionPolicyTests(RetentionFixtureBase):
         self.assertFalse(cg.read_retention_policy(self.data_dir)["enabled"])
         self.assertEqual(outside.read_text(), "external")
 
-    def test_apply_without_policy_is_refused_and_preview_stays_available(self):
+    def test_apply_runs_under_the_default_policy_and_disabled_policy_refuses(self):
+        # 0.17.2: an absent policy resolves to the automatic default, so an
+        # explicit apply is authorized by the default retention contract.
         self.make_session("old", ended_days_ago=45)
+        report = cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertEqual(report["mode"], "apply")
+        self.assertEqual(report["counts"]["quarantined"], 1)
+        self.assertFalse(self.session_dir("old").is_dir())
+        quarantine = cg._retention_quarantine_dir(self.data_dir)
+        self.assertTrue(any(quarantine.iterdir()))
+        # An explicit disabled policy still refuses destructive apply.
+        self.make_session("kept", ended_days_ago=45)
+        cg.write_retention_policy(self.data_dir, enabled=False)
         with self.assertRaisesRegex(RuntimeError, "enabled policy"):
             cg.cleanup_old_sessions(self.data_dir, apply=True)
-        report = cg.cleanup_old_sessions(self.data_dir)
-        self.assertEqual(report["mode"], "preview")
-        self.assertTrue(self.session_dir("old").is_dir())
+        preview = cg.cleanup_old_sessions(self.data_dir)
+        self.assertEqual(preview["mode"], "preview")
+        self.assertTrue(self.session_dir("kept").is_dir())
 
 
 class RetentionEligibilityTests(RetentionFixtureBase):
@@ -854,7 +880,11 @@ class RetentionFairnessTests(RetentionFixtureBase):
 
 
 class RetentionSessionEndBoundaryTests(RetentionFixtureBase):
-    def test_session_end_never_runs_maintenance_or_creates_policy(self):
+    def test_session_end_never_scans_mutates_others_or_creates_policy(self):
+        # The 0.17.2 trigger runs detached with its own budget; with the
+        # suite kill switch set it records a skip and nothing else happens
+        # in-process. The hook still never scans, never deletes and never
+        # writes a policy object.
         self.make_session("old", ended_days_ago=45)
         self.make_session("current", ended_days_ago=None, finished=False)
         before = self.snapshot(self.data_dir)
@@ -865,13 +895,20 @@ class RetentionSessionEndBoundaryTests(RetentionFixtureBase):
                 cg.dispatch(self.payload("SessionEnd", "current")), {})
         self.assertFalse(cg._retention_policy_path(self.data_dir).exists())
         self.assertTrue(self.session_dir("old").is_dir())
+        # The kill switch is silent: no trigger bookkeeping, no dispatch.
+        self.assertEqual(cg._retention_read_trigger_state(self.data_dir), {})
         after = self.snapshot(self.data_dir)
         # Only the current session's own state changed.
         changed = {key for key in set(before) | set(after)
                    if before.get(key) != after.get(key)}
         self.assertTrue(changed)
-        self.assertTrue(all(key.startswith("sessions-v2") and
-                            "current" in key for key in changed))
+        # Only the current session's own objects and its own `.locks`
+        # maintenance metadata may change; no other session object may.
+        self.assertTrue(all(key.replace("\\", "/").startswith("sessions-v2")
+                            for key in changed))
+        self.assertTrue(all("current" in key.replace("\\", "/").split("/")
+                            or ".locks" in key.replace("\\", "/").split("/")
+                            for key in changed))
 
     def test_cli_cleanup_without_root_refuses_before_any_resolution(self):
         default_home = self.root / "never-created-codex-home"

@@ -58,8 +58,11 @@ class RetentionDisabledCandidate(fixtures.IsolatedEnvironment):
         self.assertEqual(self.snapshot(self.data_dir), before)
 
     def test_direct_api_default_is_preview_without_mutation(self):
-        # 0.17.0: the internal API previews by default; deletion needs an
-        # enabled policy and an explicit apply bound to a manifest.
+        # 0.17.2: the internal API previews by default; deletion needs an
+        # explicit apply under the effective policy. An absent policy
+        # resolves to the automatic default (so explicit apply runs); an
+        # explicitly disabled policy refuses. Deletion still never happens
+        # without the explicit apply.
         old, _ = self.fixture_tree()
         before = self.snapshot(self.data_dir)
         report = cg.cleanup_old_sessions(self.data_dir)
@@ -76,9 +79,16 @@ class RetentionDisabledCandidate(fixtures.IsolatedEnvironment):
                    and ".locks" not in key.replace("\\", "/").split("/")}
         self.assertEqual(changed, set())
         self.assertFalse(cg._retention_policy_path(self.data_dir).exists())
+        cg.write_retention_policy(self.data_dir, enabled=False)
         with self.assertRaisesRegex(RuntimeError, "enabled policy"):
             cg.cleanup_old_sessions(self.data_dir, apply=True)
-        self.assertEqual(self.snapshot(self.data_dir), after)
+        # The refusal (and the explicit policy write) touch `.locks`
+        # metadata only; no session object changes.
+        changed = {key for key in set(after) | set(self.snapshot(self.data_dir))
+                   if after.get(key) != self.snapshot(self.data_dir).get(key)
+                   and ".locks" not in key.replace("\\", "/").split("/")}
+        self.assertEqual(changed, set())
+        self.assertTrue(old.is_dir())
 
     def test_internal_delete_reports_unavailable_without_mutation(self):
         old, _ = self.fixture_tree()

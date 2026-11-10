@@ -65,6 +65,7 @@ class SessionEndBudgetTests(unittest.TestCase):
         self.data = self.root / "data"
         self.env = mock.patch.dict(os.environ, {
             "HOME": str(self.root / "os-home"), "USERPROFILE": str(self.root / "os-home"),
+            "CONTEXT_GUARD_DISABLE_RETENTION_TRIGGER": "1",
             "CODEX_HOME": str(self.root / "codex-home"), "CONTEXT_GUARD_DATA_DIR": str(self.data),
             "PYTHONDONTWRITEBYTECODE": "1",
         })

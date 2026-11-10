@@ -2,7 +2,7 @@
 
 In 0.17.1, installing or updating Context Guard leaves its task records in place. Upgrading within the same plugin entry can read existing schema 13 records. Switching entries leaves those records under the entry that wrote them. If you want to look up a task from the new entry, the [migration tool](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md) can preview and copy supported `sessions-v2` records on the same machine. Older `sessions` directories stay with the original plugin.
 
-Session cleanup was disabled in 0.16.0 and 0.16.1. Version 0.17.0 restored it as an opt-in maintenance command, and 0.17.1 keeps that behavior. The command previews by default. Installing the plugin neither enables a retention policy nor creates a scheduled job. Ending a session saves state and performs no sweep.
+Session cleanup was disabled in 0.16.0 and 0.16.1. Version 0.17.0 restored it as an opt-in maintenance command. Since 0.17.2 maintenance is automatic by default: with no retention policy configured, ending a session saves state and then dispatches one bounded background maintenance pass (30 days after a session ends, 7 further days in recoverable quarantine, then permanent deletion). You never have to run a command, confirm a batch, or register a scheduled job for this. Explicit choices still win: a policy you disabled, a custom retention period, `purge_enabled=false`, and the durable opt-out (see below) are honored, and a corrupted or unreadable policy never authorizes deletion. Installing the plugin still never creates a scheduled job; the platform scheduler entry remains an optional extra.
 
 ## Keep old tasks working
 
@@ -10,7 +10,7 @@ Finish tasks that still need the old plugin before changing its entry. If they n
 
 The [0.17.1 upgrade guide](UPGRADE_0_17_1.md) covers which installation routes switch entries, how to review the new Hooks, and when copying records is useful. Copying supported records does not transfer Hook trust or move an active task into a different environment. See [compatibility](COMPATIBILITY.md) and [local acceptance](LOCAL_ACCEPTANCE.md) for exact host results.
 
-## Preview cleanup
+## Inspect, customize, or turn off automatic maintenance
 
 First identify the entry with `codex plugin list --json` in the Codex environment you want to inspect. If you have more than one entry or data directory, run the [migration tool's read-only inventory](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md#stages) against that environment's configuration directory. Use the data-root path listed for the intended entry. Keep the inventory and any cleanup report on your machine.
 
@@ -20,9 +20,17 @@ From the extracted release directory, run the following with that private data-r
 python3 scripts/context_guard.py cleanup --data-dir "/path/to/plugin-data"
 ```
 
-Preview reports eligible sessions and why it keeps others. It makes no changes to session data. The command requires `--data-dir` and exits with code 2 when it is missing. Use `--policy show` with the same data root to see whether maintenance and permanent deletion are allowed.
+Preview reports eligible sessions and why it keeps others. It makes no changes to session data. The command requires `--data-dir` and exits with code 2 when it is missing. Use `--policy show` with the same data root to see the effective policy, whether permanent deletion is allowed, and the last automatic maintenance attempt (`automatic_maintenance` reports the durable opt-out and the trigger's last outcome or skip reason).
 
-When you first enable the default policy, apply can move eligible sessions to quarantine after 30 days and permanently delete them after seven further days in quarantine. To enable quarantine without permanent deletion, run the first command below. The second command saves a preview. Inspect it before running the third command, which applies only the saved selection. Use an unused local filename for the preview.
+To turn automatic maintenance off, run:
+
+```shell
+python3 scripts/context_guard.py cleanup --data-dir "/path/to/plugin-data" --maintenance-disable
+```
+
+This removes a registered scheduler entry (if any), disables the policy, and writes a durable opt-out record that also silences the background trigger. Later upgrades never re-enable maintenance on their own; run `--policy enable` (or `--maintenance-enable`, which also re-enables the policy) to opt back in. An opt-out record that exists but cannot be read blocks re-enabling until it is resolved manually. While an opt-out exists, every destructive apply is refused -- including a registered scheduler entry whose policy object was lost.
+
+Custom retention periods and quarantine-only mode are set on the policy. To enable quarantine without permanent deletion, or with a custom age, run the first command below. The second command saves a preview. Inspect it before running the third command, which applies only the saved selection. Use an unused local filename for the preview.
 
 ```shell
 python3 scripts/context_guard.py cleanup --data-dir "/path/to/plugin-data" --policy enable --no-purge
@@ -30,7 +38,7 @@ python3 scripts/context_guard.py cleanup --data-dir "/path/to/plugin-data" --sav
 python3 scripts/context_guard.py cleanup --data-dir "/path/to/plugin-data" --apply-manifest "/path/to/cleanup-preview.json"
 ```
 
-`--apply` instead uses the selection built by that invocation. To put back a quarantined session, pass `--restore <name>` with the same data root. Restore checks the identity and contents and requires a free destination. Scheduled maintenance is a separate choice. Use `--maintenance-status` to check whether a job is present and enabled.
+`--apply` instead uses the selection built by that invocation under the effective policy. To put back a quarantined session, pass `--restore <name>` with the same data root. Restore checks the identity and contents and requires a free destination. A daily scheduled maintenance job is an additional choice on top of the automatic path: `--maintenance-enable` registers it, `--maintenance-status` reads back whether a job is present and enabled.
 
 ## Where the records live
 
@@ -63,15 +71,43 @@ SessionEnd saves current state and, when active, recovery content. The separate
 maintenance command reports its work as `cg-retention-report/v1`. It uses the
 following checks:
 
-- Preview is the default: `cleanup --data-dir <root>` scans, adjudicates and
-  reports without touching session data. Without an explicit `--data-dir` the
-  command refuses (exit 2) before resolving or creating any default home.
-- Deletion requires an explicitly enabled retention policy
+- Preview is the default for the manual command: `cleanup --data-dir <root>`
+  scans, adjudicates and reports without touching session data. Without an
+  explicit `--data-dir` the command refuses (exit 2) before resolving or
+  creating any default home.
+- Destructive transitions are authorized by the effective retention policy
   (`cg-retention-policy/v1`; defaults: 30 days after session end, 7 days in
   recoverable quarantine, both clamped, purge enabled by default) plus an
-  explicit apply using this pass's selection or a saved preview manifest.
-  A policy object is never created automatically;
-  a data root with no enabled policy stays preview-only.
+  explicit apply using this pass's selection or a saved preview manifest,
+  and no durable opt-out: an apply under an opt-out is refused even if the
+  policy object was lost.
+  An ABSENT policy object resolves to the automatic default policy (0.17.2:
+  new installs and upgraded roots need no extra configuration; a manifest
+  saved against the unmaterialized default (version 0) is refused after the
+  child materializes version 1, because the policy version changed). An
+  explicit
+  policy file always wins, values in a valid policy are honored verbatim
+  (`enabled=false`, `purge_enabled=false`, custom periods), and a corrupted,
+  unreadable or boundary-failing policy disables everything with the failing
+  fact named — untrusted policy bytes never authorize deletion. Every disable
+  path writes a real policy object, so absence can only mean "never
+  configured".
+- Automatic maintenance runs as a bounded, deduplicated, detached background
+  pass dispatched after SessionEnd persists the session (schema
+  `cg-retention-trigger/v1` under `.locks`). The hook itself performs no
+  scan, deletes nothing, and writes no policy object; it records one attempt
+  per minimum interval (6 hours per data root), concurrent SessionEnds are
+  deduplicated by an exclusive-create claim that expires if a child is
+  stranded, and the trigger is skipped without any dispatch when the durable
+  opt-out, a disabled or invalid policy, or a SessionEnd without enough of
+  its remaining host budget says so. The child re-authorizes independently,
+  materializes the automatic default policy once (version 1, provenance
+  `default_auto`), runs the ordinary bounded apply pass, records a bounded
+  outcome (counts, purge progress, scan state), and releases its claim in
+  every path. Quarantine expiry therefore advances to real purge on later
+  ordinary use without any user action. A test/operator kill switch
+  (`CONTEXT_GUARD_DISABLE_RETENTION_TRIGGER`) makes every trigger decision
+  skip silently; the durable opt-out remains the user-facing switch.
 - Eligible objects move to recoverable quarantine; `cleanup --restore <name>`
   puts one quarantined object back and refuses to overwrite a live successor.
   Permanent purge runs only after the quarantine grace period, is bounded and
@@ -99,8 +135,12 @@ following checks:
   Purge, like quarantine, is deferred (`purge_busy`) while a writer or reader
   of that session holds its lifecycle lock.
 - Active, resumable, unfinished, busy-locked, partial-marker, legacy, linked
-  and out-of-scope objects are protected with a named reason. Hooks create no
-  maintenance object until maintenance is adopted. Discovery is durable
+  and out-of-scope objects are protected with a named reason. The SessionEnd
+  hook never touches session objects, the policy, quarantine records or
+  tombstones; its trigger bookkeeping (trigger state and dispatch claim)
+  stays under `.locks`, and the detached child may adopt the default policy
+  once through a compare-and-set that a concurrent disable always wins.
+  Discovery is durable
   across processes (plan D1): the session namespace and the quarantine
   directory each keep content-free hints under `.locks` -- a sorted,
   self-checking snapshot and an append-only journal whose records carry a
@@ -152,8 +192,11 @@ following checks:
   daily job that runs the interpreter which executed the command with this
   exact script (launchd on macOS, a Task Scheduler definition on Windows) and
   loads or enables it; `--maintenance-status` reads back whether the
-  definition exists, is current, and is actually loaded or enabled;
-  `--maintenance-disable` unloads and removes it. An entry under the label
+  definition exists, is current, and is actually loaded or enabled, alongside
+  the effective policy and the durable opt-out. `--maintenance-disable`
+  unloads and removes the entry AND writes the durable opt-out that also
+  disables the SessionEnd background trigger; later upgrades never re-enable
+  on their own. An entry under the label
   that this data root cannot prove it owns is reported as foreign and is
   never overwritten, unloaded or deleted.
 
@@ -165,8 +208,10 @@ The private permission boundary remains mandatory for state and recovery
 writes. A permission failure is still an error. Retention maintenance does not
 make mandatory writes or synchronous filesystem calls preemptible, and the
 complete installed SessionEnd command still needs its separate three-second
-native timing gate. The lightweight entry's monotonic anchor and
-current-session lock budget remain; no retention sweep runs after persistence.
+native timing gate, now including the trigger decision and detached spawn.
+The lightweight entry's monotonic anchor and current-session lock budget
+remain; the trigger never scans or deletes in the hook process, and an
+unknown budget anchor disables it.
 
 The retired direct deletion helper stays refused, and there is no environment
 switch that bypasses the preview/policy/manifest contract. Existing cursor,

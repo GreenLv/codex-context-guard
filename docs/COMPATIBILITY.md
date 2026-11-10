@@ -4,6 +4,26 @@ The newest section describes the current release. Older version sections retain
 their original compatibility and acceptance boundaries; a pending item in a
 historical section describes that point in time.
 
+## 0.17.2 — Unreleased
+
+0.17.2 changes retention behavior for every data root: with no retention
+policy configured, SessionEnd dispatches a bounded background maintenance
+pass automatically (30-day threshold, 7-day recoverable quarantine, then
+permanent purge). Roots that never configured a policy therefore start
+automatic maintenance without further configuration. Roots with an explicit
+enabled 0.17.x policy now also get unattended background applies (previously
+only their scheduler entry or manual apply ran); a root that wants manual-only
+control must run `cleanup --maintenance-disable` once, which writes a durable
+opt-out honored by all later versions. A 0.17.1 `--maintenance-disable`
+removed only its scheduler entry and left no durable marker, so that act
+alone cannot suppress the automatic path. Explicit `enabled=false` policies,
+custom periods, and `purge_enabled=false` keep working verbatim. A corrupted,
+unreadable or boundary-failing policy disables everything (fail closed). The
+new `.locks` bookkeeping objects (`cg-retention-optout/v1`,
+`cg-retention-trigger/v1`, `cg-retention-trigger-claim/v1`) are ignored by
+older runtimes; an old runtime's `cleanup` command keeps its own preview
+behavior. Schema 13, Stop protocol 5.0.0 and all nine Hooks are unchanged.
+
 ## 0.17.1 — 2026-11-09
 
 0.17.1 reads schema 13 records written by 0.14–0.17.0 without converting

@@ -8673,8 +8673,10 @@ def _prepare_session_directory(session_dir: Path, deadline: float) -> None:
         # Durable discovery once maintenance is adopted: with a policy object
         # present, retention maintenance reaches every session this runtime
         # creates through the registry, independent of readdir order or
-        # directory size. Without one, hooks create no maintenance object.
-        # Best effort; the budgeted backfill covers a failure.
+        # directory size. Without one, session creation appends no
+        # discovery hints (the trigger's own bookkeeping under `.locks` is
+        # separate and always allowed). Best effort; the budgeted backfill
+        # covers a failure.
         root = session_dir.parent.parent
         with contextlib.suppress(OSError, ValueError, PrivateBoundaryError):
             if _retention_policy_path(root).exists():
@@ -24255,14 +24257,29 @@ _RETENTION_PROTECTED_REASONS = (
     "cross_device", "quarantine_failed", "registry_unverified",
 )
 
+# 0.17.2 default-automatic maintenance: an ABSENT policy object resolves to
+# the automatic default policy (enabled) instead of a disabled preview. An
+# explicit policy file (written only by an explicit user command or by the
+# detached maintenance child materializing this default) always wins; a
+# corrupted or boundary-failing policy still disables everything (fail
+# closed), so untrusted policy bytes never authorize destructive cleanup.
 _RETENTION_POLICY_DEFAULTS = {
     "schema": RETENTION_POLICY_SCHEMA,
-    "enabled": False,
+    "enabled": True,
     "min_age_days": 30,
     "quarantine_days": 7,
     "purge_enabled": True,
     "policy_version": 0,
 }
+# Where the effective values came from: an absent object ("default"), an
+# explicit policy file ("explicit"), or a failed read ("invalid" -- always
+# paired with ``enabled=False`` and a ``policy_invalid`` reason).
+_RETENTION_POLICY_SOURCE_DEFAULT = "default"
+_RETENTION_POLICY_SOURCE_EXPLICIT = "explicit"
+_RETENTION_POLICY_SOURCE_INVALID = "invalid"
+# Provenance recorded when the detached maintenance child materializes the
+# automatic default as a real policy object (version 1).
+_RETENTION_POLICY_SOURCE_DEFAULT_AUTO = "default_auto"
 
 
 def _retention_policy_path(root: Path) -> Path:
@@ -24283,29 +24300,49 @@ def _clamp_retention_days(value: Any, bounds: tuple[int, int]) -> int:
 
 
 def read_retention_policy(root: Path) -> dict[str, Any]:
-    """Load the durable retention policy under strict versioned validation.
+    """Resolve the effective retention policy under strict versioned validation.
 
-    The policy object must be complete, well-typed and in-range: a missing
-    field, a wrong type, an out-of-range value, a wrong schema, a link or
-    any unreadable object makes the WHOLE policy invalid, and an invalid
-    policy never authorizes anything (``enabled`` reads False with
-    ``policy_invalid`` naming the first failing fact). Values are never
-    clamped into authorization: clamping belongs to the explicit write
-    path, so a corrupted or truncated file cannot fall back to an
-    aggressive one-day default.
+    Resolution (0.17.2 default-automatic maintenance):
+
+    - An ABSENT policy object resolves to the automatic default policy
+      (``enabled=True``, ``policy_version=0``, ``policy_source="default"``):
+      a fresh install or an upgraded root needs no extra configuration for
+      automatic maintenance to run. There is no ambiguity with an explicit
+      opt-out: every disable path writes a real policy object (and a
+      durable opt-out record), so absence can only mean "never configured".
+    - An EXPLICIT policy file must be complete, well-typed and in-range. A
+      missing field, a wrong type, an out-of-range value, a wrong schema, a
+      link or any unreadable object makes the WHOLE policy invalid, and an
+      invalid policy never authorizes anything (``enabled`` reads False
+      with ``policy_invalid`` naming the first failing fact). Values are
+      never clamped into authorization: clamping belongs to the explicit
+      write path, so a corrupted or truncated file cannot fall back to an
+      aggressive one-day default.
+    - ``policy_source`` records which branch produced the values
+      (``default`` / ``explicit`` / ``invalid``).
     """
-    policy = dict(_RETENTION_POLICY_DEFAULTS)
-    policy["policy_invalid"] = "absent"
     if not _retention_policy_locked(root):
+        policy = dict(_RETENTION_POLICY_DEFAULTS)
+        policy["enabled"] = False
+        policy["policy_source"] = _RETENTION_POLICY_SOURCE_INVALID
         policy["policy_invalid"] = "boundary"
         return policy
+    policy = dict(_RETENTION_POLICY_DEFAULTS)
+    policy["policy_source"] = _RETENTION_POLICY_SOURCE_DEFAULT
+    policy["policy_invalid"] = None
     try:
         raw = _retention_policy_path(root).read_text(encoding="utf-8")
         data = json.loads(raw)
+    except FileNotFoundError:
+        return policy
     except (OSError, UnicodeError, json.JSONDecodeError):
+        policy["enabled"] = False
+        policy["policy_source"] = _RETENTION_POLICY_SOURCE_INVALID
         policy["policy_invalid"] = "unreadable"
         return policy
     if not isinstance(data, dict) or data.get("schema") != RETENTION_POLICY_SCHEMA:
+        policy["enabled"] = False
+        policy["policy_source"] = _RETENTION_POLICY_SOURCE_INVALID
         policy["policy_invalid"] = "schema"
         return policy
     required = (
@@ -24321,6 +24358,8 @@ def read_retention_policy(root: Path) -> dict[str, Any]:
     for field, check in required:
         value = data.get(field)
         if value is None or not check(value):
+            policy["enabled"] = False
+            policy["policy_source"] = _RETENTION_POLICY_SOURCE_INVALID
             policy["policy_invalid"] = f"field:{field}"
             return policy
     policy.update({
@@ -24329,6 +24368,7 @@ def read_retention_policy(root: Path) -> dict[str, Any]:
         "quarantine_days": data["quarantine_days"],
         "purge_enabled": data["purge_enabled"],
         "policy_version": data["policy_version"],
+        "policy_source": _RETENTION_POLICY_SOURCE_EXPLICIT,
         "policy_invalid": None,
     })
     return policy
@@ -24429,13 +24469,19 @@ def _retention_maintenance_lock(root: Path, *, deadline: float | None = None):
 def write_retention_policy(
     root: Path, *, enabled: bool, min_age_days: int | None = None,
     quarantine_days: int | None = None, purge_enabled: bool | None = None,
+    bootstrap: bool = True, source: str = _RETENTION_POLICY_SOURCE_EXPLICIT,
 ) -> dict[str, Any]:
     """Create or update the policy; every change bumps the policy version.
 
-    Adoption is always explicit: a fresh install or upgrade never writes a
-    policy object, and an absent policy keeps maintenance preview-only.
-    The write takes the maintenance lock, so a revocation linearizes
-    against every destructive transition instead of racing it.
+    Explicit user commands always write a real policy object, so an absent
+    policy file can only mean "never configured" (it resolves to the
+    automatic default, never to a user opt-out). The write takes the
+    maintenance lock, so a revocation linearizes against every destructive
+    transition instead of racing it. ``bootstrap=False`` skips the full
+    discovery-generation adoption listing: only the detached maintenance
+    child passes it when materializing the automatic default, so adoption
+    discovery proceeds through budgeted passes (plan D1 escalation) rather
+    than an unbounded listing inside a bounded worker.
     """
     if not _maintenance_boundary_ok(root):
         raise RuntimeError(
@@ -24462,6 +24508,7 @@ def write_retention_policy(
             if purge_enabled is None else bool(purge_enabled),
             "policy_version": (previous["policy_version"] + 1) if exists else 1,
             "updated_at": utc_now(),
+            "policy_source": source,
         }
         if not _registry_object_is_writable(current):
             raise RuntimeError(
@@ -24472,7 +24519,7 @@ def write_retention_policy(
                 current, json.dumps(policy, ensure_ascii=False) + "\n")
         except (OSError, PrivateBoundaryError) as exc:
             raise RuntimeError(f"retention policy write failed: {exc}") from exc
-        if policy["enabled"]:
+        if policy["enabled"] and bootstrap:
             _retention_register_existing(root)
     return policy
 
@@ -24489,6 +24536,584 @@ def _retention_register_existing(root: Path) -> None:
     """
     context = _discovery_begin(root, deadline=None, adopted=True, force=True)
     _discovery_finish(root, context)
+
+
+# --- durable automatic-maintenance opt-out (0.17.2) -------------------------
+# Every disable path writes a durable opt-out record that covers BOTH the
+# SessionEnd background trigger and any scheduler registration: future
+# upgrades must never re-enable automatic maintenance on their own. The
+# record complements the explicit policy object (an explicit policy file
+# with ``enabled=false`` also disables), so deleting or corrupting the
+# policy object cannot silently resurrect automatic deletion.
+RETENTION_OPTOUT_SCHEMA = "cg-retention-optout/v1"
+RETENTION_OPTOUT_NAME = "retention-optout.json"
+
+
+def _retention_optout_path(root: Path) -> Path:
+    return root / V2_NAMESPACE / ".locks" / RETENTION_OPTOUT_NAME
+
+
+def _retention_read_optout(root: Path) -> dict[str, Any] | None:
+    """Return the durable opt-out record, or None when none exists.
+
+    A record that exists but cannot be trusted (link, unreadable bytes,
+    wrong schema) returns an ``unverifiable`` marker instead of None:
+    control state that cannot be read must disable destructive automatic
+    maintenance, never enable it.
+    """
+    path = _retention_optout_path(root)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return {"unverifiable": True, "reason": "unreadable"}
+    if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+        return {"unverifiable": True, "reason": "not_regular"}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {"unverifiable": True, "reason": "unreadable"}
+    if not isinstance(data, dict) or data.get("schema") != RETENTION_OPTOUT_SCHEMA:
+        return {"unverifiable": True, "reason": "schema"}
+    return data
+
+
+def _retention_write_optout(root: Path, *, reason: str) -> dict[str, Any]:
+    """Persist the durable opt-out under the maintenance lock (idempotent)."""
+    if not _maintenance_boundary_ok(root):
+        raise RuntimeError(
+            "retention opt-out boundary failed; opt-out was not written")
+    record = {
+        "schema": RETENTION_OPTOUT_SCHEMA,
+        "disabled_at": utc_now(),
+        "reason": reason,
+    }
+    with _retention_maintenance_lock(root):
+        path = _retention_optout_path(root)
+        if not _registry_object_is_writable(path):
+            raise RuntimeError(
+                "retention opt-out object is not a private regular file; opt-out was not written")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(path, json.dumps(record, ensure_ascii=False) + "\n")
+        except (OSError, PrivateBoundaryError) as exc:
+            raise RuntimeError(f"retention opt-out write failed: {exc}") from exc
+    return record
+
+
+def _retention_clear_optout(root: Path) -> bool:
+    """Remove a trusted opt-out record on an explicit re-enable; returns
+    whether one was removed. An unverifiable record is refused (it must be
+    resolved by the operator, not overwritten by an enable command)."""
+    record = _retention_read_optout(root)
+    if record is None:
+        return False
+    if record.get("unverifiable"):
+        raise RuntimeError(
+            "retention opt-out record is unreadable; resolve it manually before enabling")
+    if not _maintenance_boundary_ok(root):
+        raise RuntimeError("retention opt-out boundary failed")
+    _retention_optout_path(root).unlink(missing_ok=True)
+    return True
+
+
+# --- SessionEnd background maintenance trigger (0.17.2) ---------------------
+# The default-automatic path: after SessionEnd durably saves this session's
+# own state, the hook fires ONE bounded, deduplicated, detached maintenance
+# child that runs the existing budgeted maintenance executor. The hook never
+# scans the namespace, never writes a policy object, and never blocks on
+# maintenance work: the trigger is a small decision plus one detached spawn,
+# and every failure mode degrades to a recorded skip reason. Frequency is
+# bounded per data root (min interval), concurrent SessionEnds are
+# deduplicated by an exclusive-create claim file, and a claim stranded by a
+# killed child expires so the next SessionEnd recovers. The platform
+# scheduler entry stays an explicitly opt-in secondary path; the product
+# auto-registers nothing.
+RETENTION_TRIGGER_STATE_SCHEMA = "cg-retention-trigger/v1"
+RETENTION_TRIGGER_STATE_NAME = "retention-trigger.json"
+_RETENTION_TRIGGER_CLAIM_SCHEMA = "cg-retention-trigger-claim/v1"
+_RETENTION_TRIGGER_CLAIM_NAME = "retention-trigger.claim"
+# One maintenance attempt per data root at most this often; purge progress
+# after quarantine grace therefore advances within hours of real usage.
+_RETENTION_TRIGGER_MIN_INTERVAL_SECONDS = 6 * 3600
+# A claim older than this is stranded (the child budget is far shorter);
+# the next trigger unlinks it and dispatches a fresh child.
+_RETENTION_TRIGGER_CLAIM_TTL_SECONDS = 1800
+# The trigger costs a few lstats, one small read, one exclusive create and
+# one detached spawn; refuse to start it from a SessionEnd with less than
+# this much of its host budget left, so the mandatory save always wins.
+_RETENTION_TRIGGER_MIN_REMAINING_BUDGET_SECONDS = 0.15
+_RETENTION_TRIGGER_CHILD_BUDGET_SECONDS = _RETENTION_MAINTENANCE_DEFAULT_BUDGET_SECONDS
+# Test/operator kill switch: set to any non-empty value other than "0" to
+# make every trigger decision skip without dispatching. The durable opt-out
+# record is the user-facing switch; this one keeps suites and scripted hosts
+# free of detached children.
+_RETENTION_TRIGGER_ENV_DISABLE = "CONTEXT_GUARD_DISABLE_RETENTION_TRIGGER"
+
+
+def _retention_trigger_state_path(root: Path) -> Path:
+    return root / V2_NAMESPACE / ".locks" / RETENTION_TRIGGER_STATE_NAME
+
+
+def _retention_trigger_claim_path(root: Path) -> Path:
+    return root / V2_NAMESPACE / ".locks" / _RETENTION_TRIGGER_CLAIM_NAME
+
+
+def _retention_read_trigger_state(root: Path) -> dict[str, Any]:
+    """Load the small trigger-progress record; missing/corrupt reads as
+    never-attempted (the throttle is a fairness guard, not an authorization:
+    losing it can only mean an extra bounded pass, never deletion outside
+    the policy). The read never opens a non-regular object (a planted FIFO
+    must not block the hook) and never reads more than a small cap."""
+    path = _retention_trigger_state_path(root)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return {}
+    if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+        return {}
+    if info.st_size > 65536:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _retention_write_trigger_state(root: Path, state: dict[str, Any]) -> None:
+    if not _maintenance_boundary_ok(root):
+        raise RuntimeError("retention trigger state boundary failed")
+    path = _retention_trigger_state_path(root)
+    if not _registry_object_is_writable(path):
+        raise RuntimeError("retention trigger state is not a private regular file")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(state, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _retention_trigger_note_skip(
+    root: Path, reason: str, *, detail: Any = None, next_due_at: str | None = None,
+) -> None:
+    """Best-effort skip bookkeeping: never raises, never blocks SessionEnd.
+
+    Idempotent: an unchanged skip (same reason and detail, no new due
+    date) is not rewritten, so steady-state skips (an opted-out root, a
+    throttled root within its interval) cost one small read, not a write,
+    on every SessionEnd.
+    """
+    try:
+        if not _maintenance_boundary_ok(root):
+            return
+        state = _retention_read_trigger_state(root)
+        previous = state.get("last_skip") or {}
+        if (previous.get("reason") == reason
+                and previous.get("detail", None) == detail
+                and (next_due_at is None
+                     or state.get("next_due_at") == next_due_at)):
+            return
+        state["schema"] = RETENTION_TRIGGER_STATE_SCHEMA
+        state["updated_at"] = utc_now()
+        state["last_skip"] = {"reason": reason, "at": state["updated_at"],
+                              **({"detail": detail} if detail is not None else {})}
+        if next_due_at:
+            state["next_due_at"] = next_due_at
+        _retention_write_trigger_state(root, state)
+    except Exception:  # noqa: BLE001 - skip bookkeeping must never fail the hook
+        return
+
+
+def _retention_release_trigger_claim(root: Path, *, token: str | None = None) -> None:
+    """Remove this root's dispatch claim.
+
+    With a ``token``, only the claim this dispatch created is removed: a
+    late or superseded child can never delete a newer claim. The token is
+    read from the claim object itself; an unreadable or foreign claim is
+    left for TTL recovery rather than deleted blind.
+    """
+    path = _retention_trigger_claim_path(root)
+    if not token:
+        # No token (direct API/tests): unconditional release. Production
+        # dispatches always carry the claim token they created.
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+        return
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_size > 65536:
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return
+    if isinstance(data, dict) and data.get("token") == token:
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+
+
+def _retention_remove_stale_claim(claim_path: Path) -> bool:
+    """Retire a stranded claim without a remove/recreate race.
+
+    The winner locks the claim OBJECT itself (fcntl/msvcrt), re-verifies
+    that the locked inode is still the object named by the path and still
+    stale, and only then unlinks it. A concurrent hook locking the same
+    inode loses and skips; a hook that arrived after a replacement sees a
+    fresh object and never reaches this path. No unlink happens through a
+    name that no longer names the locked inode.
+    """
+    try:
+        fd = os.open(claim_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return True  # already gone: the caller can claim exclusively
+    except OSError:
+        return False
+    try:
+        if _msvcrt is not None:
+            _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
+        elif _fcntl is not None:
+            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        else:
+            return False
+    except OSError:
+        os.close(fd)
+        return False
+    try:
+        locked = os.fstat(fd)
+        try:
+            named = claim_path.lstat()
+        except FileNotFoundError:
+            named = None
+        except OSError:
+            named = None
+        if (named is None
+                or (named.st_ino, named.st_dev) != (locked.st_ino, locked.st_dev)
+                or time.time() - named.st_mtime < _RETENTION_TRIGGER_CLAIM_TTL_SECONDS):
+            # The name now belongs to a different (or fresh) object.
+            return False
+        claim_path.unlink(missing_ok=True)
+        return True
+    finally:
+        try:
+            if _msvcrt is not None:
+                os.lseek(fd, 0, os.SEEK_SET)
+                _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+            elif _fcntl is not None:
+                _fcntl.flock(fd, _fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
+
+
+def _retention_trigger_spawn(argv: list[str]) -> bool:
+    """Detach one maintenance child that outlives this process (seam).
+
+    POSIX: ``start_new_session`` re-parents the child away from the exiting
+    hook process. Windows: a detached, new process group that breaks away
+    from any job object when the host allows it (falling back without the
+    breakaway flag when the job forbids it). stdin/stdout/stderr are
+    detached so the child can never entangle the hook's streams. Tests
+    replace this function; the no-model trigger probe exercises the real
+    seam on each platform natively.
+    """
+    detached = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL)
+    try:
+        if sys.platform == "win32":
+            flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                     | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                     | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0))
+            try:
+                subprocess.Popen(argv, creationflags=flags, **detached)
+            except OSError:
+                if not flags & getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0):
+                    return False
+                subprocess.Popen(
+                    argv,
+                    creationflags=flags & ~getattr(
+                        subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0),
+                    **detached)
+        else:
+            subprocess.Popen(argv, start_new_session=True, **detached)
+        return True
+    except OSError:
+        return False
+
+
+def _retention_trigger_root_from_session(session_dir: Path) -> Path | None:
+    """The maintenance root owning a v2 session directory, else None."""
+    parent = session_dir.parent
+    if parent.name != V2_NAMESPACE:
+        return None
+    return parent.parent
+
+
+def _retention_session_end_trigger(
+    root: Path, *, remaining_budget: float | None,
+) -> None:
+    """Fire one bounded, deduplicated, detached maintenance pass; never raises.
+
+    Called from ``handle_session_end`` after this session's state and
+    recovery are durably saved. Every failure mode becomes a recorded skip
+    reason (best effort) and control returns to the session: cleanup can
+    never cost the session its own save, and the hook's remaining budget is
+    checked before the only work it does here (one exclusive create plus
+    one detached spawn).
+    """
+    try:
+        _retention_session_end_trigger_inner(root, remaining_budget=remaining_budget)
+    except Exception:  # noqa: BLE001 - trigger failure must never fail SessionEnd
+        _retention_trigger_note_skip(root, "internal_error")
+
+
+def _retention_session_end_trigger_inner(
+    root: Path, *, remaining_budget: float | None,
+) -> None:
+    if os.environ.get(_RETENTION_TRIGGER_ENV_DISABLE, "") not in ("", "0"):
+        # Silent: suite/scripted hosts must not gain per-SessionEnd writes.
+        return
+    if not _maintenance_boundary_ok(root):
+        _retention_trigger_note_skip(root, "boundary")
+        return
+    if (remaining_budget is None
+            or remaining_budget < _RETENTION_TRIGGER_MIN_REMAINING_BUDGET_SECONDS):
+        # Gate FIRST, silently: an exhausted or unknown anchor never pays
+        # for reads or bookkeeping writes, and never starts a detached
+        # worker. Only a verified same-process anchor proves the latency
+        # contract behind this floor.
+        return
+    optout = _retention_read_optout(root)
+    if optout is not None:
+        _retention_trigger_note_skip(
+            root, "opt_out",
+            detail="unverifiable" if optout.get("unverifiable") else None)
+        return
+    policy = read_retention_policy(root)
+    if policy.get("policy_invalid"):
+        _retention_trigger_note_skip(root, "policy_invalid",
+                                     detail=policy.get("policy_invalid"))
+        return
+    if not policy["enabled"]:
+        _retention_trigger_note_skip(root, "policy_disabled")
+        return
+    if not (root / V2_NAMESPACE).is_dir():
+        # Nothing to maintain yet: skip without writing anything on a root
+        # that has no namespace (the maintenance pass would refuse anyway).
+        return
+    claim_path = _retention_trigger_claim_path(root)
+    try:
+        claim_info = claim_path.lstat()
+    except FileNotFoundError:
+        claim_info = None
+    except OSError:
+        claim_info = None
+        # An unreadable claim object is treated as held: never dispatch
+        # through an object the boundary cannot read.
+        _retention_trigger_note_skip(root, "claim_unreadable")
+        return
+    if claim_info is not None:
+        # st_mtime is wall-clock epoch time; compare it with time.time().
+        age = max(0.0, time.time() - claim_info.st_mtime)
+        if age < _RETENTION_TRIGGER_CLAIM_TTL_SECONDS:
+            _retention_trigger_note_skip(root, "claim_held")
+            return
+        if not _retention_remove_stale_claim(claim_path):
+            # Lost the takeover or the object turned fresh under us.
+            _retention_trigger_note_skip(root, "claim_held")
+            return
+    # Build the child argv BEFORE claiming: a failure here (missing
+    # interpreter file) must not strand a claim.
+    token = os.urandom(16).hex()
+    argv = _retention_maintenance_executor_command(root)
+    argv += ["--budget-seconds", repr(_RETENTION_TRIGGER_CHILD_BUDGET_SECONDS),
+             "--trigger-run", "--trigger-token", token]
+    state = _retention_read_trigger_state(root)
+    last_attempt = parse_time(state.get("last_attempt_at"))
+    now_dt = dt.datetime.now(dt.timezone.utc)
+    if last_attempt is not None:
+        elapsed = (now_dt - last_attempt).total_seconds()
+        if 0 <= elapsed < _RETENTION_TRIGGER_MIN_INTERVAL_SECONDS:
+            # A future last_attempt (clock moved back) is not trusted as
+            # proof of a recent attempt; the claim file still deduplicates.
+            next_due = (last_attempt
+                        + dt.timedelta(seconds=_RETENTION_TRIGGER_MIN_INTERVAL_SECONDS))
+            _retention_trigger_note_skip(
+                root, "throttled",
+                next_due_at=next_due.isoformat().replace("+00:00", "Z"))
+            return
+    claim = {"schema": _RETENTION_TRIGGER_CLAIM_SCHEMA,
+             "pid": os.getpid(), "started_at": utc_now(), "token": token}
+    try:
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(claim_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                     | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(claim, ensure_ascii=False) + "\n")
+    except FileExistsError:
+        _retention_trigger_note_skip(root, "claim_race")
+        return
+    except OSError:
+        # The failure class is enough for diagnosis; raw exception text can
+        # carry local paths and is never persisted.
+        _retention_trigger_note_skip(root, "claim_failed",
+                                     detail="OSError")
+        return
+    # The attempt is recorded BEFORE the spawn: the claim plus this record
+    # are the durable dedup facts even if this process dies mid-spawn.
+    try:
+        attempted = _retention_read_trigger_state(root)
+        attempted["schema"] = RETENTION_TRIGGER_STATE_SCHEMA
+        attempted["updated_at"] = utc_now()
+        attempted["last_attempt_at"] = attempted["updated_at"]
+        attempted["next_due_at"] = (
+            parse_time(attempted["updated_at"])
+            + dt.timedelta(seconds=_RETENTION_TRIGGER_MIN_INTERVAL_SECONDS)
+        ).isoformat().replace("+00:00", "Z")
+        _retention_write_trigger_state(root, attempted)
+    except Exception:  # noqa: BLE001 - claim already exists
+        pass
+    if not _retention_trigger_spawn(argv):
+        _retention_release_trigger_claim(root, token=token)
+        _retention_trigger_note_skip(root, "spawn_failed")
+        return
+    try:
+        attempted = _retention_read_trigger_state(root)
+        attempted["schema"] = RETENTION_TRIGGER_STATE_SCHEMA
+        attempted["updated_at"] = utc_now()
+        attempted["last_dispatch_at"] = attempted["updated_at"]
+        _retention_write_trigger_state(root, attempted)
+    except Exception:  # noqa: BLE001 - dispatch already succeeded
+        return
+
+
+def _retention_materialize_default_policy(root: Path) -> bool:
+    """Compare-and-set adoption of the automatic default policy.
+
+    Runs under the maintenance lock and re-reads BOTH control objects
+    inside it: the default policy is written only when no durable opt-out
+    exists and the policy object is still absent at the linearization
+    point, so a disable landing between the child's earlier reads and this
+    write always wins. Returns True when this call wrote the policy; False
+    when the object already exists (the caller re-reads the effective
+    policy either way). Raises when the opt-out exists or the control
+    state cannot be trusted.
+    """
+    held = _retention_maintenance_lock(root)
+    with held:
+        if _retention_read_optout(root) is not None:
+            raise RuntimeError("retention maintenance is opted out")
+        if _retention_policy_path(root).exists():
+            return False
+        write_retention_policy(root, enabled=True, bootstrap=False,
+                               source=_RETENTION_POLICY_SOURCE_DEFAULT_AUTO)
+        return True
+
+
+def _retention_trigger_compact_outcome(report: dict[str, Any]) -> dict[str, Any]:
+    """Bounded outcome summary persisted by the maintenance child."""
+    purge = report.get("purge")
+    return {
+        "counts": report.get("counts"),
+        "scan_complete": bool(report.get("scan_complete")),
+        "capacity_exceeded": bool(report.get("capacity_exceeded")),
+        "backlog": bool(report.get("backlog")),
+        "purge": purge if isinstance(purge, dict) else None,
+        "recovery": report.get("recovery"),
+        "refused": report.get("refused"),
+    }
+
+
+def _retention_trigger_child_pass(
+    root: Path, *, budget_seconds: float, trigger_token: str = "",
+) -> int:
+    """The detached maintenance child started by the SessionEnd trigger.
+
+    Re-authorizes independently of the hook decision (the parent only
+    pre-filtered), adopts the automatic default policy through a
+    compare-and-set under the maintenance lock (a disable landing between
+    the hook's reads and this write always wins), runs one bounded apply
+    pass through the ordinary executor — which re-reads the policy and the
+    durable opt-out inside the lock as its own linearization point —
+    records the bounded outcome, and releases ITS OWN claim token in every
+    path. Normal deferrals (opt-out, invalid policy, busy lock) exit 0;
+    only an unexpected internal error exits 2.
+    """
+    def released_skip(reason: str, *, detail: Any = None, code: int = 0) -> int:
+        _retention_release_trigger_claim(root, token=token)
+        _retention_trigger_note_skip(root, reason, detail=detail)
+        return code
+
+    token = trigger_token
+    try:
+        if not _maintenance_boundary_ok(root):
+            return released_skip("child_boundary")
+        optout = _retention_read_optout(root)
+        if optout is not None:
+            return released_skip(
+                "child_opt_out",
+                detail="unverifiable" if optout.get("unverifiable") else None)
+        policy = read_retention_policy(root)
+        if policy.get("policy_invalid"):
+            return released_skip("child_policy_invalid",
+                                 detail=policy.get("policy_invalid"))
+        if not policy["enabled"]:
+            return released_skip("child_policy_disabled")
+        if policy["policy_source"] == _RETENTION_POLICY_SOURCE_DEFAULT:
+            try:
+                _retention_materialize_default_policy(root)
+            except RuntimeError as exc:
+                # A concurrent disable (or an opt-out) won the
+                # linearization point: honor it, never overwrite it.
+                return released_skip(
+                    "child_opt_out" if "opted out" in str(exc) else
+                    "child_policy_materialize_failed",
+                    detail=None if "opted out" in str(exc)
+                    else type(exc).__name__)
+        # Re-read: the effective policy may have changed during adoption.
+        policy = read_retention_policy(root)
+        if policy.get("policy_invalid"):
+            return released_skip("child_policy_invalid",
+                                 detail=policy.get("policy_invalid"))
+        if not policy["enabled"]:
+            return released_skip("child_policy_disabled")
+        deadline = time.monotonic() + max(0.0, float(budget_seconds))
+        try:
+            report = cleanup_old_sessions(root, deadline=deadline, apply=True,
+                                          manifest=None)
+        except (RuntimeError, TimeoutError, OSError) as exc:
+            opted_out = "opted out" in str(exc)
+            return released_skip(
+                "child_opt_out" if opted_out else "child_pass_deferred",
+                detail=None if opted_out else type(exc).__name__)
+        try:
+            if not _maintenance_boundary_ok(root):
+                _retention_release_trigger_claim(root)
+                return 0
+            state = _retention_read_trigger_state(root)
+            state["schema"] = RETENTION_TRIGGER_STATE_SCHEMA
+            state["updated_at"] = utc_now()
+            state["last_attempt_at"] = state["updated_at"]
+            state["last_success_at"] = state["updated_at"]
+            state["last_outcome"] = _retention_trigger_compact_outcome(report)
+            state.pop("last_skip", None)
+            _retention_write_trigger_state(root, state)
+        except Exception:  # noqa: BLE001 - pass already ran; report anyway
+            pass
+        finally:
+            _retention_release_trigger_claim(root, token=token)
+        return 0
+    except Exception:  # noqa: BLE001 - unexpected child failure stays bounded
+        try:
+            _retention_release_trigger_claim(root, token=token)
+        except Exception:  # noqa: BLE001
+            pass
+        return 2
+
 
 
 # --- discovery generations (plan D1) ---------------------------------------
@@ -27021,6 +27646,13 @@ def _retention_maintenance_pass(
             "purge_enabled", "policy_version")}
         if policy.get("policy_invalid"):
             report["policy"]["policy_invalid"] = policy["policy_invalid"]
+        if apply and _retention_read_optout(root) is not None:
+            # The durable opt-out is a revocation, not a hint: a registered
+            # scheduler entry (or any other apply caller) must not resume
+            # deletion because the policy object was lost or corrupted --
+            # the default resolution can never override an explicit opt-out.
+            raise RuntimeError(
+                "retention maintenance is opted out; re-enable before applying")
         if apply and manifest is None and not policy["enabled"]:
             raise RuntimeError(
                 "retention apply requires an enabled policy; preview only")
@@ -27451,13 +28083,33 @@ def handle_session_end(
     budget_started_at: float | None = None,
 ) -> dict[str, Any]:
     del payload
-    # Persist this session even though retention deletion is unavailable.
+    # Persist this session first: maintenance never competes with the
+    # mandatory save, and a lost save is never compensated by cleanup.
     state["session"]["ended_at"] = utc_now()
     save_state(session_dir, state)
     if state["mode"]["active"]:
         write_recovery(session_dir, state, "SessionEnd")
-    # Retention deletion is disabled. State, recovery and their private
-    # permission checks remain mandatory; no cleanup path is entered.
+    # 0.17.2 default-automatic maintenance: after the save, fire one
+    # bounded, deduplicated, DETACHED maintenance child when the effective
+    # policy allows it. This is not the retired synchronous sweep: the hook
+    # performs no scan, deletes nothing, creates no policy object, and the
+    # trigger degrades to a recorded skip on any failure. An unknown budget
+    # anchor (None) still disables the trigger: only a verified same-process
+    # anchor proves the hook latency contract this decision relies on.
+    remaining_budget: float | None = None
+    now_monotonic = time.monotonic()
+    if (type(budget_started_at) in (int, float)
+            and 0 <= budget_started_at <= now_monotonic):
+        remaining_budget = max(0.0, budget_started_at
+                               + SESSION_END_HOST_BUDGET_SECONDS
+                               - SESSION_END_CLEANUP_RESERVE_SECONDS
+                               - now_monotonic)
+        if not (remaining_budget > 0):
+            remaining_budget = 0.0
+        trigger_root = _retention_trigger_root_from_session(session_dir)
+        if trigger_root is not None:
+            _retention_session_end_trigger(
+                trigger_root, remaining_budget=remaining_budget)
     return {}
 
 
@@ -27822,7 +28474,9 @@ def _print_retention_summary(report: dict[str, Any]) -> None:
 # Both platforms run one versioned executor: the verified interpreter that
 # executed the explicit enable command runs this exact script as
 # `cleanup --data-dir <root> --apply --json`. Registration is always an
-# explicit user action; the product never schedules on its own.
+# explicit user action; the product never schedules on its own. Since
+# 0.17.2 the AUTOMATIC path is the SessionEnd background trigger instead;
+# this scheduler entry stays an additional opt-in.
 #
 # Lifecycle contract (same on both platforms): enable/disable/status act only
 # on a MANAGED entry — a label under the managed prefix whose live definition
@@ -28090,7 +28744,10 @@ def _retention_schedule_report(code: int, facts: dict[str, Any], status: str,
     result["state"] = _retention_schedule_state(facts)
     result["status"] = status
     result["registered"] = result["state"] == "enabled"
-    result["policy_enabled"] = read_retention_policy(data_dir)["enabled"]
+    policy = read_retention_policy(data_dir)
+    result["policy_enabled"] = policy["enabled"]
+    result["policy_source"] = policy.get("policy_source")
+    result["optout_recorded"] = _retention_read_optout(data_dir) is not None
     result.update(extra)
     return code, result
 
@@ -28283,34 +28940,98 @@ def command_cleanup(args: argparse.Namespace) -> int:
         return 2
     root = root.expanduser().resolve()
     try:
+        if args.trigger_run:
+            # Detached maintenance child started by the SessionEnd trigger.
+            return _retention_trigger_child_pass(
+                root, budget_seconds=args.budget_seconds,
+                trigger_token=str(args.trigger_token or ""))
         if args.maintenance_enable:
+            # An explicit enable is user intent: an unverifiable opt-out
+            # refuses BEFORE anything changes; a trusted one is removed
+            # only after the whole enable succeeded, and the policy is
+            # re-enabled with it, so this is a real opt-back-in.
+            optout = _retention_read_optout(root)
+            if optout is not None and optout.get("unverifiable"):
+                print("retention opt-out record is unreadable; resolve it "
+                      "manually before enabling", file=sys.stderr)
+                return 2
             code, result = _retention_maintenance_enable(root, args.maintenance_label)
+            if code == 0:
+                try:
+                    result["policy"] = write_retention_policy(root, enabled=True)
+                    result["optout_cleared"] = _retention_clear_optout(root)
+                except RuntimeError as exc:
+                    result["optback_in_error"] = type(exc).__name__
+                    code = 2
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return code
         if args.maintenance_disable:
-            code, result = _retention_maintenance_disable(root, args.maintenance_label)
+            # The durable opt-out is written FIRST and unconditionally: the
+            # user's intent must hold even when scheduler removal fails,
+            # the entry is foreign, or the platform has no scheduler. A
+            # surviving scheduler entry cannot resume deletion: its apply
+            # passes re-read the disabled policy and the opt-out inside the
+            # maintenance lock and refuse.
+            try:
+                policy = write_retention_policy(root, enabled=False)
+                optout = _retention_write_optout(root, reason="maintenance-disable")
+            except RuntimeError:
+                raise
+            code, sched = _retention_maintenance_disable(root, args.maintenance_label)
+            result = dict(sched)
+            result["policy"] = policy
+            result["optout"] = optout
+            result["policy_enabled"] = False
+            result["policy_source"] = "explicit"
+            result["scheduler"] = {
+                "status": sched.get("status"), "state": sched.get("state"),
+                "exit_code": code,
+                **({"reason": sched.get("reason")}
+                   if sched.get("reason") else {}),
+                **({"error": sched.get("error")}
+                   if sched.get("error") else {}),
+            }
+            result.pop("status", None)
             print(json.dumps(result, ensure_ascii=False, indent=2))
-            return code
+            return 0
         if args.maintenance_status:
             code, result = _retention_maintenance_status(root, args.maintenance_label)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return code
         if args.policy == "enable":
+            # Refuse BEFORE anything changes on an unverifiable opt-out;
+            # remove a trusted one only after the policy write succeeded.
+            optout = _retention_read_optout(root)
+            if optout is not None and optout.get("unverifiable"):
+                print("retention opt-out record is unreadable; resolve it "
+                      "manually before enabling", file=sys.stderr)
+                return 2
             policy = write_retention_policy(
                 root, enabled=True, min_age_days=args.min_age_days,
                 quarantine_days=args.quarantine_days,
                 purge_enabled=False if args.no_purge else None)
-            print(json.dumps({"policy": policy}, ensure_ascii=False, indent=2))
+            result = {"policy": policy}
+            try:
+                result["optout_cleared"] = _retention_clear_optout(root)
+            except RuntimeError as exc:
+                result["optout_remove_failed"] = type(exc).__name__
+            print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         if args.policy == "disable":
             policy = write_retention_policy(
                 root, enabled=False, min_age_days=args.min_age_days,
                 quarantine_days=args.quarantine_days,
                 purge_enabled=False if args.no_purge else None)
-            print(json.dumps({"policy": policy}, ensure_ascii=False, indent=2))
+            result = {"policy": policy,
+                      "optout": _retention_write_optout(root, reason="policy-disable")}
+            print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         if args.policy == "show":
-            print(json.dumps({"policy": read_retention_policy(root)},
+            print(json.dumps({"policy": read_retention_policy(root),
+                              "automatic_maintenance": {
+                                  "optout": _retention_read_optout(root),
+                                  "trigger": _retention_read_trigger_state(root),
+                              }},
                              ensure_ascii=False, indent=2))
             return 0
         if args.restore is not None:
@@ -28729,7 +29450,8 @@ def main(*, budget_started_at: Any = _SESSION_END_BUDGET_UNSET) -> int:
     recovery_page.add_argument("--session-id", required=True)
     cleanup = subparsers.add_parser(
         "cleanup",
-        help="Session retention maintenance: preview by default, "
+        help="Session retention maintenance: preview by default for the "
+             "manual command, automatic by default in the background, "
              "policy-gated quarantine/restore/purge",
         allow_abbrev=False,
     )
@@ -28738,8 +29460,14 @@ def main(*, budget_started_at: Any = _SESSION_END_BUDGET_UNSET) -> int:
                          help="print the full versioned report")
     cleanup.add_argument(
         "--apply", action="store_true",
-        help="apply this pass's own adjudicated set (requires an enabled policy)",
+        help="apply this pass's own adjudicated set under the effective "
+             "policy (the automatic default policy applies when no explicit "
+             "policy object exists; an invalid or disabled policy refuses)",
     )
+    cleanup.add_argument(
+        "--trigger-run", action="store_true", help=argparse.SUPPRESS,
+    )
+    cleanup.add_argument("--trigger-token", help=argparse.SUPPRESS, default="")
     cleanup.add_argument(
         "--apply-manifest", type=Path,
         help="apply exactly the saved preview manifest (requires an enabled policy)",
@@ -28760,7 +29488,9 @@ def main(*, budget_started_at: Any = _SESSION_END_BUDGET_UNSET) -> int:
                              help="register the platform-scheduled maintenance entry "
                                   "(opt-in; the product never schedules on its own)")
     maintenance.add_argument("--maintenance-disable", action="store_true",
-                             help="remove the registered maintenance entry")
+                             help="stop automatic maintenance: remove the registered "
+                                  "scheduler entry AND write the durable opt-out that "
+                                  "also disables the SessionEnd background trigger")
     maintenance.add_argument("--maintenance-status", action="store_true",
                              help="read back the registered maintenance entry")
     cleanup.add_argument("--maintenance-label",

@@ -25,6 +25,7 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -123,6 +124,11 @@ def main() -> int:
         "--json", type=Path, default=None, help="write the matrix JSON here"
     )
     args = parser.parse_args()
+
+    # Suite runs never dispatch real detached maintenance children from
+    # SessionEnd fixtures: trigger tests patch the spawn seam explicitly
+    # and assert on the recorded decisions instead.
+    os.environ.setdefault("CONTEXT_GUARD_DISABLE_RETENTION_TRIGGER", "1")
 
     sys.path.insert(0, str(ROOT))
     module_names = discover_current_modules()

@@ -6,10 +6,15 @@ review; a later release of the same version does not change that evidence.
 
 ## 0.17.2 — Unreleased
 
-The ZIP includes the revised README, changelog and guides. Those files and
-the version metadata have a new distribution manifest. The nine Hooks,
-schema 13, Stop protocol 5.0.0 and retention behavior are unchanged. The
-0.17.1 release and its checksums are tied to the published tag.
+Retention behavior changes: default-automatic maintenance with a durable
+opt-out (`cg-retention-optout/v1`, `cg-retention-trigger/v1`,
+`cg-retention-trigger-claim/v1`, `cg-retention-policy/v1` gains the
+`policy_source` resolution). The nine Hooks, schema 13 and Stop protocol
+5.0.0 are unchanged; SessionEnd now dispatches a bounded detached
+maintenance child after saving state when the effective policy allows it.
+Changed runtime bytes require a fresh distribution manifest and artifact
+identity. The 0.17.1 release and its checksums are tied to the published
+tag.
 
 ## 0.17.1 — 2026-11-09
 
