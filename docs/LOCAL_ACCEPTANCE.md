@@ -5,6 +5,10 @@ Earlier candidate sections retain their original pending gates and failures;
 later outcomes do not retroactively change those observations. For the public
 release identity, follow the version's GitHub Release separately.
 
+## 0.17.2 — release-source evidence (2026-11-11)
+
+The [acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.2/context-guard-0.17.2-acceptance.json) identifies the final ZIP and reports the isolated 0.17.1 stable-entry upgrade and retention checks by platform. The [performance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.2/context-guard-0.17.2-performance.json) records the SessionEnd comparison. Both reports are separate from daily Desktop adoption.
+
 ## 0.17.1 — release-source evidence (2026-11-09)
 
 The [published acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.1/context-guard-0.17.1-acceptance.json) identifies the source and ZIP and records the three upgrade routes tested with the final package on macOS and Windows. Those runs used isolated Codex CLI environments. Migration and undo used sample session records. Daily Desktop use and migration of existing daily data have separate evidence.

@@ -36,11 +36,13 @@ Exit code 0 iff every scenario passed on this platform.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -61,6 +63,30 @@ def load_module(path: Path, name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def submit_concurrent_inputs(procs: list, payload: bytes) -> tuple[list[dict], list[bool]]:
+    """Send both complete payloads before waiting on either Hook process."""
+    barrier = threading.Barrier(len(procs))
+
+    def send(proc):
+        barrier.wait(timeout=10)
+        started = time.monotonic_ns()
+        try:
+            proc.stdin.write(payload)
+            proc.stdin.flush()
+        finally:
+            proc.stdin.close()
+            proc.stdin = None  # communicate() must not flush a closed pipe.
+        return {"input_started_ns": started,
+                "input_delivered_ns": time.monotonic_ns()}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(procs)) as pool:
+        deliveries = list(pool.map(send, procs))
+    # Both processes were started before either input was sent. If both are
+    # alive after both sends, their lifetimes overlapped after input delivery.
+    alive = [proc.poll() is None for proc in procs]
+    return deliveries, alive
 
 
 class Probe:
@@ -136,7 +162,8 @@ class Probe:
         return env
 
     def run_session_end_hook(self, data: Path, project: Path, session: str,
-                             *, expect_exit: int = 0) -> tuple[float, int]:
+                             *, expect_exit: int = 0,
+                             observation: dict | None = None) -> tuple[float, int]:
         payload = {"hook_event_name": "SessionEnd", "session_id": session,
                    "cwd": str(project)}
         started = time.monotonic()
@@ -145,6 +172,10 @@ class Probe:
             input=json.dumps(payload).encode("utf-8"),
             env=self.hook_env(data), capture_output=True, timeout=60)
         elapsed = time.monotonic() - started
+        if observation is not None:
+            # Captured immediately after the Hook subprocess returned, not
+            # when the worker's later state was read back.
+            observation["hook_return_at"] = self.cg.utc_now()
         if proc.returncode != expect_exit:
             raise RuntimeError(
                 f"hook exit {proc.returncode} (expected {expect_exit}): "
@@ -202,18 +233,26 @@ class Probe:
         encoded = self.make_expired_session(data, project, "expired-45d")
         fresh = self.make_expired_session(data, project, "fresh-2d",
                                           ended_days_ago=2.0)
-        elapsed, _ = self.run_session_end_hook(data, project, "current-probe")
+        hook = {}
+        elapsed, _ = self.run_session_end_hook(
+            data, project, "current-probe", observation=hook)
         state = self.await_success(data, timeout=POLL_TIMEOUT_SECONDS)
+        hook_return = self.cg.parse_time(hook.get("hook_return_at"))
+        success = self.cg.parse_time(state.get("last_success_at"))
+        completed_after_return = (hook_return is not None and success is not None
+                                  and success > hook_return)
         quarantined = not self.session_dir(data, encoded).exists()
         fresh_kept = self.session_dir(data, fresh).exists()
         policy = json.loads(
             (data / "sessions-v2" / ".locks" / self.cg.RETENTION_POLICY_NAME)
             .read_text(encoding="utf-8"))
-        ok = (quarantined and fresh_kept
+        ok = (completed_after_return and quarantined and fresh_kept
               and policy.get("policy_source") == "default_auto"
               and policy.get("enabled") is True)
         self.record("S1_parent_exit_survival_default_auto_chain", ok, {
             "hook_seconds": round(elapsed, 3),
+            "hook_return_at": hook.get("hook_return_at"),
+            "worker_success_after_hook_return": completed_after_return,
             "expired_quarantined": quarantined, "fresh_kept": fresh_kept,
             "policy_source": policy.get("policy_source"),
             "last_success_at": state.get("last_success_at"),
@@ -260,27 +299,45 @@ class Probe:
             [sys.executable, "-B", str(self.hook)], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
             for _ in range(2)]
-        for proc in procs:
-            proc.communicate(payload, timeout=60)
-        claims = list((data / "sessions-v2" / ".locks")
-                      .glob(self.cg._RETENTION_TRIGGER_CLAIM_NAME))
+        try:
+            deliveries, alive = submit_concurrent_inputs(procs, payload)
+            results = []
+            for proc, delivery in zip(procs, deliveries):
+                stdout, stderr = proc.communicate(timeout=60)
+                results.append({**delivery,
+                                "return_observed_ns": time.monotonic_ns(),
+                                "exit_code": proc.returncode,
+                                "stderr_head": stderr.decode(
+                                    "utf-8", "backslashreplace")[:300],
+                                "output_bytes": len(stdout)})
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.communicate(timeout=10)
+        overlap = all(alive)
         state = self.await_success(data, timeout=POLL_TIMEOUT_SECONDS)
-        # Exactly one quarantine even though both hooks fired.
+        claim = (data / "sessions-v2" / ".locks"
+                 / self.cg._RETENTION_TRIGGER_CLAIM_NAME)
+        deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
+        while claim.exists() and time.monotonic() < deadline:
+            time.sleep(POLL_INTERVAL_SECONDS)
         qdir = data / "sessions-v2" / ".locks" / "retention-quarantine"
         record_count = len(list(qdir.glob("*.record.json")))
-        # One dispatch: one quarantine record, no recorded claim race, and
-        # the dispatch claim released after the single child settled.
         last_skip = (state.get("last_skip") or {}).get("reason")
-        claim_released = not (data / "sessions-v2" / ".locks"
-                              / self.cg._RETENTION_TRIGGER_CLAIM_NAME).exists()
-        ok = (record_count == 1 and not self.session_dir(data, encoded).exists()
-              and claim_released and last_skip != "claim_race")
+        claim_released = not claim.exists()
+        ok = (overlap and all(item["exit_code"] == 0 for item in results)
+              and record_count == 1 and not self.session_dir(data, encoded).exists()
+              and claim_released)
         self.record("S3_concurrent_dispatch_deduplicated", ok, {
+            "hook_exchanges": results,
+            "alive_after_both_inputs": alive,
+            "inputs_overlapped": overlap,
             "quarantine_records": record_count,
             "claim_released": claim_released,
             "last_skip": last_skip,
-            "live_claims_after_settle": len(claims),
             "last_success_at": state.get("last_success_at"),
+            "scope": "overlapping hooks and one quarantine; dispatch count is not observed",
             "platform": sys.platform,
         })
 
@@ -338,9 +395,9 @@ class Probe:
         self.make_expired_session(data, project, "expired-45d")
         claim = (data / "sessions-v2" / ".locks"
                  / self.cg._RETENTION_TRIGGER_CLAIM_NAME)
-        worst = 0.0
-        dispatches = 0
+        iterations = []
         previous_success = None
+        attempts = set()
         for index in range(3):
             deadline = time.monotonic() + 60
             while claim.exists():
@@ -350,24 +407,45 @@ class Probe:
                 time.sleep(POLL_INTERVAL_SECONDS)
             self.backdate_last_attempt(data, hours=8)
             pre = self.trigger_state(data)
+            hook = {}
             elapsed, _ = self.run_session_end_hook(
-                data, project, "current-probe")
+                data, project, "current-probe", observation=hook)
             post = self.trigger_state(data)
-            if (not post.get("last_attempt_at")
-                    or post.get("last_attempt_at") == pre.get("last_attempt_at")):
+            attempt = post.get("last_attempt_at")
+            if (not attempt or attempt == pre.get("last_attempt_at")
+                    or attempt in attempts):
                 raise RuntimeError(
-                    f"iteration {index}: no new dispatch recorded")
-            dispatches += 1
-            self.await_success(data, timeout=POLL_TIMEOUT_SECONDS,
-                               after=previous_success)
-            previous_success = self.trigger_state(data).get("last_success_at")
-            worst = max(worst, elapsed)
-        ok = worst < SESSION_END_HOST_BUDGET_SECONDS and dispatches == 3
+                    f"iteration {index}: no unique new attempt recorded")
+            completion = self.await_success(data, timeout=POLL_TIMEOUT_SECONDS,
+                                            after=previous_success)
+            success = completion.get("last_success_at")
+            attempt_time = self.cg.parse_time(attempt)
+            success_time = self.cg.parse_time(success)
+            if (attempt_time is None or success_time is None
+                    or success_time < attempt_time):
+                raise RuntimeError(
+                    f"iteration {index}: completion does not follow its attempt")
+            dispatch = completion.get("last_dispatch_at")
+            dispatch_time = self.cg.parse_time(dispatch)
+            if dispatch_time is None or dispatch_time < attempt_time:
+                dispatch = None
+            iterations.append({"iteration": index + 1,
+                               "hook_seconds": round(elapsed, 6),
+                               "hook_return_at": hook.get("hook_return_at"),
+                               "last_attempt_at": attempt,
+                               "last_dispatch_at": dispatch,
+                               "last_success_at": success,
+                               "previous_success_at": previous_success})
+            attempts.add(attempt)
+            previous_success = success
+        worst = max(item["hook_seconds"] for item in iterations)
+        ok = worst < SESSION_END_HOST_BUDGET_SECONDS and len(iterations) == 3
         self.record("S6_session_end_hook_latency_including_trigger", ok, {
-            "worst_hook_seconds": round(worst, 3),
+            "worst_hook_seconds": round(worst, 6),
             "host_budget_seconds": SESSION_END_HOST_BUDGET_SECONDS,
-            "iterations": 3,
-            "dispatches_proven": dispatches,
+            "iterations": len(iterations),
+            "iteration_results": iterations,
+            "dispatches_proven": len(iterations),
             "platform": sys.platform,
         })
 

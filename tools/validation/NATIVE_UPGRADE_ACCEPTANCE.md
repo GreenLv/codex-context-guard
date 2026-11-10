@@ -36,8 +36,8 @@ exactly one of:
    official commands a run will issue, run before any operator trust step: the
    planned argv families are built and their executable resolved under the
    child environment; the platform launcher (`run_native_acceptance.ps1` on
-   Windows, `run_native_acceptance.sh` on POSIX) is parse-checked against this
-   run's argument vector (parse-only echo probes; the real batch never runs);
+   Windows, `run_native_acceptance.sh` on POSIX) parses and echoes this run's
+   argument vector in its side-effect-free probe mode;
    the driver cwd, module search path, UTF-8 child environment and the future
    output location are probed; and the installed CLI's entry parameters
    (`--version` style, plus the Windows `-c` entry flags) are probed rather
@@ -55,12 +55,13 @@ exactly one of:
 5. `--resume-wait RECEIPT --prepared-result PATH` — continues a run whose
    bounded official wait timed out (see below): it binds the pending-wait
    receipt, re-verifies the plan digest and the registration/installation
-   identity, then re-enters only that wait with the recorded budget.
+   identity, then continues the missing wait and subsequent observations for
+   the `finish-old` strategy.
 6. `--verify --prepared-result PATH --verify-output PATH` — independently
    re-derives every fact from the raw `rpc.jsonl` journal and artifacts; flags
    and summaries are never trusted on their own.
 
-Exit codes: `0` verified/passed or a `wait_resolved` resume, `1` executed but
+Exit codes: `0` for a completed stage or verification, `1` for an execution that is
 pending or failed (write a `review-required.json` and stop for the normal
 review path; a `wait_pending` run also exits 1), `2` refused inputs. Existing
 result files are never replaced.
@@ -88,24 +89,31 @@ changed plan digest or `prepare.json` digest, a result whose subject no longer
 binds the receipt, or an official identity whose registration, installation,
 path, or version changed since the timeout; the wait-governed `enabled` flag
 is excluded from that check because the operator's manual action is the
-expected change. It then re-enters only the bounded wait — official readbacks
-for the old-plugin disable, or read-only `hooks/list` polls through an
-observation client that never requires trust — and records `wait_resolved`
-with the resolved inventory, or writes a refreshed receipt and stays
-`wait_pending`. A resume never creates a HOME, never re-runs prepare,
-marketplace registration, plugin add, or any destructive step, and never sets
-trust programmatically. Boundary: it does not re-execute the interrupted
-phase's task observations; the original `wait_pending` result stays the
-authoritative phase record and remains unverifiable, so the acceptance gate
-stays unsatisfied until a full run of the same plan succeeds elsewhere.
+expected change. It then re-enters the bounded wait using official readbacks. If the
+wait is still pending, use the refreshed receipt on the next attempt. For
+`finish-old`, a resolved wait continues the remaining observations in the same
+isolated HOME. The original and resumed processes have separate journals.
+Run `--verify` on the completed continuation and retain the original result
+and all linked receipts. The verifier checks the original process cleanup,
+registration, installation, old task state, and the later observations.
+Trust still comes from normal official review.
+
+After the continuation reserves the transaction for its first new task, its
+receipt cannot start a second continuation. If that run is interrupted, keep
+the original result and the destination named by the consumption record.
+Inspect the official installation and the recorded stages before recovery.
+
+An `observe-open` run needs the original live client. After that client has
+closed, the result is `continuation_unavailable`. A later client cannot
+establish how the original open task would have continued.
 
 ## Per-round version bindings
 
 Module constants bind the exact old/new pair this toolkit revision verifies:
 `NEW_VERSION` and `NEW_MARKET` name the target; `OLD_MARKETS` maps each
 accepted starting version to its marketplace name; `OLD_ZIP_SHA256` pins
-published-release-ZIP provenance (`0.16.1`, and `0.17.0` whose marketplace
-name equals `NEW_MARKET`, i.e. the stable-identity in-place route); `0.15.1`
+published-release-ZIP provenance (`0.16.1`, `0.17.0`, and `0.17.1`).
+The `0.17.1` fixture exercises the stable-identity in-place route; `0.15.1`
 keeps its published-commit source-export route. A release round updates these
 constants to its own frozen pair in its own tool commit, so every result binds
 what it actually exercised.

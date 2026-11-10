@@ -1,189 +1,242 @@
-"""0.17.2 r1 evidence-reuse contract: records bind REAL owner-executed
-results; a pass claim without a real owner run behind it is never
-established, and a recorded failure/unknown node is refused."""
-
+"""Historical evidence reuse binds the complete owner run and inputs."""
 from __future__ import annotations
 
+import contextlib
+import copy
 import importlib.util
+import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-TOOLS = Path(__file__).resolve().parents[1] / "tools" / "validation"
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+import check_incident_coverage as incident  # noqa: E402
+
 SPEC = importlib.util.spec_from_file_location(
-    "behavior_evidence_reuse", TOOLS / "behavior_evidence_reuse.py")
-assert SPEC is not None and SPEC.loader is not None
+    "behavior_evidence_reuse", ROOT / "tools/validation/behavior_evidence_reuse.py")
 reuse = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reuse)
 
 
-def sha(path: Path) -> str:
-    import hashlib
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-class ReceiptFixture(unittest.TestCase):
-    """A minimal owner receipt bound to REAL files in a scratch root."""
-
+class OwnerRunTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        (self.root / "scripts").mkdir()
-        (self.root / "tests").mkdir()
-        (self.root / "scripts" / "product.py").write_text("a = 1\n",
-                                                          encoding="utf-8")
-        (self.root / "tests" / "test_product.py").write_text("b = 2\n",
-                                                             encoding="utf-8")
-        (self.root / "scripts" / "runner.py").write_text("c = 3\n",
-                                                         encoding="utf-8")
-        self.receipt_path = self.root / "receipt.json"
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.base = Path(temp.name)
+        self.root = self.base / "repository"
+        self.root.mkdir()
+        for path in ("tests/fixtures/incidents", "assets", "scripts", "tools/validation"):
+            (self.root / path).mkdir(parents=True)
+        (self.root / ".gitignore").write_text(
+            "__pycache__/\n.pytest_cache/\n", encoding="utf-8")
+        shutil.copyfile(ROOT / "scripts/check_incident_coverage.py",
+                        self.root / "scripts/check_incident_coverage.py")
+        shutil.copyfile(ROOT / "tools/validation/behavior_evidence_reuse.py",
+                        self.root / "tools/validation/behavior_evidence_reuse.py")
+        index = {"case_registry": {"active_case_count": 1},
+                 "legacy_source": {"active_case_count": 0}}
+        (self.root / "tests/fixtures/incidents/library_case_index.json").write_text(
+            json.dumps(index), encoding="utf-8")
+        for name in ("CHANGELOG.md", "CHANGELOG.zh-CN.md"):
+            (self.root / name).write_text("original notes\n", encoding="utf-8")
+        self.test_file = self.root / "tests/test_incident_library_regression.py"
+        self.test_file.write_text(
+            "import unittest\nclass DefaultPathAuthorizationCases(unittest.TestCase):\n"
+            "    def test_cgi_2026_009_017_026_default_path_allows_ordinary_business(self):\n"
+            "        self.assertTrue(True)\n", encoding="utf-8")
+        (self.root / "assets/input.json").write_text('{"value": 1}\n', encoding="utf-8")
+        self.node = reuse.REVIEWED_NODE
+        self.row = {"id": "case-one", "status": "active", "test_locator": self.node}
+        coverage = {"cases": [self.row], "legacy": []}
+        (self.root / "tests/fixtures/incidents/historical_case_coverage.json").write_text(
+            json.dumps(coverage), encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.root), "-c", "user.name=Test",
+                        "-c", "user.email=test@users.noreply.github.com",
+                        "commit", "-qm", "fixture"], check=True)
+        self.environment_id = "a" * 64
+        before = reuse.freeze_inputs(self.root, self.environment_id)
+        errors = []
+        executions = incident.execute_receipts(self.root, [self.row], errors)
+        self.assertEqual(errors, [])
+        self.assertEqual(executions["case-one"]["outcomes"][self.node], "passed")
+        after = reuse.freeze_inputs(self.root, self.environment_id)
+        identity = {"head": before["source"]["head"], "prepared_source_sha256": "b" * 64}
+        self.identity = identity
+        self.report = {"schema": "incident-coverage-validation/v3", "valid": True,
+                       "candidate_binding": identity,
+                       "release_gate": {"closes_release_gate": True, "consumer": {"passed": True}},
+                       "execution_receipts": executions}
+        self.report_path = self.base / "owner-report.json"
+        self.report_path.write_text(json.dumps(self.report), encoding="utf-8")
+        self.report_sha = reuse.file_digest(self.report_path)
+        self.receipt = incident.build_execution_receipt(
+            [self.row], executions, identity, before, after, self.report_sha)
+        self.record = self.derive()
+        self.reviewed_node_sha = reuse.reviewed_node_input_digest(
+            before["source"]["files"])
+        self.receipt_path = self.base / "owner-receipt.json"
+        self.receipt_path.write_text(json.dumps(self.receipt), encoding="utf-8")
+        self.receipt_sha = reuse.file_digest(self.receipt_path)
+        self.record_path = self.base / "record.json"
 
-    def write_receipt(self, *, outcome="passed", exit_code=0, node=None):
-        node = node or "tests/test_product.py::TestX::test_one"
-        receipt = {
-            "schema": reuse.RECEIPT_SCHEMA,
-            "produced_by": "check_incident_coverage",
-            "produced_at": "2026-11-11T00:00:00Z",
-            "candidate_binding": {"head": "0" * 40},
-            "environment": dict(reuse.current_environment()),
-            "nodes": [{
-                "node": node,
-                "row": "CGI-X",
-                "outcome": outcome,
-                "exit_code": exit_code,
-                "test_file_sha256": sha(self.root / "tests" / "test_product.py"),
-                "bindings": {
-                    "code": {"scripts/product.py":
-                             sha(self.root / "scripts" / "product.py")},
-                    "caller": {"scripts/runner.py":
-                               sha(self.root / "scripts" / "runner.py")},
-                    "schema": {},
-                    "tests": {"tests/test_product.py":
-                              sha(self.root / "tests" / "test_product.py")},
-                    "runner": {"scripts/runner.py":
-                               sha(self.root / "scripts" / "runner.py")},
-                    "deps": {},
-                    "config": {},
-                },
-            }],
-        }
-        self.receipt_path.write_text(json.dumps(receipt) + "\n",
-                                     encoding="utf-8")
-        return receipt
-
-    def build(self, **kwargs):
-        self.write_receipt(**kwargs)
-        return reuse.build_record_from_receipt(self.receipt_path)
-
-    def call_cli(self, *args):
+    def cli(self, *extra):
         return subprocess.run(
-            [sys.executable, "-B", str(TOOLS / "behavior_evidence_reuse.py"),
-             *args], text=True, capture_output=True, timeout=60)
+            [sys.executable, str(ROOT / "tools/validation/behavior_evidence_reuse.py"),
+             "--owner-receipt", str(self.receipt_path),
+             "--owner-receipt-sha256", self.receipt_sha,
+             "--owner-report", str(self.report_path),
+             "--owner-report-sha256", self.report_sha,
+             "--environment-id", self.environment_id, "--root", str(self.root),
+             *extra], text=True, capture_output=True)
 
 
-class ReceiptBindingTests(ReceiptFixture):
-    def test_real_passed_run_reuses_with_verified_owner_receipt(self):
-        record = self.build()
-        self.assertEqual(record["source_receipt_sha256"],
-                         sha(self.receipt_path))
-        verdict = reuse.evaluate(record, self.root, receipt=self.write_receipt(),
-                                 receipt_sha256=sha(self.receipt_path))
-        self.assertEqual(verdict["reusable_count"], 1)
-        self.assertEqual(verdict["acceptance"], "established")
-        self.assertEqual(verdict["entries"][0]["changed_inputs"], [])
+    def derive(self):
+        return reuse._derive(self.receipt, self.report, self.root,
+                             self.environment_id, self.report_sha)
 
-    def test_without_owner_receipt_nothing_is_established(self):
-        # The r1 counterexample: a record whose entries claim a pass with
-        # arbitrary node names and files must NEVER evaluate as
-        # established on its own.
-        record = self.build()
-        verdict = reuse.evaluate(record, self.root)
-        self.assertEqual(verdict["acceptance"], "not_established")
-        self.assertEqual(verdict["entries"][0]["changed_inputs"],
-                         ["owner_receipt:not_verified"])
-        self.assertEqual(verdict["stale_count"], 1)
+    def test_producer_main_emits_bound_report_after_actual_test(self):
+        report = self.base / "main-report.json"
+        receipt = self.base / "main-receipt.json"
+        args = ["checker", str(self.root), "--execute", "--release-gate",
+                "--report", str(report), "--evidence-receipt", str(receipt),
+                "--evidence-environment-id", self.environment_id]
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (mock.patch.object(sys, "argv", args),
+              mock.patch.object(incident, "validate_coverage", return_value=[]),
+              mock.patch.object(incident, "validate_rows", return_value={"executed_pass": 1}),
+              mock.patch.object(incident, "prepared_source_identity", return_value=self.identity),
+              contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr)):
+            self.assertEqual(incident.main(), 0, stderr.getvalue())
+        report_sha = reuse.file_digest(report)
+        receipt_sha = reuse.file_digest(receipt)
+        self.assertIn("owner_report_sha256=" + report_sha, stderr.getvalue())
+        self.assertIn("owner_receipt_sha256=" + receipt_sha, stderr.getvalue())
+        derived = reuse._derive(json.loads(receipt.read_text()),
+                                json.loads(report.read_text()), self.root,
+                                self.environment_id, report_sha)
+        self.assertEqual([item["node"] for item in derived["nodes"]], [self.node])
 
-    def test_tampered_receipt_digest_is_refused(self):
-        record = self.build()
-        other = self.root / "other.json"
-        other.write_text(json.dumps(self.write_receipt()), encoding="utf-8")
-        # Same content re-serialized under a different name: the record's
-        # bound digest does not match the presented receipt file.
-        with self.assertRaisesRegex(ValueError, "receipt"):
-            reuse.evaluate(record, self.root,
-                           receipt=json.loads(other.read_text()),
-                           receipt_sha256=sha(other))
+    def test_cli_build_readback_and_tampering(self):
+        result = self.cli("--build-from-receipt", "--out-record", str(self.record_path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.cli("--record", str(self.record_path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(self.record_path.read_text())
+        record["inputs"]["source"]["files"] = {}
+        self.record_path.write_text(json.dumps(record), encoding="utf-8")
+        result = self.cli("--record", str(self.record_path))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("record differs", result.stderr)
+        self.receipt_path.write_text("{}", encoding="utf-8")
+        result = self.cli("--record", str(self.record_path))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("receipt digest mismatch", result.stderr)
 
-    def test_failed_node_is_refused_at_build_time(self):
-        self.write_receipt(outcome="failed", exit_code=1)
-        with self.assertRaisesRegex(ValueError, "re-run the node"):
-            reuse.build_record_from_receipt(self.receipt_path)
+    def test_real_owner_run_establishes_complete_node(self):
+        self.assertEqual([node["node"] for node in self.record["nodes"]], [self.node])
+        self.assertEqual(self.record["nodes"][0]["exit_code"], 0)
 
-    def test_changed_code_or_environment_is_stale(self):
-        record = self.build()
-        bound_receipt = json.loads(self.receipt_path.read_text())
-        bound_sha = sha(self.receipt_path)
-        (self.root / "scripts" / "product.py").write_text("a = 2\n",
-                                                          encoding="utf-8")
-        verdict = reuse.evaluate(record, self.root, receipt=bound_receipt,
-                                 receipt_sha256=bound_sha)
-        self.assertEqual(verdict["entries"][0]["changed_inputs"],
-                         ["code:scripts/product.py"])
-        self.assertEqual(verdict["acceptance"], "not_established")
+    def test_reviewed_node_allows_only_changelog_changes_across_commits(self):
+        self.record_path.write_text(json.dumps(self.record), encoding="utf-8")
+        (self.root / "CHANGELOG.md").write_text("revised notes\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "CHANGELOG.md"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "-c", "user.name=Test",
+                        "-c", "user.email=test@users.noreply.github.com", "commit",
+                        "-qm", "revise notes"], check=True)
+        with self.assertRaisesRegex(ValueError, "source or reviewed environment changed"):
+            self.derive()
+        with self.assertRaisesRegex(ValueError, "node-input review digest"):
+            reuse._derive(self.receipt, self.report, self.root,
+                          self.environment_id, self.report_sha, self.node)
+        reviewed = reuse._derive(self.receipt, self.report, self.root,
+                                 self.environment_id, self.report_sha, self.node,
+                                 self.reviewed_node_sha)
+        self.assertEqual(reviewed, self.record)
+        self.assertEqual(self.cli("--record", str(self.record_path)).returncode, 1)
+        scoped = self.cli("--record", str(self.record_path), "--node", self.node,
+                          "--reviewed-node-inputs-sha256", self.reviewed_node_sha)
+        self.assertEqual(scoped.returncode, 0, scoped.stderr)
+        self.assertEqual(json.loads(scoped.stdout)["nodes"], 1)
+        (self.root / "assets/input.json").write_text("{}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "reviewed node inputs"):
+            reuse._derive(self.receipt, self.report, self.root,
+                          self.environment_id, self.report_sha, self.node,
+                                 self.reviewed_node_sha)
+        with self.assertRaisesRegex(ValueError, "no reviewed reuse scope"):
+            reuse._derive(self.receipt, self.report, self.root,
+                          self.environment_id, self.report_sha, "unknown-node",
+                          self.reviewed_node_sha)
 
-    def test_incomplete_owner_mapping_is_refused(self):
-        record = self.build()
-        del record["entries"][0]["deps"]
-        with self.assertRaisesRegex(ValueError, "deps binding missing"):
-            reuse.evaluate(record, self.root, receipt=self.write_receipt(),
-                           receipt_sha256=sha(self.receipt_path))
+    def test_changed_unrelated_tracked_input_invalidates_conservatively(self):
+        (self.root / "assets/input.json").write_text('{}\n', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "source or reviewed environment changed"):
+            self.derive()
 
-    def test_tampered_node_claim_is_refused_not_staled(self):
-        # A record edited to claim a node the owner receipt never ran is
-        # REFUSED outright (the receipt-node binding must equal the node),
-        # never partially evaluated.
-        record = self.build()
-        bound_receipt = json.loads(self.receipt_path.read_text())
-        bound_sha = sha(self.receipt_path)
-        record["entries"][0]["result"]["receipt_node"] = \
-            "tests/test_product.py::TestX::test_never_ran"
-        with self.assertRaisesRegex(ValueError, "result must bind"):
-            reuse.evaluate(record, self.root, receipt=bound_receipt,
-                           receipt_sha256=bound_sha)
+    def test_untracked_input_is_unknown(self):
+        (self.root / "tests/conftest.py").write_text("# new input\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "untracked"):
+            self.derive()
 
-    def test_record_schema_refuses_legacy_shape(self):
-        record = self.build()
-        record["schema"] = "cg-behavior-evidence/v1"
-        with self.assertRaisesRegex(ValueError, "v2"):
-            reuse.evaluate(record, self.root, receipt=self.write_receipt(),
-                           receipt_sha256=sha(self.receipt_path))
+    def test_tracked_symlink_and_index_changes_are_unknown(self):
+        subprocess.run(["git", "-C", str(self.root), "rm", "--cached", "-q",
+                        "assets/input.json"], check=True)
+        with self.assertRaisesRegex(ValueError, "untracked"):
+            self.derive()
+        subprocess.run(["git", "-C", str(self.root), "add", "assets/input.json"],
+                       check=True)
+        asset = self.root / "assets/input.json"
+        asset.unlink()
+        try:
+            asset.symlink_to(self.test_file)
+        except OSError as exc:
+            self.skipTest(f"symlink unavailable: {exc}")
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            self.derive()
 
-    def test_cli_build_evaluate_and_refusals(self):
-        self.write_receipt()
-        out = self.root / "record.json"
-        proc = self.call_cli("--build-from-receipt", str(self.receipt_path),
-                             "--out-record", str(out))
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        # Evaluation without the owner receipt: not established, exit 1.
-        proc = self.call_cli("--record", str(out), "--root", str(self.root))
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("owner_receipt:not_verified", proc.stdout)
-        # With the owner receipt: established, exit 0.
-        proc = self.call_cli("--record", str(out), "--root", str(self.root),
-                             "--owner-receipt", str(self.receipt_path))
-        self.assertEqual(proc.returncode, 0)
-        verdict = json.loads(proc.stdout)
-        self.assertEqual(verdict["acceptance"], "established")
-        # A failed node in the receipt: build refused, exit 2.
-        self.write_receipt(outcome="failed", exit_code=1)
-        proc = self.call_cli("--build-from-receipt", str(self.receipt_path),
-                             "--out-record", str(self.root / "bad.json"))
-        self.assertEqual(proc.returncode, 2)
-        self.assertIn("re-run the node", proc.stderr)
+    def test_producer_refuses_receipt_without_full_release_run(self):
+        output = self.base / "not-produced.json"
+        args = ["checker", str(self.root), "--evidence-receipt", str(output)]
+        with mock.patch.object(sys, "argv", args), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(incident.main(), 2)
+        self.assertFalse(output.exists())
+
+    def test_fake_missing_or_failing_nodes_do_not_derive(self):
+        self.receipt["nodes"][0]["node"] = "tests/test_incident_library_regression.py::DefaultPathAuthorizationCases::test_fake"
+        with self.assertRaisesRegex(ValueError, "node inventory differ"):
+            self.derive()
+        self.receipt["nodes"][0]["node"] = self.node
+        self.report["execution_receipts"]["case-one"]["outcomes"][self.node] = "failed"
+        with self.assertRaisesRegex(ValueError, "did not pass"):
+            self.derive()
+
+    def test_incomplete_receipt_and_changed_report_digest_refused(self):
+        self.receipt["nodes"] = []
+        with self.assertRaisesRegex(ValueError, "node inventory differ"):
+            self.derive()
+        self.receipt["report_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "report digest mismatch"):
+            self.derive()
+
+    def test_changes_during_owner_run_and_unknown_environment_refused(self):
+        self.receipt["inputs_before"] = copy.deepcopy(self.receipt["inputs_after"])
+        self.receipt["inputs_before"]["source"]["files"].pop("assets/input.json")
+        with self.assertRaisesRegex(ValueError, "during original execution"):
+            self.derive()
+        with self.assertRaisesRegex(ValueError, "environment identity"):
+            reuse.environment_fingerprint("unknown")
+
+    def test_record_tampering_does_not_equal_derivation(self):
+        tampered = copy.deepcopy(self.record)
+        tampered["inputs"]["source"]["files"] = {}
+        self.assertNotEqual(tampered, self.derive())
 
 
 if __name__ == "__main__":

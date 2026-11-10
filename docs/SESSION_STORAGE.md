@@ -1,6 +1,6 @@
 # Session storage, upgrades and cleanup
 
-In 0.17.1, installing or updating Context Guard leaves its task records in place. Upgrading within the same plugin entry can read existing schema 13 records. Switching entries leaves those records under the entry that wrote them. If you want to look up a task from the new entry, the [migration tool](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md) can preview and copy supported `sessions-v2` records on the same machine. Older `sessions` directories stay with the original plugin.
+Installing or updating Context Guard leaves its task records in place. Upgrading within the same plugin entry can read existing schema 13 records. Switching entries leaves those records under the entry that wrote them. If you want to look up a task from the new entry, the [migration tool](https://github.com/GreenLv/codex-context-guard/blob/v0.17.2/tools/GUARD_STATE_MIGRATION.md) can preview and copy supported `sessions-v2` records on the same machine. Older `sessions` directories stay with the original plugin.
 
 Session cleanup was disabled in 0.16.0 and 0.16.1. Version 0.17.0 restored it as an opt-in maintenance command. Since 0.17.2 maintenance is automatic by default: with no retention policy configured, ending a session saves state and then dispatches one bounded background maintenance pass (30 days after a session ends, 7 further days in recoverable quarantine, then permanent deletion). You never have to run a command, confirm a batch, or register a scheduled job for this. Explicit choices still win: a policy you disabled, a custom retention period, `purge_enabled=false`, and the durable opt-out (see below) are honored, and a corrupted or unreadable policy never authorizes deletion. Installing the plugin still never creates a scheduled job; the platform scheduler entry remains an optional extra.
 
@@ -8,11 +8,11 @@ Session cleanup was disabled in 0.16.0 and 0.16.1. Version 0.17.0 restored it as
 
 Finish tasks that still need the old plugin before changing its entry. If they need more time, keep them in a separately configured Codex environment that still loads that version. Check the Hook source in the actual client. A cache directory on disk does not tell you which version a running task loads. For example, Codex CLI 0.158.0 on Windows was observed loading the new Hook on an old task's next turn after an in-place upgrade.
 
-The [0.17.1 upgrade guide](UPGRADE_0_17_1.md) covers which installation routes switch entries, how to review the new Hooks, and when copying records is useful. Copying supported records does not transfer Hook trust or move an active task into a different environment. See [compatibility](COMPATIBILITY.md) and [local acceptance](LOCAL_ACCEPTANCE.md) for exact host results.
+The [0.17.2 upgrade guide](UPGRADE_0_17_2.md) covers an update within the stable entry and the new cleanup default. The [0.17.1 guide](UPGRADE_0_17_1.md) covers older entry switches and record copies. Copying supported records does not transfer Hook trust or move an active task into a different environment. See [compatibility](COMPATIBILITY.md) and [local acceptance](LOCAL_ACCEPTANCE.md) for exact host results.
 
 ## Inspect, customize, or turn off automatic maintenance
 
-First identify the entry with `codex plugin list --json` in the Codex environment you want to inspect. If you have more than one entry or data directory, run the [migration tool's read-only inventory](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md#stages) against that environment's configuration directory. Use the data-root path listed for the intended entry. Keep the inventory and any cleanup report on your machine.
+First identify the entry with `codex plugin list --json` in the Codex environment you want to inspect. If you have more than one entry or data directory, run the [migration tool's read-only inventory](https://github.com/GreenLv/codex-context-guard/blob/v0.17.2/tools/GUARD_STATE_MIGRATION.md#stages) against that environment's configuration directory. Use the data-root path listed for the intended entry. Keep the inventory and any cleanup report on your machine.
 
 From the extracted release directory, run the following with that private data-root path. On Windows, replace `python3` with `py -3`.
 

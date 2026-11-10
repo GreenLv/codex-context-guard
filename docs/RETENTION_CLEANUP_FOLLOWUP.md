@@ -23,14 +23,11 @@ retired synchronous sweep:
   anything, or writes a policy object. The detached child runs the same
   budgeted maintenance executor the manual command and the opt-in scheduler
   use, under the same locks, transactions and creation-identity checks.
-- Absence of a policy object now means "never configured" and resolves to
-  the automatic default; every disable path writes a real policy object plus
-  the durable opt-out, so absence stays unambiguous and later upgrades never
-  re-enable on their own. Historical limitation, stated honestly: a 0.17.1
-  `--maintenance-disable` removed its scheduler entry and ownership record
-  without leaving any other durable marker, so that act alone cannot prove a
-  user chose to keep cleanup off forever; such roots upgrade to the automatic
-  default, and `--maintenance-disable` now writes the durable opt-out.
+- A missing policy uses the automatic default, including when a previously
+  configured policy has been deleted. A durable opt-out still applies in
+  that case. Version 0.17.1 only removed the scheduler registration when
+  users ran `--maintenance-disable`. To keep maintenance off after upgrading,
+  follow the [0.17.2 upgrade guide](UPGRADE_0_17_2.md).
 - A corrupted, unreadable or boundary-failing policy still disables
   everything with the failing fact named; it is never interpreted as consent.
 - The platform scheduler entry remains opt-in and is not auto-registered;

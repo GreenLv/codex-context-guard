@@ -252,6 +252,7 @@ class PerfDriverNegativeTests(unittest.TestCase):
         argv = ["perf_ab", "--baseline", str(REPO_ROOT), "--candidate", str(REPO_ROOT),
                 "--attempts", "1", "--cells", "session_end", "--out", str(out)]
         with patch.object(sys, "argv", argv), patch.object(perf_ab, "seed_active_session"), \
+             patch.object(perf_ab, "_session_end_worker_mode", return_value="disabled"), \
              patch.object(perf_ab, "run_standard_attempt", run):
             self.assertEqual(perf_ab.main(), 0)
         self.assertEqual(deadlines, [3.0, 3.0])
@@ -652,6 +653,80 @@ class PerfDriverLifecycleTests(unittest.TestCase):
                 result = self.driver.observe_natural_completion(owner)
                 self.assertEqual(result['no_running_members'], not denied and active == 0)
 
+    def test_windows_job_worker_wait_is_outside_hook_timing(self):
+        import time
+        from types import SimpleNamespace
+        process = SimpleNamespace(pid=123, args=['fixture'], returncode=0,
+                                  poll=lambda: 0, communicate=lambda *a, **kw: (b'{}', b''))
+        owner = SimpleNamespace(process=process, job=object(), close=lambda timeout: {
+            'owned_process_exited': True, 'owned_tree_no_running_members': True})
+        def await_job(_owner, _deadline, record):
+            time.sleep(0.12)
+            record.update(no_running_members=True, proof_within_deadline=True)
+            return True
+        payload = json.dumps({'hook_event_name': 'SessionEnd'}).encode()
+        started = time.monotonic()
+        with patch.object(self.driver.sys, 'platform', 'win32'), \
+                patch.object(self.driver, '_session_end_worker_mode', return_value='automatic'), \
+                patch.object(self.driver, '_session_end_worker_started', return_value=True), \
+                patch.object(self.driver.OwnedProcess, 'spawn', return_value=owner), \
+                patch.object(self.driver, 'observe_natural_completion',
+                             return_value={'no_running_members': False, 'active_processes': 1}), \
+                patch.object(self.driver, 'observe_natural_until_deadline', side_effect=await_job):
+            timing = self.driver.run_event('fixture', REPO_ROOT, self.work, payload, 3.0)
+        self.assertGreater(time.monotonic() - started, 0.1)
+        self.assertLess(timing['elapsed_raw'], 0.1)
+        self.assertIsNone(timing['error'])
+        self.assertTrue(timing['process_lifetime']['natural_completion']['outside_hook_timing'])
+        self.assertTrue(timing['process_lifetime']['recovery_complete'])
+
+    def test_windows_job_unknown_child_is_not_deferred(self):
+        from types import SimpleNamespace
+        process = SimpleNamespace(pid=123, args=['fixture'], returncode=0,
+                                  poll=lambda: 0, communicate=lambda *a, **kw: (b'{}', b''))
+        owner = SimpleNamespace(process=process, job=object(), close=lambda timeout: {
+            'owned_process_exited': True, 'owned_tree_no_running_members': True})
+        def unverified(_owner, _deadline, record):
+            record.update(no_running_members=False, error='job_query_denied')
+            return False
+        payload = json.dumps({'hook_event_name': 'SessionEnd'}).encode()
+        with patch.object(self.driver.sys, 'platform', 'win32'), \
+                patch.object(self.driver, '_session_end_worker_mode', return_value='automatic'), \
+                patch.object(self.driver, '_session_end_worker_started', return_value=False), \
+                patch.object(self.driver.OwnedProcess, 'spawn', return_value=owner), \
+                patch.object(self.driver, 'observe_natural_completion',
+                             return_value={'no_running_members': False, 'active_processes': 1}), \
+                patch.object(self.driver, 'observe_natural_until_deadline', side_effect=unverified):
+            timing = self.driver.run_event('fixture', REPO_ROOT, self.work, payload, 3.0)
+        self.assertEqual(timing['error'], 'ProcessTreeError:natural_completion_unverified')
+        self.assertTrue(timing['retain_home'])
+        self.assertTrue(timing['stop_batch'])
+        self.driver._RETAINED_EVENT_OWNERS.remove(owner)
+
+    def test_windows_deferred_wait_exception_still_closes_job_and_retains_home(self):
+        from types import SimpleNamespace
+        process = SimpleNamespace(pid=123, args=['fixture'], returncode=0,
+                                  poll=lambda: 0, communicate=lambda *a, **kw: (b'{}', b''))
+        closed = []
+        def close(timeout):
+            closed.append(timeout)
+            return {'owned_process_exited': True, 'owned_tree_no_running_members': True}
+        owner = SimpleNamespace(process=process, job=object(), close=close)
+        payload = json.dumps({'hook_event_name': 'SessionEnd'}).encode()
+        with patch.object(self.driver.sys, 'platform', 'win32'), \
+                patch.object(self.driver, '_session_end_worker_mode', return_value='automatic'), \
+                patch.object(self.driver, '_session_end_worker_started', return_value=True), \
+                patch.object(self.driver.OwnedProcess, 'spawn', return_value=owner), \
+                patch.object(self.driver, 'observe_natural_completion',
+                             return_value={'no_running_members': False, 'active_processes': 1}), \
+                patch.object(self.driver, 'observe_natural_until_deadline', side_effect=OSError('denied')):
+            timing = self.driver.run_event('fixture', REPO_ROOT, self.work, payload, 3.0)
+        self.assertEqual(timing['error'], 'ProcessTreeError:worker_job_completion_unverified')
+        self.assertTrue(closed)
+        self.assertTrue(timing['retain_home'])
+        self.assertTrue(timing['stop_batch'])
+        self.driver._RETAINED_EVENT_OWNERS.remove(owner)
+
     def test_recovery_has_one_five_second_deadline_and_never_closes_locked_pipes(self):
         from types import SimpleNamespace
         now, close_budgets, drain_budgets = [0.0], [], []
@@ -717,93 +792,86 @@ class PerfDriverLifecycleTests(unittest.TestCase):
         self.assertEqual(row['error'], 'TimeoutExpired:original')
         self.assertIn('cleanup denied', row['home_cleanup']['error'])
 
-    @unittest.skipUnless(os.name == 'posix', 'real POSIX group fixture, not Windows proof')
-    def test_real_detached_worker_converges_before_home_removed(self):
-        """Real detached grandchild (r1 perf boundary): the measured event
-        dispatches a worker that recreates control files AFTER the cleanup
-        starts. HOME must never be labeled removed while the worker runs;
-        after its terminal fact and claim release, the verdict is removed
-        with the out-of-timing settle facts recorded."""
-        grandchild = self.work / "grandchild-worker.py"
-        # The measured event: leave the dispatch claim, then detach a real
-        # grandchild (new session, survives the process-group cleanup)
-        # that writes the terminal fact ~1s later and releases the claim.
-        def runner(wrapper, tree, cell, spec, data_dir, budget):
-            controls = data_dir.parent / "context-guard" / "sessions-v2" / ".locks"
-            controls.mkdir(parents=True, exist_ok=True)
-            (controls / "retention-trigger.claim").write_text(
-                json.dumps({"token": "perf"}) + "\n", encoding="utf-8")
-            script = (
-                "import json,os,time\n"
-                f"controls = Path({str(controls)!r})\n"
-                "time.sleep(1.0)\n"
-                "controls.mkdir(parents=True, exist_ok=True)\n"
-                "(controls / 'retention-trigger.json').write_text("
-                "json.dumps({'last_success_at': '2026-01-01T00:00:00Z'}) + '\\n')\n"
-                "os.remove(controls / 'retention-trigger.claim')\n")
-            grandchild.write_text(
-                "import sys\nfrom pathlib import Path\n" + script)
-            subprocess.Popen([sys.executable, str(grandchild)],
-                             start_new_session=True,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-            return {'elapsed': 0.05, 'returncode': 0, 'error': None,
-                    'outcome_class': 'completed', 'assertion': 'ok'}
-        code, report, _, _ = self.main_run(runner=runner, name="worker-converges")
-        self.assertEqual(code, 0)
-        row = report['cells']['pretool_safe']['sides']['baseline']['raw_rows'][0]
-        self.assertEqual(row['home_cleanup']['status'], 'removed')
-        settle = row['home_cleanup']['worker_settle']
-        self.assertEqual(settle['verdict'], 'removed')
-        self.assertTrue(settle['generations'], 'worker evidence missing')
-        self.assertEqual(settle['generations'][0]['terminal_state']
-                         ['last_success_at'], '2026-01-01T00:00:00Z')
-        # The Hook event budget is untouched by the out-of-timing settle.
-        self.assertLess(row['elapsed'], 3.0)
-        self.assertEqual(row['outcome_class'], 'completed')
+    def test_detached_worker_finishes_before_fixture_is_removed(self):
+        """A real detached writer delayed past three seconds retains its HOME."""
+        import time
+        data_dir = self.work / "attempt" / "private"
+        controls = data_dir / "sessions-v2" / ".locks"
+        controls.mkdir(parents=True)
+        claim = controls / "retention-trigger.claim"
+        claim.write_text(json.dumps({"token": "fixture"}), encoding="utf-8")
+        (controls / "retention-trigger.json").write_text(json.dumps({
+            "last_attempt_at": "2026-01-01T00:00:00Z"}), encoding="utf-8")
+        worker = self.work / "detached-worker.py"
+        worker.write_text(
+            "import json, sys, time\n"
+            "from pathlib import Path\n"
+            "controls = Path(sys.argv[1])\n"
+            "time.sleep(3.2)\n"
+            "assert controls.is_dir(), 'fixture removed while worker was active'\n"
+            "(controls / 'retention-trigger.json').write_text(json.dumps({"
+            "'last_attempt_at': '2026-01-01T00:00:00Z', "
+            "'last_success_at': '2026-01-01T00:00:01Z', "
+            "'last_outcome': {'refused': None}}))\n"
+            "(controls / 'retention-trigger.claim').unlink()\n",
+            encoding="utf-8")
+        flags = ({"start_new_session": True} if os.name == "posix" else {
+            "creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP})
+        proc = subprocess.Popen([sys.executable, str(worker), str(controls)],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, **flags)
+        started = time.monotonic()
+        try:
+            terminal = self.driver._wait_session_end_worker(data_dir, started + 8)
+            self.assertIsNotNone(terminal)
+            self.assertGreater(time.monotonic() - started, 3.0)
+            self.assertTrue(controls.is_dir())
+            self.assertEqual(proc.wait(timeout=5), 0)
+            self.assertTrue(terminal["claim_released"])
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
 
-    def test_real_detached_worker_pending_is_never_labeled_removed(self):
-        """A detached worker that never settles blocks the batch with
-        status worker_pending (never removed), out of the event timing."""
-        def runner(wrapper, tree, cell, spec, data_dir, budget):
-            controls = data_dir.parent / "context-guard" / "sessions-v2" / ".locks"
-            controls.mkdir(parents=True, exist_ok=True)
-            (controls / "retention-trigger.claim").write_text(
-                json.dumps({"token": "perf"}) + "\n", encoding="utf-8")
-            grandchild = self.work / "grandchild-pending.py"
-            # Recreates its control object right after the cleanup removes
-            # it, then never reaches a terminal fact within the settle
-            # window: the verdict must be worker_pending, never removed.
-            grandchild.write_text(
-                "import json,os,time\nfrom pathlib import Path\n"
-                f"controls = Path({str(controls)!r})\n"
-                "end = time.time() + 30\n"
-                "while time.time() < end:\n"
-                "    try:\n"
-                "        controls.mkdir(parents=True, exist_ok=True)\n"
-                "        (controls / 'retention-trigger.claim').write_text("
-                "json.dumps({'token': 'perf'}) + '\\n')\n"
-                "    except OSError:\n"
-                "        pass\n"
-                "    time.sleep(0.05)\n")
-            subprocess.Popen([sys.executable, str(grandchild)],
-                             start_new_session=True,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-            return {'elapsed': 0.05, 'returncode': 0, 'error': None,
-                    'outcome_class': 'completed', 'assertion': 'ok'}
-        with unittest.mock.patch.object(self.driver, 'PERF_WORKER_SETTLE_SECONDS', 0.6), \
-                unittest.mock.patch.object(self.driver, 'PERF_WORKER_QUIET_SECONDS', 0.2):
-            code, report, _, _ = self.main_run(runner=runner,
-                                               name="worker-pending")
-        self.assertEqual(code, 1)
-        row = report['cells']['pretool_safe']['sides']['baseline']['raw_rows'][0]
-        self.assertEqual(row['home_cleanup']['status'], 'worker_pending')
-        self.assertEqual(row['home_cleanup']['worker_settle']['verdict'],
-                         'worker_pending')
-        self.assertTrue(row['stop_batch'])
-        self.assertFalse(report['accepted'])
-        self.assertEqual(report['execution_state'], 'stopped')
+    def test_skip_without_success_never_proves_worker_completion(self):
+        import time
+        data_dir = self.work / "attempt" / "private"
+        controls = data_dir / "sessions-v2" / ".locks"
+        controls.mkdir(parents=True)
+        (controls / "retention-trigger.json").write_text(json.dumps({
+            "last_attempt_at": "2026-01-01T00:00:00Z",
+            "last_skip": {"reason": "claim_held"}}), encoding="utf-8")
+        with patch.object(self.driver, "PERF_WORKER_POLL_SECONDS", 0.02):
+            terminal = self.driver._wait_session_end_worker(data_dir, time.monotonic() + 0.15)
+        self.assertIsNone(terminal)
+        self.assertTrue(data_dir.exists())
+
+    def test_session_end_without_worker_proof_retains_home_and_stops(self):
+        with patch.object(self.driver, "_session_end_worker_mode", return_value="automatic"), \
+                patch.object(self.driver, "seed_active_session"), \
+                patch.object(self.driver, "PERF_WORKER_SETTLE_SECONDS", 0.05):
+            code, report, calls, _ = self.main_run(cells="session_end", name="unproven-worker")
+        row = report["cells"]["session_end"]["sides"]["baseline"]["raw_rows"][0]
+        retained = Path(row["home_cleanup"]["path"])
+        try:
+            self.assertEqual((code, calls), (1, 1))
+            self.assertEqual(row["home_cleanup"]["status"], "worker_pending")
+            self.assertTrue(row["stop_batch"])
+            self.assertTrue(retained.is_dir())
+        finally:
+            # The mocked event never spawned a process.
+            self.driver.shutil.rmtree(retained)
+
+    def test_session_end_worker_shape_detection_fails_closed(self):
+        tree = self.work / "tree"
+        source = tree / "scripts" / "context_guard.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("def handle_session_end():\n utc_now()\n save_state()\n write_recovery()\n")
+        self.assertEqual(self.driver._session_end_worker_mode(tree), "disabled")
+        source.write_text("def handle_session_end():\n _retention_session_end_trigger()\n")
+        self.assertEqual(self.driver._session_end_worker_mode(tree), "automatic")
+        source.write_text("def handle_session_end():\n unknown_worker()\n")
+        self.assertEqual(self.driver._session_end_worker_mode(tree), "unknown")
 
     def test_real_timeout_with_inherited_output_is_reaped_before_home_cleanup(self):
         self.real_descendant(hold_stdout=True, parent_wait=True)

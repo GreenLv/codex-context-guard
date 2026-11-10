@@ -4,7 +4,7 @@ The release entries begin with the newest version. Historical candidate
 sections preserve the status of their specific source revision at the time of
 review; a later release of the same version does not change that evidence.
 
-## 0.17.2 — Unreleased
+## 0.17.2 — 2026-11-11
 
 Retention behavior changes: default-automatic maintenance with a durable
 opt-out (`cg-retention-optout/v1`, `cg-retention-trigger/v1`,

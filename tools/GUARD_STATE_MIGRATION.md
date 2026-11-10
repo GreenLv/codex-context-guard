@@ -53,7 +53,12 @@ runtime-tree roots.
    it can still identify the directory it created.
 4. `verify --plan PATH --workspace DIR` — re-derives every created and
    isolated digest against the plan and manifest.
-5. `restore --workspace DIR` — keep the original plan beside the workspace
+5. `summary --workspace DIR [--out NEW_PATH]` — read the saved apply and
+   verify records and check them against the current copies. Use this if the
+   command output was lost after a completed operation. The command leaves
+   session data unchanged. An optional export path must be new, outside the
+   protected data roots, and free of links.
+6. `restore --workspace DIR` — keep the original plan beside the workspace
    so restore can check its digest and reconstruct the permitted paths.
    Restore locks each target session and checks its directory identity and
    contents before removing a recorded copy. If a forced process stop left

@@ -4,7 +4,7 @@ The newest section describes the current release. Older version sections retain
 their original compatibility and acceptance boundaries; a pending item in a
 historical section describes that point in time.
 
-## 0.17.2 — Unreleased
+## 0.17.2 — 2026-11-11
 
 0.17.2 changes retention behavior for every data root: with no retention
 policy configured, SessionEnd dispatches a bounded background maintenance
@@ -12,8 +12,7 @@ pass automatically (30-day threshold, 7-day recoverable quarantine, then
 permanent purge). Roots that never configured a policy therefore start
 automatic maintenance without further configuration. Roots with an explicit
 enabled 0.17.x policy now also get unattended background applies (previously
-only their scheduler entry or manual apply ran); a root that wants manual-only
-control must run `cleanup --maintenance-disable` once, which writes a durable
+only their scheduler entry or manual apply ran); a root that wants maintenance disabled must run `cleanup --maintenance-disable` once, which writes a durable
 opt-out honored by all later versions. A 0.17.1 `--maintenance-disable`
 removed only its scheduler entry and left no durable marker, so that act
 alone cannot suppress the automatic path. Explicit `enabled=false` policies,

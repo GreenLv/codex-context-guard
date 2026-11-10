@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.guard_state_migration import _LifecycleLock  # noqa: E402
 from tools.validation import native_acceptance as native  # noqa: E402
 from tools.validation import native_cli_adoption as adoption  # noqa: E402
 from tools.validation import native_scheduler_batch as scheduler  # noqa: E402
@@ -1371,48 +1372,34 @@ def _probe_sh_launcher(launcher: Path, passthrough: list[str]) -> dict[str, Any]
 
 
 def _probe_ps1_launcher(launcher: Path, passthrough: list[str]) -> dict[str, Any]:
-    """Parse-only PowerShell launcher probe with a mirrored param block.
-
-    The launcher file is checked with the PowerShell parser and this run's
-    argument vector is echoed back through a synthetic param mirror; the real
-    launcher batch is never invoked.
-    """
+    """Parse the launcher and bind the real array parameter in echo mode."""
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    require(shell is not None, "PowerShell launcher probe requires pwsh or powershell")
     script = (
         '$ErrorActionPreference = "Stop"\n'
+        '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n'
         '$tokens = $null; $parseErrors = $null\n'
         '[void][System.Management.Automation.Language.Parser]::ParseFile($env:CG_LAUNCHER_PROBE, '
         '[ref]$tokens, [ref]$parseErrors)\n'
-        'if ($parseErrors.Count -gt 0) { Write-Output "PARSE-FAILED"; exit 1 }\n'
-        '$mirror = [scriptblock]::Create(\'param([Parameter(Mandatory=$true)]'
-        '[ValidateSet("upgrade","acceptance","retention","scheduler")][string]$Target,'
-        '[Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments=@()) '
-        '$Target; $Arguments\')\n'
-        '$rest = @($env:CG_PASSTHROUGH_PROBE -split "`n" | Where-Object { $_ -ne "" })\n'
-        '& $mirror -Target $env:CG_TARGET_PROBE @rest\n')
+        'if ($parseErrors.Count -gt 0) { throw ($parseErrors -join "`n") }\n'
+        '[string[]]$rest = @(ConvertFrom-Json -InputObject $env:CG_PASSTHROUGH_PROBE)\n'
+        '& $env:CG_LAUNCHER_PROBE -Target print-argv -Arguments $rest\n'
+        'exit $LASTEXITCODE\n')
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    argv = ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+    argv = [shell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
     env = {key: value for key, value in os.environ.items()
            if not re.search(r"TOKEN|PASSWORD|SECRET|API_KEY|CREDENTIAL", key, re.I)}
-    env.update(CG_LAUNCHER_PROBE=str(launcher), CG_TARGET_PROBE="upgrade",
-               CG_PASSTHROUGH_PROBE="\n".join(passthrough))
+    env.update(CG_LAUNCHER_PROBE=str(launcher), CG_PASSTHROUGH_PROBE=json.dumps(passthrough))
     replay = _probe_run(argv, env, timeout=60.0)
-    lines = replay.stdout.decode("utf-8-sig").splitlines()
-    require(replay.returncode == 0 and lines == ["upgrade", *passthrough],
-            "PowerShell launcher parse probe failed: " + str(launcher))
-    # r1 B2: real side-effect-free entry invocation with this run's argv.
-    real_argv = ["powershell", "-NoProfile", "-NonInteractive", "-File",
-                 str(launcher), "-Target", "print-argv",
-                 "-Arguments", "@(" + ",".join('"' + word + '"'
-                                               for word in passthrough) + ")"]
-    real = _probe_run(real_argv, env, timeout=60.0)
     try:
-        echoed = json.loads(real.stdout.decode("utf-8-sig").strip() or "[]")
-    except ValueError:
+        echoed = json.loads(replay.stdout.decode("utf-8-sig"))
+    except (UnicodeError, ValueError):
         echoed = None
-    require(real.returncode == 0 and echoed == ["print-argv", passthrough],
-            "PowerShell launcher REAL entry probe failed: " + repr(real_argv))
+    require(replay.returncode == 0 and echoed == ["print-argv", passthrough],
+            "PowerShell launcher entry probe failed: " + str(launcher)
+            + " via " + shell + " (exit " + str(replay.returncode) + ")")
     return {"probed": "powershell", "parse": "Parser::ParseFile " + str(launcher),
-            "real_entry": {"argv": real_argv, "echoed": echoed}}
+            "real_entry": {"argv": argv, "echoed": echoed}}
 
 
 def preflight_commands(plan: dict[str, Any], output: Path, plan_path: Path) -> dict[str, Any]:
@@ -1443,7 +1430,10 @@ def preflight_commands(plan: dict[str, Any], output: Path, plan_path: Path) -> d
         require(flags.returncode == 0 and flags.stdout.decode("utf-8-sig").strip() == plan["cli_version"],
                 "CLI entry-parameter probe failed: " + repr(flags_argv))
         entry_flags = {"argv": flags_argv, "version": plan["cli_version"]}
-    passthrough = ["--preflight", "--plan", str(plan_path), "--output", str(output)]
+    passthrough = ["--preflight", "--plan", str(plan_path), "--output", str(output),
+                   "--auth-home", subject["home"]]
+    for other_home in subject["other_homes"]:
+        passthrough.extend(["--other-auth-home", other_home])
     if platform.system() == "Windows":
         launcher = _probe_ps1_launcher(PS1_LAUNCHER, passthrough)
     else:
@@ -1695,6 +1685,22 @@ def _write_new(path: Path, value: dict[str, Any]) -> None:
     with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
         json.dump(value, stream, ensure_ascii=False, indent=2, sort_keys=True)
         stream.write("\n")
+
+
+def _write_durable_new(path: Path, value: dict[str, Any]) -> None:
+    """Publish an exclusive private record before a non-repeatable operation."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+        json.dump(value, stream, ensure_ascii=False, indent=2, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    if os.name != "nt":
+        parent = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
 
 
 def _run_official(result: dict[str, Any], argv: list[str], env: dict[str, str],
@@ -2796,18 +2802,501 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
                      "cancel-a.json", "cancel-b.json", "guard-diagnostic.json")
         result["artifacts"] = {name: sha(output / name) for name in artifacts if (output / name).is_file()}
         _write_new(output / "result.json", result)
+        if result["status"] == "wait_pending":
+            _write_durable_new(output / "wait-binding.json", {
+                "schema": "cg-native-wait-binding/v1", "plan_sha256": digest(plan),
+                "subject_sha256": digest(subject), "prepare_sha256": sha(prepared),
+                "receipt_sha256": sha(output / WAIT_RECEIPT_NAME),
+                "result_sha256": sha(output / "result.json"),
+            })
     return result
+
+
+def _verify_pending_transition(subject: dict[str, Any], prepared: dict[str, Any],
+                               result: dict[str, Any], journal: list[dict[str, Any]], output: Path) -> None:
+    """Check the original completed transition before authorizing new work."""
+    _verify_prepared(subject, prepared)
+    codex, old_market = subject["codex"], _old_market(subject)
+    old_id, stable_id = "context-guard@" + old_market, "context-guard@" + NEW_MARKET
+    source = Path(subject["new_artifact"])
+    commands = result.get("commands")
+    require(isinstance(commands, list), "transition command facts unavailable")
+    allowed = [[codex, "plugin", "marketplace", "list", "--json"],
+               [codex, "plugin", "list", "--marketplace", old_market, "--json"],
+               [codex, "plugin", "marketplace", "add", str(source)],
+               [codex, "plugin", "add", stable_id, "--json"],
+               [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"]]
+    if old_market == NEW_MARKET:
+        allowed.append([codex, "plugin", "marketplace", "remove", old_market])
+    require(all(isinstance(item, dict) and item.get("argv") in allowed
+                and type(item.get("exit_code")) is int and item["exit_code"] == 0
+                and item.get("status") == "completed" for item in commands),
+            "unexpected or failed prior transition command")
+    _verify_market_sequence(commands, subject, prepared=False)
+    phases = {"before", "after_old_list", "after_new_marketplace_add", "after_new_plugin_add",
+              "after_new_plugin_list"}
+    if old_market == NEW_MARKET:
+        phases.add("after_old_marketplace_remove")
+    observed_phases = _object(result.get("sentinel_phases"))
+    require(set(observed_phases) == phases and
+            all(value == subject["sentinel"] for value in observed_phases.values()),
+            "prior sentinel phases incomplete")
+    for argv, count in (([codex, "plugin", "marketplace", "add", str(source)], 1),
+                        ([codex, "plugin", "add", stable_id, "--json"], 1),
+                        ([codex, "plugin", "marketplace", "remove", NEW_MARKET],
+                         1 if old_market == NEW_MARKET else 0)):
+        require(sum(item.get("argv") == argv for item in commands) == count,
+                "prior official mutation count differs")
+    index, initial_old = _command_index(commands, [codex, "plugin", "list", "--marketplace", old_market, "--json"])
+    old_row = _selected_plugin(initial_old, old_id)
+    require(old_row is not None and old_row.get("version") == subject["old_version"]
+            and old_row.get("installed") is True and old_row.get("enabled") is True,
+            "old pre-transition identity not observed")
+    _plugin_source(old_row, Path(subject["old_artifact"]), _old_market_root(subject))
+    if old_market == NEW_MARKET:
+        index, _ = _command_index(commands, [codex, "plugin", "marketplace", "remove", old_market], index)
+    index, _ = _command_index(commands, [codex, "plugin", "marketplace", "add", str(source)], index)
+    index, added = _command_index(commands, [codex, "plugin", "add", stable_id, "--json"], index)
+    add_fact = commands[index]
+    index, listed = _command_index(commands, [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"], index)
+    row = _selected_plugin(listed, stable_id)
+    unreadable = add_fact.get("summary_parse_failed") is True
+    require(not (unreadable and _object(add_fact.get("observation")))
+            and ((unreadable and _sha(add_fact.get("stdout_sha256"))
+                  and type(add_fact.get("stdout_bytes")) is int)
+                 or (not unreadable and added.get("pluginId") == stable_id
+                     and added.get("version") == NEW_VERSION
+                     and added.get("installedPath") == _object(result.get("installed_new")).get("path"))),
+            "prior installation summary differs")
+    require(row is not None and row.get("version") == NEW_VERSION
+            and row.get("installed") is True and row.get("enabled") is True,
+            "prior stable installation readback differs")
+    _plugin_source(row, source)
+    _command_times(result)
+    marks = [(i, row) for i, row in enumerate(journal) if row.get("direction") == "local"]
+    require(len(marks) == 2 and [row.get("event") for _, row in marks]
+            == ["transition_started", "transition_completed"], "prior transition markers incomplete")
+    started, completed = marks[0][1].get("monotonic_ns"), marks[1][1].get("monotonic_ns")
+    require(type(started) is int and type(completed) is int and started < completed,
+            "prior transition marker timing differs")
+    mutations = [[codex, "plugin", "marketplace", "add", str(source)],
+                 [codex, "plugin", "add", stable_id, "--json"]]
+    if old_market == NEW_MARKET:
+        mutations.insert(0, [codex, "plugin", "marketplace", "remove", old_market])
+    for argv in mutations:
+        require(sum(item.get("argv") == argv and started < item["started_monotonic_ns"]
+                    <= item["completed_monotonic_ns"] < completed for item in commands) == 1,
+                "prior transition command timing differs")
+    before = _object(result.get("before"))
+    task_a, task_b = before.get("thread_a"), before.get("thread_b")
+    old_installed = _object(prepared.get("installed")).get("path")
+    require(isinstance(old_installed, str), "old installed path missing")
+    old_source = str(Path(old_installed) / "hooks/hooks.json")
+    old_inv = _inventory_in_journal(journal, result.get("old_inventory"),
+                                    {old_source: subject["old_version"]}, before=marks[0][0])
+    require(sum(row.get("direction") == "request" and _object(row.get("message")).get("method") == "turn/start"
+                for row in journal) == 5, "prior model turn count differs")
+    for thread, field in ((task_a, "turn_a"), (task_b, "turn_b"), (task_a, "post_compact_turn")):
+        turn = before.get(field)
+        require(isinstance(thread, str) and isinstance(turn, str), "old turn missing")
+        start, end = _turn_bounds(journal, thread, turn)
+        require(_thread_start_index(journal, thread) < start < end < marks[0][0]
+                and _paired(journal[start:end + 1], old_inv, thread, "stop", turn=turn),
+                "prior old task turn differs")
+    expected_command = ("Get-Content -LiteralPath native-read.txt" if subject["platform"] == "Windows"
+                        else "cat native-read.txt")
+    require(before.get("read_command") == expected_command
+            and before.get("read_file_sha256") == subject["read_file_sha256"], "prior read fixture differs")
+    verify_read_tool(journal[:marks[0][0]], old_inv, task_a, before["turn_a"], expected_command,
+                     Path(subject["workspace"]))
+    _verify_compact_window(journal[:marks[0][0]], task_a, before["turn_a"], before["post_compact_turn"],
+                           {event: item for (event, _), item in old_inv.items()})
+    compact = _projected_state(_evidence_path(output, "before-compact.json"))
+    first = _projected_state(_evidence_path(output, "before-a.json"))
+    second = _projected_state(_evidence_path(output, "before-b.json"))
+    require(compact["mode"].get("active") is True and first["mode"].get("active") is True
+            and type(compact.get("compactions_count")) is int and type(first.get("compactions_count")) is int
+            and first["compactions_count"] > compact["compactions_count"]
+            and first.get("recovery_state") == "consumed", "prior compact recovery not proved")
+    validate_continuity(compact, first)
+    validate_continuity(first, _projected_state(_evidence_path(output, "retained-a.json")))
+    validate_continuity(second, _projected_state(_evidence_path(output, "retained-b.json")))
+    previous_data = _object(result.get("old_data_after_transition"))
+    require(previous_data.get("thread_a_sha256") == before.get("state_a_sha256")
+            and previous_data.get("thread_b_sha256") == before.get("state_b_sha256"),
+            "prior old task preservation differs")
+    for name, thread in (("a", task_a), ("b", task_b)):
+        cancel_turn = _object(before.get("cancel_turns")).get(name)
+        require(isinstance(cancel_turn, str), "prior cancellation turn missing")
+        start, end = _turn_bounds(journal, thread, cancel_turn)
+        require(_object(_object(journal[start]).get("message")).get("params", {}).get("input")
+                == [{"type": "text", "text": "取消当前任务。"}]
+                and end < marks[0][0] and _paired(journal[start:end + 1], old_inv, thread, "stop", turn=cancel_turn),
+                "prior cancellation turn differs")
+        archives = [(i, j) for i, j, req, _ in _rpc_pairs(journal, "thread/archive")
+                    if _object(req.get("params")).get("threadId") == thread]
+        require(len(archives) == 1 and end < archives[0][0] < archives[0][1] < marks[0][0],
+                "prior cancellation archive differs")
+
+
+def _resume_finished(plan: dict[str, Any], output: Path, prepared: Path,
+                            receipt: dict[str, Any], origin_receipt: Path,
+                            original: dict[str, Any], pending_commands: list[dict[str, Any]]) -> dict[str, Any]:
+    """Resume a finished old task on a newly observed client after normal trust.
+
+    The original process is closed and its evidence remains separate. The
+    previous client is never represented as the client starting fresh tasks.
+    """
+    subject = _object(original.get("subject"))
+    require(subject.get("transition_strategy") == "finish-old"
+            and receipt.get("wait") in WAIT_PENDINGS,
+            "the interrupted open-task route cannot resume after client exit")
+    home, workspace = Path(subject["home"]), Path(subject["workspace"])
+    codex, old_data = Path(subject["codex"]), Path(subject["old_data_root"])
+    new_installed = _absolute_real(_object(original.get("installed_new")).get("path"),
+                                   "stable installed cache")
+    new_source = str(new_installed / "hooks/hooks.json")
+    require(new_source == _object(receipt.get("reviewed")).get("new_source"),
+            "reviewed Hook source differs")
+    expected_cache = home / "plugins/cache" / NEW_MARKET / "context-guard"
+    require(any(native._official_path_matches(str(new_installed), expected_cache / name,
+                                               windows=os.name == "nt")
+                for name in (NEW_VERSION, "local")), "stable cache path differs")
+    expected_files = _object(_object(original.get("installed_new")).get("files"))
+    manager = _load_artifacts_no_pyc(Path(subject["product_root"]))
+    require(expected_files and expected_files == manager.distribution_manifest(Path(subject["product_root"]))
+            and source_files(new_installed) == expected_files,
+            "stable installed files changed since the wait")
+    native.exact_artifact_parity(new_installed, expected_files)
+    prior_cleanup = original.get("cleanup")
+    require(isinstance(prior_cleanup, list) and len(prior_cleanup) == 1
+            and prior_cleanup[0].get("role") == "live"
+            and _object(prior_cleanup[0].get("facts")).get("owned_process_exited") is True
+            and _object(prior_cleanup[0].get("facts")).get("owned_tree_no_running_members") is True
+            and _object(prior_cleanup[0].get("facts")).get("process_group_cleanup_error") is None,
+            "original live process cleanup not established")
+    if subject["platform"] == "Windows":
+        require(_object(prior_cleanup[0].get("facts")).get("cleanup_complete") is True
+                and _object(prior_cleanup[0].get("facts")).get("job_close_confirmed") is True,
+                "original live Job cleanup not established")
+    before = _object(original.get("before"))
+    task_a, task_b = before.get("thread_a"), before.get("thread_b")
+    require(prior_cleanup[0].get("pid") == before.get("app_server_pid"),
+            "original live cleanup process differs")
+    require(isinstance(task_a, str) and isinstance(task_b, str) and task_a != task_b
+            and _sha(before.get("state_a_sha256")) and _sha(before.get("state_b_sha256"))
+            and sha(host.session_state_path(old_data, task_a)) == before["state_a_sha256"]
+            and sha(host.session_state_path(old_data, task_b)) == before["state_b_sha256"],
+            "finished old task state changed since transition")
+    origin_dir = origin_receipt.parent
+    artifacts = _object(original.get("artifacts"))
+    required = {"live/rpc.jsonl", "before-compact.json", "before-a.json", "before-b.json",
+                "retained-a.json", "retained-b.json", "cancel-a.json", "cancel-b.json"}
+    require(required <= set(artifacts), "original phase evidence incomplete")
+    for name in required:
+        require(_sha(artifacts.get(name)) and sha(_evidence_path(origin_dir, name)) == artifacts[name],
+                "original phase evidence changed")
+    # The persistent inode coordinates every attempt. The kernel releases
+    # its lock after a crash, so an interrupted runner does not strand retries.
+    claim = origin_dir / ".resume-lock"
+    with _LifecycleLock(claim, time.monotonic()) as resume_lock:
+        resume_lock.verify()
+        consumption_path = origin_dir / "resume-consumed.json"
+        require(not consumption_path.exists() and not consumption_path.is_symlink(),
+                "original wait already consumed; inspect its recorded output")
+        binding = _read_json(_evidence_path(origin_dir, "wait-binding.json"))
+        require(binding.get("receipt_sha256") == sha(origin_receipt)
+                and binding.get("result_sha256") == sha(_evidence_path(origin_dir, "result.json"))
+                and binding.get("prepare_sha256") == sha(prepared)
+                and binding.get("plan_sha256") == digest(plan)
+                and binding.get("subject_sha256") == digest(subject), "original wait binding changed")
+        output.mkdir(mode=0o700)
+        for name in required:
+            source = _evidence_path(origin_dir, name)
+            destination = output / name
+            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with destination.open("xb") as target:
+                target.write(source.read_bytes())
+            require(sha(destination) == artifacts[name], "copied phase evidence changed")
+        origin_result_path = _evidence_path(origin_dir, "result.json")
+        for source, name in ((origin_receipt, "origin-wait.json"),
+                             (origin_result_path, "origin-result.json"),
+                             (origin_dir / "wait-binding.json", "origin-wait-binding.json")):
+            with (output / name).open("xb") as target:
+                target.write(source.read_bytes())
+        _write_new(output / "resume-input.json", receipt)
+        old_journal = _journal(output / "live/rpc.jsonl")
+        _validate_rpc_requests(old_journal, cold=False)
+        old_before = _object(original.get("before"))
+        marks = [(index, row) for index, row in enumerate(old_journal)
+                 if row.get("direction") == "local"]
+        require([row.get("event") for _, row in marks] ==
+                ["transition_started", "transition_completed"]
+                and all(row.get("pid") == old_before.get("app_server_pid") for _, row in marks),
+                "original transition markers differ")
+        old_installed = _object(_read_json(prepared).get("installed")).get("path")
+        require(isinstance(old_installed, str), "old installed path missing")
+        old_source = str(Path(old_installed) / "hooks/hooks.json")
+        old_inventory = _inventory_in_journal(old_journal, original.get("old_inventory"),
+                                               {old_source: subject["old_version"]},
+                                               before=marks[0][0])
+        for name, thread in (("a", task_a), ("b", task_b)):
+            state = _projected_state(output / ("before-" + name + ".json"))
+            _check_cancel_evidence(_read_json(output / ("cancel-" + name + ".json")), state, thread)
+            verify_archive(old_journal[:marks[0][0]], old_inventory, thread)
+        _verify_pending_transition(subject, _read_json(prepared), original, old_journal, output)
+        prior_ids = [_object(row.get("message")).get("id") for row in old_journal]
+        sequence_base = max([value for value in prior_ids if type(value) is int], default=0)
+        result = json.loads(json.dumps(original))
+        result.pop("wait", None)
+        result["status"] = "pending"
+        result["pending"] = ["independent_consumer"]
+        result["commands"].extend(pending_commands)
+        result["cleanup"] = []
+        result["resume"] = {"schema": "cg-finished-resume/v1",
+                            "origin_receipt_sha256": sha(output / "origin-wait.json"),
+                            "origin_result_sha256": sha(output / "origin-result.json"),
+                            "prior_live_cleanup": prior_cleanup[0]}
+        live_dir, cold_dir = output / "resumed", output / "cold"
+        live_dir.mkdir(mode=0o700)
+        cold_dir.mkdir(mode=0o700)
+        live = cold = None
+        old_market = _old_market(subject)
+        scoped = {old_market, NEW_MARKET, _object(plan.get("sentinel")).get("marketplace")}
+        env = isolated_env(home)
+        strategy = "finish-old"
+        read_file, read_sha = workspace / "native-read.txt", subject["read_file_sha256"]
+        windows = subject["platform"] == "Windows"
+        read_command = "Get-Content -LiteralPath native-read.txt" if windows else "cat native-read.txt"
+        task_request = "$context-guard\n请验证 native-read.txt 的 SHA256，收到我的允许后再进行。"
+        prompt = task_request + "现在只回复等待。"
+        if windows:
+            read_prompt = task_request + f"现在先用 exec_command 只读取一次，读取后回复等待。cmd 必须精确为：{read_command}"
+        else:
+            read_prompt = prompt + f" 先仅调用一次只读 shell，执行精确命令：{read_command}"
+        sentinel = _sentinel_files(home, plan.get("sentinel"))
+        require(sentinel == subject.get("sentinel"), "sentinel changed during wait")
+        def command(argv: list[str]) -> Any:
+            return _run_official(result, argv, env, scoped, "open_transition")
+        def observe_sentinel(stage: str) -> dict[str, dict[str, Any]]:
+            entries = _market_entries(command([str(codex), "plugin", "marketplace", "list", "--json"]))
+            facts = _sentinel_files(home, plan.get("sentinel"))
+            require(facts == sentinel and sentinel["marketplace"] in entries, "unrelated sentinel changed")
+            result["sentinel_phases"][stage] = facts
+            return entries
+        client_plan = {"codex": str(codex), "cwd": str(workspace), "home": str(home),
+                       "plugin_root": str(new_installed)}
+        try:
+            old_marker_present = any(row.get("direction") == "observation"
+                                     and row.get("event") == "old_identity_disabled" for row in old_journal)
+            if old_market != NEW_MARKET:
+                old_read = [str(codex), "plugin", "list", "--marketplace", old_market, "--json"]
+                deadline = time.monotonic() + receipt["wait_budget_seconds"]
+                while True:
+                    row = _selected_plugin(_json_output(command(old_read)), "context-guard@" + old_market)
+                    if (row is not None and row.get("version") == subject["old_version"]
+                            and row.get("installed") is True and row.get("enabled") is False):
+                        break
+                    if time.monotonic() >= deadline:
+                        raise WaitPending("old_plugin_disable", "open_transition")
+                    time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
+                stable_read = [str(codex), "plugin", "list", "--marketplace", NEW_MARKET, "--json"]
+                stable_row = _selected_plugin(_json_output(command(stable_read)), "context-guard@" + NEW_MARKET)
+                require(stable_row is not None and stable_row.get("installed") is True
+                        and stable_row.get("enabled") is True and stable_row.get("version") == NEW_VERSION,
+                        "stable plugin is not enabled after old disable")
+                old_path = _absolute_real(_object(_read_json(prepared).get("installed")).get("path"),
+                                          "old installed cache")
+                old_cache = {"files_sha256": digest(source_files(old_path)),
+                             "objects_sha256": _cache_identity(old_path)}
+                require(old_cache == _object(original.get("old_cache_preservation")).get("before"),
+                        "old cache changed during normal disable")
+                result["old_cache_preservation"]["after_old_disable"] = old_cache
+            started = _receipt_clock_ns()
+            require(type(prior_cleanup[0].get("closed_monotonic_ns")) is int
+                    and prior_cleanup[0]["closed_monotonic_ns"] < started,
+                    "resumed client started before original exit")
+            with _launch_environment(home):
+                live = UpgradeClient(client_plan, live_dir, sources={new_source: NEW_VERSION},
+                                     sequence_base=sequence_base, turn_limit=2, require_trusted=False)
+            require(type(live.owned.process.pid) is int and live.owned.process.pid > 0
+                    and live.owned.process.pid != prior_cleanup[0]["pid"],
+                    "resumed client process identity ambiguous")
+            live.log.write(json.dumps({"direction": "observation", "event": "resumed_live_started",
+                "pid": live.owned.process.pid, "started_monotonic_ns": started,
+                "monotonic_ns": _receipt_clock_ns()}) + "\n")
+            live.log.flush()
+            if old_market != NEW_MARKET and not old_marker_present:
+                live.log.write(json.dumps({"direction": "observation", "event": "old_identity_disabled",
+                    "pid": live.owned.process.pid, "monotonic_ns": _receipt_clock_ns()}) + "\n")
+                live.log.flush()
+            approved = _reviewed_sources(live, {new_source: NEW_VERSION}, new_source,
+                                         timeout=receipt["wait_budget_seconds"], phase="open_transition")
+            result["new_inventory"] = list(approved.values())
+            # Commit ownership before starting a new task. A crash or uncertain
+            # failure after this point must never replay the original receipt.
+            resume_lock.verify()
+            require(binding.get("receipt_sha256") == sha(origin_receipt)
+                    and binding.get("result_sha256") == sha(_evidence_path(origin_dir, "result.json")),
+                    "original wait evidence changed during review")
+            require(sha(output / "origin-wait-binding.json") == sha(origin_dir / "wait-binding.json")
+                    and all(sha(_evidence_path(output, name)) == artifacts[name] for name in required),
+                    "copied original phase evidence changed during review")
+            _verify_pending_transition(subject, _read_json(prepared), _read_json(origin_result_path),
+                                       _journal(_evidence_path(origin_dir, "live/rpc.jsonl")), output)
+            consumed = {"schema": "cg-native-resume-consumption/v1", "output": str(output),
+                        "plan_sha256": digest(plan), "subject_sha256": digest(subject),
+                        "prepare_sha256": sha(prepared), "wait_receipt_sha256": digest(receipt),
+                        "origin_receipt_sha256": sha(origin_receipt),
+                        "origin_result_sha256": sha(origin_result_path),
+                        "wait_binding_sha256": sha(origin_dir / "wait-binding.json")}
+            _write_durable_new(consumption_path, consumed)
+            _write_durable_new(output / "resume-consumption.json", consumed)
+            result["resume"]["consumption_sha256"] = sha(output / "resume-consumption.json")
+            fresh = live.start()
+            fresh_turn, fresh_rows = live.observed_turn(fresh, read_prompt)
+            verify_read_tool(fresh_rows, approved, fresh, fresh_turn, read_command, workspace)
+            require(sha(read_file) == read_sha, "fresh read fixture changed")
+            new_data, fresh_state = _state_at(home, plan.get("new_data_root"), fresh)
+            _pending(fresh_state)
+            _write_new(output / "fresh-after-transition.json", _state_projection(fresh_state))
+            fresh_stops = _paired(fresh_rows, approved, fresh, "stop", turn=fresh_turn)
+            require(any(_source_key(run.get("sourcePath"), [new_source]) == new_source for run in fresh_stops),
+                    "fresh task did not run the stable Hook source")
+            live.observed_compact(fresh)
+            fresh_compact_turn, _ = live.observed_turn(fresh, "继续。")
+            _, compact_state = _state_at(home, plan.get("new_data_root"), fresh)
+            host.verify_recovery(fresh_state, compact_state)
+            _write_new(output / "fresh-after-compact.json", _state_projection(compact_state))
+            live.rpc("thread/unsubscribe", {"threadId": fresh})
+            _finish_live_for_cold(live, result, subject["platform"])
+            live = None
+            cold_plan = {**client_plan, "plugin_root": str(new_installed)}
+            cold = _start_finished_cold(cold_plan, cold_dir, home, new_source, result)
+            begin = len(cold.rows)
+            cold.rpc("thread/resume", {"threadId": fresh, "cwd": str(workspace),
+                                       "sandbox": "read-only", "approvalPolicy": "on-request", "excludeTurns": True})
+            _try_wait_cold_start(cold, fresh, begin)
+            fresh_cold_turn, cold_rows = cold.observed_turn(fresh, "继续。")
+            cold.log.flush()
+            cold_phase, cold_started_before = _cold_session_phase(_journal(cold_dir / "rpc.jsonl"), cold.approved,
+                                                                   fresh, fresh_cold_turn, new_source)
+            _, cold_state = _state_at(home, plan.get("new_data_root"), fresh)
+            validate_continuity(compact_state, cold_state)
+            _write_new(output / "fresh-after-cold.json", _state_projection(cold_state))
+            cold_stops = _paired(cold_rows, cold.approved, fresh, "stop", turn=fresh_cold_turn)
+            require(any(_source_key(run.get("sourcePath"), [new_source]) == new_source for run in cold_stops),
+                    "cold fresh task did not run the stable Hook source")
+            fresh_cancel_turn, fresh_cancel_rows = cold.observed_turn(fresh, "取消当前任务。")
+            require(_paired(fresh_cancel_rows, cold.approved, fresh, "stop", turn=fresh_cancel_turn),
+                    "fresh cancellation Stop missing")
+            _, fresh_cancel_state = _state_at(home, plan.get("new_data_root"), fresh)
+            fresh_state_path = host.session_state_path(new_data, fresh)
+            fresh_cancel = _cancel_evidence(cold_state, fresh_cancel_state, _old_scope(new_installed, fresh_state_path, home))
+            fresh_cancel["state_sha256"] = sha(fresh_state_path)
+            _write_new(output / "fresh-cancel.json", fresh_cancel)
+            _archive_owned(cold, fresh)
+            result["after"] = {"fresh_thread": fresh, "fresh_turn": fresh_turn, "data_root": str(new_data),
+                               "fresh_stop_sources": sorted({run["sourcePath"] for run in fresh_stops}),
+                               "fresh_compact_turn": fresh_compact_turn, "fresh_cold_turn": fresh_cold_turn,
+                               "fresh_cancel_turn": fresh_cancel_turn,
+                               "cold_session_start_phase": cold_phase,
+                               "cold_session_started_before_first_turn": cold_started_before,
+                               "scope": "old tasks explicitly cancelled before transition; no continuity claim"}
+            tracked_states = [(str(old_data), task_a), (str(old_data), task_b)]
+            tracked_states += ([(str(new_data), fresh)] if strategy == "finish-old"
+                               else [(str(new_data), task_a), (str(new_data), task_b)])
+            require(sha(host.session_state_path(old_data, task_a)) == before["state_a_sha256"]
+                    and sha(host.session_state_path(old_data, task_b)) == before["state_b_sha256"],
+                    "finished old task state changed during resumed phase")
+            before_removal = _selected_states(home, tracked_states)
+            result["selected_data_before_removal"] = before_removal
+            stable_id = "context-guard@" + NEW_MARKET
+            controller = cold if strategy == "finish-old" else live
+            controller.rpc("config/batchWrite", {"edits": [{"keyPath": 'plugins."' + stable_id + '".enabled',
+                          "value": False, "mergeStrategy": "upsert"}], "reloadUserConfig": True})
+            disabled = controller.rpc("hooks/list", {"cwds": [str(workspace)]})
+            rows = disabled.get("data") if isinstance(disabled, dict) else None
+            require(isinstance(rows, list) and len(rows) == 1 and not _object(rows[0]).get("errors")
+                    and not _object(rows[0]).get("warnings"), "disabled Hook readback unavailable")
+            remaining = _object(rows[0]).get("hooks")
+            require(isinstance(remaining, list) and all(isinstance(x, dict)
+                                                         and _source_key(x.get("sourcePath"), [new_source]) is None
+                                                         for x in remaining), "selected Hooks remain enabled")
+            remaining = [_hook_projection(item) for item in remaining]
+            previously_other = [h for (event, source), h in approved.items() if source != new_source]
+            require(sorted(remaining, key=lambda h: (h.get("sourcePath"), h.get("eventName")))
+                    == sorted(previously_other, key=lambda h: (h.get("sourcePath"), h.get("eventName"))),
+                    "unrelated Hook inventory changed")
+            result["disabled_inventory"] = remaining
+            disabled_list = _json_output(command([str(codex), "plugin", "list", "--marketplace", NEW_MARKET, "--json"]))
+            disabled_entries = disabled_list.get("installed")
+            require(isinstance(disabled_entries, list), "disabled plugin readback unavailable")
+            selected = [x for x in disabled_entries if isinstance(x, dict) and x.get("pluginId") == stable_id]
+            require(len(selected) == 1 and selected[0].get("installed") is True
+                    and selected[0].get("enabled") is False, "selected plugin did not disable")
+            _mark(controller, "disable_completed")
+            require(_selected_states(home, tracked_states) == before_removal, "selected data changed on disable")
+            observe_sentinel("after_disable")
+            command([str(codex), "plugin", "remove", stable_id])
+            after_remove = _json_output(command([str(codex), "plugin", "list", "--marketplace", NEW_MARKET, "--json"]))
+            remaining_installed = after_remove.get("installed")
+            require(isinstance(remaining_installed, list)
+                    and not any(isinstance(x, dict) and x.get("pluginId") == stable_id for x in remaining_installed),
+                    "selected plugin remains installed")
+            require(not new_installed.exists(), "selected plugin cache remains after removal")
+            _mark(controller, "plugin_removed")
+            require(_selected_states(home, tracked_states) == before_removal, "selected data changed on removal")
+            observe_sentinel("after_plugin_remove")
+            command([str(codex), "plugin", "marketplace", "remove", NEW_MARKET])
+            after_market_remove = observe_sentinel("after_marketplace_remove")
+            require(NEW_MARKET not in after_market_remove, "selected marketplace remains registered")
+            _mark(controller, "marketplace_removed")
+            _verify_retained_old_market(after_market_remove, plan)
+            require(_selected_states(home, tracked_states) == before_removal, "selected data changed on marketplace removal")
+            result["selected_data_after_removal"] = before_removal
+            result["pending"] = ["independent_consumer"]
+        except WaitPending as pending:
+            result["status"] = "wait_pending"
+            result["stage"] = "resume_wait"
+            result["pending"] = [pending.wait]
+            refreshed = dict(receipt)
+            refreshed["wait"] = pending.wait
+            refreshed["started_at"] = time.time()
+            refreshed["origin"] = {"receipt": str(origin_receipt),
+                                   "receipt_sha256": sha(origin_receipt),
+                                   "result_sha256": sha(origin_result_path)}
+            _write_new(output / WAIT_RECEIPT_NAME, refreshed)
+        except BaseException as exc:
+            result["status"] = "failed"
+            result["failure"] = type(exc).__name__
+        finally:
+            for role, client in (("cold", cold), ("live", live)):
+                if client is not None:
+                    try:
+                        result["cleanup"].append(_close_observation(client, role, subject["platform"]))
+                    except BaseException as exc:
+                        result["cleanup"].append({"role": role, "cleanup_unknown": type(exc).__name__})
+                        result["status"] = "failed"
+            names = ("live/rpc.jsonl", "resumed/rpc.jsonl", "cold/rpc.jsonl", "before-compact.json",
+                     "before-a.json", "before-b.json", "retained-a.json", "retained-b.json",
+                     "fresh-after-transition.json", "fresh-after-compact.json", "fresh-after-cold.json",
+                     "fresh-cancel.json", "cancel-a.json", "cancel-b.json", "origin-wait.json", "origin-result.json",
+                     "resume-consumption.json", "origin-wait-binding.json", "resume-input.json")
+            result["artifacts"] = {name: sha(output / name) for name in names if (output / name).is_file()}
+            _write_new(output / "result.json", result)
+        resume_lock.verify()
+        return result
 
 
 def resume_wait(plan: dict[str, Any], output: Path, prepared: Path,
                 receipt_path: Path) -> dict[str, Any]:
-    """Re-enter only the bounded official wait named by a pending receipt.
+    """Resume a bounded official wait using the original phase evidence.
 
-    Refuses a changed plan or a changed registration/installation identity and
-    never re-runs prepare, marketplace registration, plugin add, or any other
-    destructive step. Official confirmation stays manual, no new HOME is
-    created, and the interrupted phase's task observations are not re-executed;
-    the original wait_pending result stays the authoritative phase record.
+    Finished old tasks can continue with a new, independently bound client.
+    An interrupted open-task observation remains unavailable when its original
+    client has exited. The resume never repeats prepare or installation and
+    never changes trust on the operator's behalf.
     """
     require(receipt_path.name == WAIT_RECEIPT_NAME and receipt_path.is_absolute()
             and not receipt_path.is_symlink(), "pending-wait receipt path invalid")
@@ -2823,13 +3312,65 @@ def resume_wait(plan: dict[str, Any], output: Path, prepared: Path,
     require(type(budget) is int and 1 <= budget <= MAX_REVIEW_TIMEOUT_SECONDS, "pending-wait budget invalid")
     require(type(receipt.get("started_at")) is float, "pending-wait start time unavailable")
     result_dir = receipt_path.parent
-    original = _read_json(_evidence_path(result_dir, "result.json"))
-    require(original.get("schema") == REPORT and original.get("stage") == receipt.get("phase")
-            and original.get("status") == "wait_pending"
-            and digest(_object(original.get("subject"))) == receipt.get("subject_sha256"),
+    previous = _read_json(_evidence_path(result_dir, "result.json"))
+    require(previous.get("schema") == REPORT and previous.get("status") == "wait_pending"
+            and digest(_object(previous.get("subject"))) == receipt.get("subject_sha256"),
             "original result does not bind the pending-wait receipt")
+    origin = receipt.get("origin")
+    if origin is None:
+        require(previous.get("stage") == receipt.get("phase"),
+                "original result does not bind the pending-wait receipt")
+        original = previous
+        origin_receipt = receipt_path
+        origin_result = _evidence_path(result_dir, "result.json")
+    else:
+        require(previous.get("stage") == "resume_wait" and isinstance(origin, dict)
+                and set(origin) == {"receipt", "receipt_sha256", "result_sha256"},
+                "refreshed wait origin invalid")
+        origin_receipt = Path(origin["receipt"])
+        require(origin_receipt.is_absolute() and origin_receipt.name == WAIT_RECEIPT_NAME
+                and origin_receipt != receipt_path and not origin_receipt.is_symlink(),
+                "refreshed wait origin invalid")
+        _no_link_ancestors(origin_receipt)
+        _reject_credential_path(origin_receipt)
+        origin_receipt = _evidence_path(origin_receipt.parent, WAIT_RECEIPT_NAME)
+        origin_result = _evidence_path(origin_receipt.parent, "result.json")
+        require(sha(origin_receipt) == origin.get("receipt_sha256")
+                and sha(origin_result) == origin.get("result_sha256"),
+                "original wait evidence changed")
+        initial = _read_json(origin_receipt)
+        original = _read_json(origin_result)
+        require(initial.get("schema") == WAIT_RECEIPT
+                and initial.get("status") == "wait_pending"
+                and initial.get("phase") == receipt.get("phase")
+                and (initial.get("wait") == receipt.get("wait") or
+                     (initial.get("wait") == "old_plugin_disable" and receipt.get("wait") == "new_hook_review"))
+                and initial.get("strategy") == receipt.get("strategy")
+                and initial.get("plan_sha256") == receipt.get("plan_sha256")
+                and initial.get("subject_sha256") == receipt.get("subject_sha256")
+                and initial.get("prepare_sha256") == receipt.get("prepare_sha256")
+                and original.get("schema") == REPORT
+                and original.get("stage") == receipt.get("phase")
+                and original.get("status") == "wait_pending"
+                and digest(_object(original.get("subject"))) == receipt.get("subject_sha256"),
+                "original wait evidence differs")
     subject = _object(original.get("subject"))
+    if receipt.get("strategy") == "finish-old":
+        origin_wait = _read_json(origin_receipt)
+        require(original.get("wait") == {"wait": origin_wait.get("wait"),
+                                         "phase": origin_wait.get("phase"),
+                                         "receipt": WAIT_RECEIPT_NAME}
+                and original.get("pending") == [origin_wait.get("wait")]
+                and origin_wait.get("strategy") == subject.get("transition_strategy"),
+                "original pending stage differs")
     require(receipt.get("prepare_sha256") == sha(prepared), "prepare receipt differs from the pending wait")
+    if receipt.get("strategy") == "finish-old":
+        binding_path = _evidence_path(origin_receipt.parent, "wait-binding.json")
+        binding = _read_json(binding_path)
+        require(binding == {"schema": "cg-native-wait-binding/v1", "plan_sha256": digest(plan),
+                            "subject_sha256": digest(subject), "prepare_sha256": sha(prepared),
+                            "receipt_sha256": sha(origin_receipt), "result_sha256": sha(origin_result)},
+                "original wait binding differs")
     prepare_receipt = _read_json(prepared)
     require(prepare_receipt.get("schema") == REPORT and prepare_receipt.get("stage") == "prepare"
             and digest(_object(prepare_receipt.get("subject"))) == receipt.get("subject_sha256"),
@@ -2859,6 +3400,10 @@ def resume_wait(plan: dict[str, Any], output: Path, prepared: Path,
 
     require(_stable_identity(_wait_identity_snapshot(command, scoped, subject["codex"], wait_markets))
             == _object(receipt.get("stable_identity")), "official identity changed since the pending wait")
+    if receipt["strategy"] == "finish-old":
+        require(preflight(plan, output) == subject, "current source or artifact identity changed")
+        return _resume_finished(plan, output, prepared, receipt, origin_receipt,
+                                       original, record["commands"])
     # Created only after every refusal above, so a refused resume leaves nothing.
     output.mkdir(mode=0o700)
     started_at = time.time()
@@ -2908,13 +3453,18 @@ def resume_wait(plan: dict[str, Any], output: Path, prepared: Path,
         resolved = _wait_identity_snapshot(command, scoped, subject["codex"], wait_markets)
         result["resolved"] = resolved
         result["wait"]["resolved_at"] = time.time()
-        result["status"] = "wait_resolved"
-        result["pending"] = ["independent_consumer"]
+        result["status"] = "continuation_unavailable"
+        result["pending"] = ["interrupted_phase_requires_original_client"]
+        result["limitations"].append(
+            "the original app-server exited; this route cannot establish same-client continuation")
     except WaitPending:
         refreshed = {key: value for key, value in receipt.items() if key != "observed"}
         refreshed["observed"] = _wait_identity_snapshot(command, scoped, subject["codex"], wait_markets)
         refreshed["stable_identity"] = _stable_identity(refreshed["observed"])
         refreshed["started_at"] = started_at
+        refreshed["origin"] = {"receipt": str(origin_receipt),
+                               "receipt_sha256": sha(origin_receipt),
+                               "result_sha256": sha(origin_result)}
         _write_new(output / WAIT_RECEIPT_NAME, refreshed)
     _write_new(output / "result.json", result)
     return result
@@ -3280,12 +3830,15 @@ def _command_times(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _verify_pre_disable(live: list[dict[str, Any]], result: dict[str, Any], old_source: str,
-                        new_source: str, transition_end: int, disabled_index: int, pid: int) -> None:
+                        new_source: str, transition_end: int, disabled_index: int, pid: int,
+                        disabled_pid: int | None = None) -> None:
     markers = [(i, row) for i, row in enumerate(live) if row.get("direction") == "observation"
                and row.get("event") == "pre_disable_sample"]
     require(len(markers) == 1 and transition_end < markers[0][0] < disabled_index
             and all(live[i].get("pid") == pid and type(live[i].get("monotonic_ns")) is int
-                    for i in (transition_end, markers[0][0], disabled_index))
+                    for i in (transition_end, markers[0][0]))
+            and live[disabled_index].get("pid") == (disabled_pid if disabled_pid is not None else pid)
+            and type(live[disabled_index].get("monotonic_ns")) is int
             and 0 < live[transition_end]["monotonic_ns"] < markers[0][1]["monotonic_ns"]
             < live[disabled_index]["monotonic_ns"],
             "pre-disable sample marker unavailable")
@@ -3297,7 +3850,8 @@ def _verify_pre_disable(live: list[dict[str, Any]], result: dict[str, Any], old_
 
 def _verify_old_disable(subject: dict[str, Any], result: dict[str, Any], live: list[dict[str, Any]],
                         marks: dict[str, int], new_source: str, installed: Path,
-                        *, disable_completed_ns: int | None = None) -> None:
+                        *, disable_completed_ns: int | None = None,
+                        resumed_pid: int | None = None) -> None:
     old_market = _old_market(subject)
     if old_market == NEW_MARKET or subject["transition_strategy"] != "finish-old":
         return
@@ -3313,13 +3867,16 @@ def _verify_old_disable(subject: dict[str, Any], result: dict[str, Any], live: l
     require(len(markers) == 1 and marks["transition_completed"] < markers[0][0] < disable_index
             and type(markers[0][1].get("monotonic_ns")) is int, "normal old disable marker unavailable")
     marker_index, marker = markers[0]
-    require(marker.get("pid") == live[marks["transition_started"]].get("pid"), "app-server identity differs")
+    original_pid = live[marks["transition_started"]].get("pid")
+    require(marker.get("pid") == original_pid or (resumed_pid is not None and marker.get("pid") == resumed_pid),
+            "app-server identity differs")
     end_stamp = (disable_completed_ns if disable_completed_ns is not None else
                  live[marks["disable_completed"]].get("monotonic_ns"))
     require(type(end_stamp) is int and marker["monotonic_ns"] < end_stamp,
             "normal old disable timestamp differs")
     _verify_pre_disable(live, result, str(installed / "hooks/hooks.json"), new_source,
-                        marks["transition_completed"], marker_index, marker["pid"])
+                        marks["transition_completed"], marker_index, original_pid,
+                        disabled_pid=marker["pid"])
     sample_stamp = next(row["monotonic_ns"] for row in live if row.get("direction") == "observation"
                         and row.get("event") == "pre_disable_sample")
     codex = subject["codex"]
@@ -3870,6 +4427,63 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     require(required_files <= set(artifacts) and all(_sha(artifacts.get(name))
             and sha(_evidence_path(output, name)) == artifacts[name] for name in required_files), "artifact digest differs")
     live = _journal(_evidence_path(output, "live/rpc.jsonl"))
+    resumed = result.get("resume")
+    if resumed is not None:
+        require(subject["transition_strategy"] == "finish-old"
+                and isinstance(resumed, dict) and resumed.get("schema") == "cg-finished-resume/v1",
+                "unsupported resumed transition")
+        for name in ("resumed/rpc.jsonl", "origin-wait.json", "origin-result.json", "resume-consumption.json",
+                     "origin-wait-binding.json", "resume-input.json"):
+            require(_sha(artifacts.get(name)) and sha(_evidence_path(output, name)) == artifacts[name],
+                    "resumed phase artifact digest differs")
+        require(resumed.get("origin_receipt_sha256") == artifacts["origin-wait.json"]
+                and resumed.get("origin_result_sha256") == artifacts["origin-result.json"],
+                "original phase receipt binding differs")
+        consumed = _read_json(_evidence_path(output, "resume-consumption.json"))
+        require(resumed.get("consumption_sha256") == artifacts["resume-consumption.json"]
+                and consumed.get("schema") == "cg-native-resume-consumption/v1"
+                and consumed.get("output") == str(output)
+                and consumed.get("plan_sha256") == digest(plan)
+                and consumed.get("subject_sha256") == digest(subject)
+                and consumed.get("prepare_sha256") == sha(prepared)
+                and consumed.get("origin_receipt_sha256") == artifacts["origin-wait.json"]
+                and consumed.get("origin_result_sha256") == artifacts["origin-result.json"]
+                and consumed.get("wait_binding_sha256") == artifacts["origin-wait-binding.json"]
+                and consumed.get("wait_receipt_sha256") == digest(_read_json(_evidence_path(output, "resume-input.json"))),
+                "resumed phase consumption binding differs")
+        origin_wait = _read_json(_evidence_path(output, "origin-wait.json"))
+        origin_result = _read_json(_evidence_path(output, "origin-result.json"))
+        require(_read_json(_evidence_path(output, "origin-wait-binding.json")) == {
+            "schema": "cg-native-wait-binding/v1", "plan_sha256": digest(plan),
+            "subject_sha256": digest(subject), "prepare_sha256": sha(prepared),
+            "receipt_sha256": artifacts["origin-wait.json"], "result_sha256": artifacts["origin-result.json"]},
+            "original wait binding differs")
+        require(origin_wait.get("schema") == WAIT_RECEIPT and origin_wait.get("status") == "wait_pending"
+                and origin_wait.get("wait") in WAIT_PENDINGS and origin_wait.get("phase") == "open_transition"
+                and origin_wait.get("plan_sha256") == digest(plan)
+                and origin_wait.get("subject_sha256") == digest(subject)
+                and origin_wait.get("prepare_sha256") == sha(prepared)
+                and origin_result.get("schema") == REPORT and origin_result.get("status") == "wait_pending"
+                and origin_result.get("stage") == "open_transition" and origin_result.get("subject") == subject
+                and origin_result.get("cleanup") == [resumed.get("prior_live_cleanup")]
+                and result.get("commands", [])[:len(origin_result.get("commands", []))] == origin_result.get("commands")
+                and all(artifacts.get(name) == expected for name, expected in
+                        _object(origin_result.get("artifacts")).items()),
+                "original interrupted phase differs")
+        continuation = _journal(_evidence_path(output, "resumed/rpc.jsonl"))
+        _validate_rpc_requests(continuation, cold=False)
+        old_ids = {_object(row.get("message")).get("id") for row in live
+                   if type(_object(row.get("message")).get("id")) is int}
+        new_ids = {_object(row.get("message")).get("id") for row in continuation
+                   if type(_object(row.get("message")).get("id")) is int}
+        require(old_ids.isdisjoint(new_ids), "client RPC identifiers overlap")
+        markers = [(index, row) for index, row in enumerate(continuation)
+                   if row.get("direction") == "observation" and row.get("event") == "resumed_live_started"]
+        require(len(markers) == 1 and not any(row.get("direction") == "request"
+                and _object(row.get("message")).get("method") == "turn/start"
+                for row in continuation[:markers[0][0]]), "resumed client start evidence differs")
+        resumed_marker = markers[0][1]
+        live = live + continuation
     cold = _journal(_evidence_path(output, "cold/rpc.jsonl"))
     _validate_rpc_requests(live, cold=False)
     _validate_rpc_requests(cold, cold=True)
@@ -3911,7 +4525,8 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
                                     {p: (NEW_VERSION if p == new_source else subject["old_version"])
                                      for p in new_paths}, after=marks["transition_completed"])
     _verify_old_disable(subject, result, live, marks, new_source, Path(old_installed),
-                        disable_completed_ns=cold[cold_marks["disable_completed"]]["monotonic_ns"])
+                        disable_completed_ns=cold[cold_marks["disable_completed"]]["monotonic_ns"],
+                        resumed_pid=resumed_marker["pid"] if resumed is not None else None)
     for thread, field in ((task_a, "turn_a"), (task_b, "turn_b"), (task_a, "post_compact_turn")):
         turn = before.get(field)
         require(isinstance(turn, str), "old turn missing")
@@ -3940,6 +4555,11 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     validate_continuity(a_before, _projected_state(_evidence_path(output, "retained-a.json")))
     validate_continuity(b_before, _projected_state(_evidence_path(output, "retained-b.json")))
     old_after = _object(result.get("old_data_after_transition"))
+    if resumed is not None:
+        old_root = Path(subject["old_data_root"])
+        require(sha(host.session_state_path(old_root, task_a)) == before.get("state_a_sha256")
+                and sha(host.session_state_path(old_root, task_b)) == before.get("state_b_sha256"),
+                "finished old task state changed after the interrupted transition")
     require(_sha(before.get("state_a_sha256")) and _sha(before.get("state_b_sha256"))
             and old_after.get("thread_a_sha256") == before["state_a_sha256"]
             and old_after.get("thread_b_sha256") == before["state_b_sha256"],
@@ -4112,7 +4732,20 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
                     and row.get("event") == "cold_client_started"]
     require(len(cold_markers) == 1 and cold_markers[0][0] < resumes[0][0]
             and cold_markers[0][1].get("pid") == cold_close["pid"]
-            and live_close["pid"] == before.get("app_server_pid") and live_close["pid"] != cold_close["pid"]
+            and (live_close["pid"] == before.get("app_server_pid") if resumed is None else
+                 (resumed_marker.get("pid") == live_close["pid"]
+                  and live_close["pid"] != before.get("app_server_pid")
+                  and _object(resumed.get("prior_live_cleanup")).get("pid") == before.get("app_server_pid")
+                  and _object(_object(resumed.get("prior_live_cleanup")).get("facts")).get("owned_process_exited") is True
+                  and _object(_object(resumed.get("prior_live_cleanup")).get("facts")).get("owned_tree_no_running_members") is True
+                  and _object(_object(resumed.get("prior_live_cleanup")).get("facts")).get("process_group_cleanup_error") is None
+                  and type(_object(resumed.get("prior_live_cleanup")).get("closed_monotonic_ns")) is int
+                  and type(resumed_marker.get("started_monotonic_ns")) is int
+                  and type(resumed_marker.get("monotonic_ns")) is int
+                  and marker_times["transition_completed"] < resumed["prior_live_cleanup"]["closed_monotonic_ns"]
+                  < resumed_marker["started_monotonic_ns"] <= resumed_marker["monotonic_ns"]
+                  < live_close["closed_monotonic_ns"]))
+            and live_close["pid"] != cold_close["pid"]
             and type(cold_markers[0][1].get("monotonic_ns")) is int
             and type(cold_markers[0][1].get("started_monotonic_ns")) is int
             and cold_markers[0][1]["monotonic_ns"] < cold_close["closed_monotonic_ns"]
@@ -4123,9 +4756,10 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
             and marker_times["marketplace_removed"] < cold_close["closed_monotonic_ns"],
             "cold and live app-server identities are not independently bound")
     if subject["platform"] == "Windows":
+        required_cleanup = cleanup + ([resumed["prior_live_cleanup"]] if resumed is not None else [])
         require(all(_object(item.get("facts")).get("cleanup_complete") is True
                     and _object(item.get("facts")).get("job_close_confirmed") is True
-                    for item in cleanup), "Windows owned Job cleanup incomplete")
+                    for item in required_cleanup), "Windows owned Job cleanup incomplete")
     return {"schema": REPORT, "status": "passed", "observed_boundary": boundary,
             "verifier_toolkit_commit": verifier_commit, "verifier_tool_sha256": verifier_sha,
             "subject": subject, "execution_result_sha256": sha(_evidence_path(output, "result.json")),
@@ -4152,7 +4786,7 @@ def main(argv: list[str] | None = None) -> int:
     actions.add_argument("--run-open-transition", action="store_true")
     actions.add_argument("--verify", action="store_true")
     actions.add_argument("--resume-wait", type=Path, metavar="WAIT-PENDING-JSON",
-                         help="pending-wait receipt; re-enters only the bounded official wait")
+                         help="resume a pending official wait and eligible finished-task phase")
     parser.add_argument("--prepared-result", type=Path)
     parser.add_argument("--verify-output", type=Path,
                         help="new external result for the independent consumer")
@@ -4212,7 +4846,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({"status": result["status"], "stage": result["stage"],
                       "pending": result["pending"]}))
     if result["status"] == "failed" or (args.run_open_transition and result["status"] != "passed") \
-            or (args.resume_wait is not None and result["status"] != "wait_resolved"):
+            or (args.resume_wait is not None and result["status"] != "passed"):
         return 1
     return 0
 

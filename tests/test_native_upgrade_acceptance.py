@@ -2866,21 +2866,21 @@ class _FakeTransitionClient:
     def __init__(self, cplan, outdir, sources=None, **kwargs):
         h = self.harness
         h.clients.append(self)
-        self.is_cold = len(h.clients) == 2
+        self.is_cold = outdir.name == "cold"
         if self.is_cold and "live-closed" not in h.events:
             raise RuntimeError("old owner still active")
         h.events.append("cold-start" if self.is_cold else "live-start")
-        self.plan, self.rows, self.seq = cplan, [], 0
+        self.plan, self.rows, self.seq = cplan, [], kwargs.get("sequence_base", 0)
         self.kwargs = kwargs
         self.owned = mock.Mock()
-        self.owned.process.pid = 456 if self.is_cold else 123
+        self.owned.process.pid = 456 if self.is_cold else 789 if outdir.name == "resumed" else 123
         self.owned.process.poll.return_value = None
         self.log = (outdir / "rpc.jsonl").open("x", encoding="utf8")
         self.guard_diagnostic = None
         self.observation_inventory = self.observation_thread = None
-        source = h.new_source if self.is_cold else h.old_source
+        source = h.new_source if self.is_cold or outdir.name == "resumed" else h.old_source
         self.approved = U._inventory(inventory(source),
-                                     {source: U.NEW_VERSION if self.is_cold else h.old_version})
+                                     {source: U.NEW_VERSION if source == h.new_source else h.old_version})
         self.rpc("hooks/list", {"cwds": [str(h.workspace)]})
 
     def emit(self, direction, message):
@@ -3388,10 +3388,7 @@ class WaitResumeControls(unittest.TestCase):
 
     @contextlib.contextmanager
     def _resume_seams(self, harness, client=None):
-        with contextlib.ExitStack() as stack:
-            stack.enter_context(mock.patch.object(U.scheduler, "_command", side_effect=harness.command))
-            stack.enter_context(mock.patch.object(U.time, "monotonic", harness.clock_now))
-            stack.enter_context(mock.patch.object(U.time, "sleep", harness.clock_sleep))
+        with harness.patched(), contextlib.ExitStack() as stack:
             if client is not None:
                 stack.enter_context(mock.patch.object(U, "UpgradeClient", client))
             yield
@@ -3442,43 +3439,20 @@ class WaitResumeControls(unittest.TestCase):
             self.assertIs(False, receipt["observed"]["plugins"][harness.market][0]["enabled"])
             self.assertFalse(harness.state["old_enabled"])
 
-    def test_resume_wait_resolves_disable_and_matches_uninterrupted_state(self):
+    def test_resume_wait_resolves_disable_and_independently_verifies(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             harness, out, pending = self._pending(root)
             self.assertEqual("wait_pending", pending["status"])
-            resume_out = root / "resume-out"
             harness.state["old_enabled"] = False
+            harness.state["review_ready"] = True
             with self._resume_seams(harness):
-                resumed = U.resume_wait(harness.plan, resume_out, harness.prepare_path,
+                resumed = U.resume_wait(harness.plan, root / "finished", harness.prepare_path,
                                         out / U.WAIT_RECEIPT_NAME)
-            self.assertEqual("wait_resolved", resumed["status"], resumed)
-            self.assertEqual("resume_wait", resumed["stage"])
-            self.assertEqual(["independent_consumer"], resumed["pending"])
-            self.assertEqual(U.sha(out / U.WAIT_RECEIPT_NAME), resumed["wait"]["receipt_sha256"])
-            # Only read-only official inventory ran: nothing was re-registered,
-            # re-added, removed or re-prepared.
-            self.assertEqual({("marketplace", "list"), ("list", "--marketplace")},
-                             {tuple(fact["argv"][2:4]) for fact in resumed["commands"]})
-            self.assertEqual([], harness.clients[2:])
-            self.assertFalse((resume_out / U.WAIT_RECEIPT_NAME).exists())
-            self.assertEqual("wait_resolved", json.loads((resume_out / "result.json").read_text())["status"])
-            # Same terminal identity as a wait that was never interrupted.
-            direct_root = root / "direct"
-            direct_root.mkdir(mode=0o700)
-            direct, direct_out, _ = self._pending(direct_root, disable_after_poll=2)
-            uninterrupted = json.loads((direct_out / U.WAIT_RECEIPT_NAME).read_text())["observed"]
-
-            def identity(rows):
-                return [{key: row[key] for key in ("name", "marketplaceName", "version", "installed", "enabled")}
-                        for row in rows]
-
-            self.assertEqual(identity(uninterrupted["plugins"][direct.market]),
-                             identity(resumed["resolved"]["plugins"][harness.market]))
-            self.assertEqual(identity(uninterrupted["plugins"][U.NEW_MARKET]),
-                             identity(resumed["resolved"]["plugins"][U.NEW_MARKET]))
-            self.assertEqual([row["name"] for row in uninterrupted["marketplaces"]],
-                             [row["name"] for row in resumed["resolved"]["marketplaces"]])
+                self.assertEqual("pending", resumed["status"], resumed)
+                self.assertEqual("passed", U.verify(harness.plan, root / "finished", harness.prepare_path)["status"])
+            self.assertEqual(1, sum(fact["argv"][1:3] == ["plugin", "add"]
+                                    for fact in resumed["commands"]))
 
     def test_resume_wait_refuses_changed_plan_identity_or_receipts(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -3524,6 +3498,328 @@ class WaitResumeControls(unittest.TestCase):
             self.assertIsInstance(refreshed["started_at"], float)
             self.assertEqual("wait_pending", json.loads((resume_out / "result.json").read_text())["status"])
 
+    def test_repeated_pending_wait_can_resume_again_without_reinstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness, out, _ = self._pending(root)
+            first = root / "first"
+            with self._resume_seams(harness):
+                result = U.resume_wait(harness.plan, first, harness.prepare_path,
+                                       out / U.WAIT_RECEIPT_NAME)
+                self.assertEqual("wait_pending", result["status"])
+                harness.state["old_enabled"] = False
+                second = U.resume_wait(harness.plan, root / "second", harness.prepare_path,
+                                       first / U.WAIT_RECEIPT_NAME)
+                self.assertEqual("wait_pending", second["status"], second)
+                self.assertEqual(["new_hook_review"], second["pending"])
+                harness.state["review_ready"] = True
+                third = U.resume_wait(harness.plan, root / "third", harness.prepare_path,
+                                      root / "second" / U.WAIT_RECEIPT_NAME)
+                self.assertEqual("pending", third["status"], third)
+                self.assertEqual("passed", U.verify(harness.plan, root / "third", harness.prepare_path)["status"])
+            self.assertEqual(1, sum(fact["argv"][1:3] == ["plugin", "add"]
+                                    for fact in third["commands"]))
+
+    def test_refreshed_wait_rejects_changed_original_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness, out, _ = self._pending(root)
+            first = root / "first"
+            with self._resume_seams(harness):
+                U.resume_wait(harness.plan, first, harness.prepare_path,
+                              out / U.WAIT_RECEIPT_NAME)
+                result_path = out / "result.json"
+                result_path.write_text(result_path.read_text() + "\n")
+                with self.assertRaisesRegex(U.UpgradeError, "original wait evidence changed"):
+                    U.resume_wait(harness.plan, root / "second", harness.prepare_path,
+                                  first / U.WAIT_RECEIPT_NAME)
+
+    def test_stable_finished_wait_resumes_through_independent_verifier(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.17.0", review_timeout=4)
+            harness.state["review_ready"] = False
+            with harness.patched():
+                original, pending = harness.run_transition()
+                self.assertEqual("wait_pending", pending["status"], pending)
+                first = U.resume_wait(harness.plan, root / "retry", harness.prepare_path,
+                                      original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual("wait_pending", first["status"], first)
+                harness.state["review_ready"] = True
+                resumed = U.resume_wait(harness.plan, root / "finished", harness.prepare_path,
+                                        root / "retry" / U.WAIT_RECEIPT_NAME)
+                self.assertEqual("pending", resumed["status"], resumed)
+                self.assertEqual(["independent_consumer"], resumed["pending"])
+                verified = U.verify(harness.plan, root / "finished", harness.prepare_path)
+                self.assertEqual("passed", verified["status"])
+                self.assertEqual("cancelled_old_before_transition", verified["observed_boundary"])
+                self.assertNotEqual(resumed["resume"]["prior_live_cleanup"]["pid"],
+                                    next(item["pid"] for item in resumed["cleanup"] if item["role"] == "live"))
+                self.assertEqual(1, sum(fact["argv"][1:3] == ["plugin", "add"]
+                                        for fact in resumed["commands"]))
+
+    def test_stable_resume_refuses_tampered_original_and_concurrent_claim(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.17.0", review_timeout=4)
+            harness.state["review_ready"] = False
+            with harness.patched():
+                original, pending = harness.run_transition()
+                self.assertEqual("wait_pending", pending["status"])
+                harness.state["review_ready"] = True
+                old_log = original / "live/rpc.jsonl"
+                old_bytes = old_log.read_bytes()
+                old_log.write_bytes(old_bytes + b"\n")
+                with self.assertRaisesRegex(U.UpgradeError, "original phase evidence changed"):
+                    U.resume_wait(harness.plan, root / "bad", harness.prepare_path,
+                                  original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual(1, len(harness.clients))
+                old_log.write_bytes(old_bytes)
+                claim = original / ".resume-lock"
+                with U._LifecycleLock(claim, U.time.monotonic()):
+                    with self.assertRaisesRegex(ValueError, "writer still active"):
+                        U.resume_wait(harness.plan, root / "concurrent", harness.prepare_path,
+                                      original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual(1, len(harness.clients))
+                # The persistent lock inode is reusable after its owner exits.
+                with U._LifecycleLock(claim, U.time.monotonic()):
+                    pass
+
+    def test_stable_resume_rejects_source_and_cleanup_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.17.0", review_timeout=4)
+            harness.state["review_ready"] = False
+            with harness.patched():
+                original, pending = harness.run_transition()
+                self.assertEqual("wait_pending", pending["status"])
+                harness.state["review_ready"] = True
+                with mock.patch.object(U, "preflight", return_value={**harness.subject, "toolkit_commit": "e" * 40}):
+                    with self.assertRaisesRegex(U.UpgradeError, "current source or artifact identity changed"):
+                        U.resume_wait(harness.plan, root / "stale", harness.prepare_path,
+                                      original / U.WAIT_RECEIPT_NAME)
+                pending_path = original / "result.json"
+                altered = json.loads(pending_path.read_text())
+                altered["cleanup"][0]["facts"]["owned_tree_no_running_members"] = False
+                pending_path.write_text(json.dumps(altered))
+                with self.assertRaisesRegex(U.UpgradeError, "original wait binding differs"):
+                    U.resume_wait(harness.plan, root / "unknown", harness.prepare_path,
+                                  original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual(1, len(harness.clients))
+
+    def test_stable_resume_refuses_old_state_change_before_removal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.17.0", review_timeout=4)
+            harness.state["review_ready"] = False
+            with harness.patched():
+                original, pending = harness.run_transition()
+                self.assertEqual("wait_pending", pending["status"])
+                harness.state["review_ready"] = True
+                base_client = U.UpgradeClient
+
+                class ChangedStateClient(base_client):
+                    def observed_turn(self, thread, prompt):
+                        result = super().observed_turn(thread, prompt)
+                        if thread == "F" and not self.is_cold:
+                            path = harness.home / "old-data/sessions/A/state.json"
+                            path.write_text('{"changed": true}')
+                        return result
+
+                with mock.patch.object(U, "UpgradeClient", ChangedStateClient):
+                    resumed = U.resume_wait(harness.plan, root / "changed", harness.prepare_path,
+                                            original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual("failed", resumed["status"])
+                self.assertTrue(harness.state["new_installed"])
+                self.assertNotIn("cold-disable", harness.events)
+
+    def test_resume_consumed_before_thread_failure_and_cannot_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.17.0", review_timeout=4)
+            harness.state["review_ready"] = False
+            with harness.patched():
+                original, pending = harness.run_transition()
+                self.assertEqual("wait_pending", pending["status"])
+                harness.state["review_ready"] = True
+                base_client = U.UpgradeClient
+                fresh_starts = []
+
+                class FailingClient(base_client):
+                    def start(self):
+                        thread = super().start()
+                        fresh_starts.append(thread)
+                        raise RuntimeError("injected after thread creation")
+
+                with mock.patch.object(U, "UpgradeClient", FailingClient):
+                    first = U.resume_wait(harness.plan, root / "first", harness.prepare_path,
+                                          original / U.WAIT_RECEIPT_NAME)
+                    self.assertEqual("failed", first["status"])
+                    consumed = json.loads((original / "resume-consumed.json").read_text())
+                    self.assertEqual(str(root / "first"), consumed["output"])
+                    with self.assertRaisesRegex(U.UpgradeError, "already consumed"):
+                        U.resume_wait(harness.plan, root / "second", harness.prepare_path,
+                                      original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual(["F"], fresh_starts)
+                self.assertFalse((root / "second").exists())
+                self.assertTrue(harness.state["new_installed"])
+
+    def test_successful_resume_cannot_replay_and_consumer_binds_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.17.0", review_timeout=4)
+            harness.state["review_ready"] = False
+            with harness.patched():
+                original, _ = harness.run_transition()
+                harness.state["review_ready"] = True
+                output = root / "finished"
+                resumed = U.resume_wait(harness.plan, output, harness.prepare_path,
+                                        original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual("pending", resumed["status"])
+                self.assertEqual("passed", U.verify(harness.plan, output, harness.prepare_path)["status"])
+                starts_before = len(harness.clients)
+                with self.assertRaises(U.UpgradeError):
+                    U.resume_wait(harness.plan, root / "second", harness.prepare_path,
+                                  original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual(starts_before, len(harness.clients))
+                consumed_path = output / "resume-consumption.json"
+                consumed = json.loads(consumed_path.read_text())
+                consumed["output"] = str(root / "different")
+                consumed_path.write_text(json.dumps(consumed))
+                result_path = output / "result.json"
+                result = json.loads(result_path.read_text())
+                result["artifacts"]["resume-consumption.json"] = U.sha(consumed_path)
+                result["resume"]["consumption_sha256"] = U.sha(consumed_path)
+                result_path.write_text(json.dumps(result))
+                with self.assertRaisesRegex(U.UpgradeError, "consumption binding differs"):
+                    U.verify(harness.plan, output, harness.prepare_path)
+
+    def test_initial_wait_tampered_commands_refuse_before_fresh_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.17.0", review_timeout=4)
+            harness.state["review_ready"] = False
+            with harness.patched():
+                original, _ = harness.run_transition()
+                result_path = original / "result.json"
+                result = json.loads(result_path.read_text())
+                result["commands"] = [fact for fact in result["commands"]
+                                      if fact["argv"][1:3] != ["plugin", "add"]]
+                result_path.write_text(json.dumps(result))
+                harness.state["review_ready"] = True
+                with self.assertRaisesRegex(U.UpgradeError, "original wait binding differs"):
+                    U.resume_wait(harness.plan, root / "first", harness.prepare_path,
+                                  original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual(1, len(harness.clients))
+                self.assertTrue(harness.state["new_installed"])
+                # Even a consistently rewritten sidecar cannot make an
+                # incomplete command sequence satisfy the stage consumer.
+                binding_path = original / "wait-binding.json"
+                binding = json.loads(binding_path.read_text())
+                binding["result_sha256"] = U.sha(result_path)
+                binding_path.write_text(json.dumps(binding))
+                with self.assertRaisesRegex(U.UpgradeError, "prior official mutation count differs"):
+                    U.resume_wait(harness.plan, root / "second", harness.prepare_path,
+                                  original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual(1, len(harness.clients))
+                self.assertTrue(harness.state["new_installed"])
+
+    def test_interrupted_consumption_record_remains_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.17.0", review_timeout=4)
+            harness.state["review_ready"] = False
+            with harness.patched():
+                original, _ = harness.run_transition()
+                harness.state["review_ready"] = True
+                durable_write = U._write_durable_new
+
+                def interrupted(path, value):
+                    durable_write(path, value)
+                    if path.name == "resume-consumed.json":
+                        raise OSError("injected after durable consumption")
+
+                with mock.patch.object(U, "_write_durable_new", side_effect=interrupted):
+                    first = U.resume_wait(harness.plan, root / "first", harness.prepare_path,
+                                          original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual("failed", first["status"])
+                self.assertTrue((original / "resume-consumed.json").is_file())
+                with self.assertRaisesRegex(U.UpgradeError, "already consumed"):
+                    U.resume_wait(harness.plan, root / "second", harness.prepare_path,
+                                  original / U.WAIT_RECEIPT_NAME)
+                self.assertNotIn("F", harness.state["turncounts"])
+                self.assertTrue(harness.state["new_installed"])
+
+    def test_origin_changed_during_review_is_refused_before_fresh_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.17.0", review_timeout=4)
+            harness.state["review_ready"] = False
+            with harness.patched():
+                original, _ = harness.run_transition()
+                harness.state["review_ready"] = True
+                client_base = U.UpgradeClient
+
+                class ChangedDuringReview(client_base):
+                    def rpc(self, method, params):
+                        result = super().rpc(method, params)
+                        if method == "hooks/list" and self.plan["plugin_root"] == str(harness.new_cache):
+                            path = original / "result.json"
+                            path.write_text(path.read_text() + "\n")
+                        return result
+
+                with mock.patch.object(U, "UpgradeClient", ChangedDuringReview):
+                    resumed = U.resume_wait(harness.plan, root / "changed", harness.prepare_path,
+                                            original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual("failed", resumed["status"])
+                self.assertFalse((original / "resume-consumed.json").exists())
+                self.assertNotIn("F", harness.state["turncounts"])
+                self.assertTrue(harness.state["new_installed"])
+
+    def test_initial_wait_receipt_tamper_and_missing_binding_are_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.17.0", review_timeout=4)
+            harness.state["review_ready"] = False
+            with harness.patched():
+                original, _ = harness.run_transition()
+                receipt_path = original / U.WAIT_RECEIPT_NAME
+                receipt = json.loads(receipt_path.read_text())
+                receipt["wait_budget_seconds"] = 3
+                receipt_path.write_text(json.dumps(receipt))
+                with self.assertRaisesRegex(U.UpgradeError, "original wait binding differs"):
+                    U.resume_wait(harness.plan, root / "tampered", harness.prepare_path, receipt_path)
+                (original / "wait-binding.json").unlink()
+                with self.assertRaises(OSError):
+                    U.resume_wait(harness.plan, root / "missing", harness.prepare_path, receipt_path)
+                self.assertEqual(1, len(harness.clients))
+
+    def test_stable_resume_verifier_refuses_rebound_client_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.17.0", review_timeout=4)
+            harness.state["review_ready"] = False
+            with harness.patched():
+                original, pending = harness.run_transition()
+                self.assertEqual("wait_pending", pending["status"])
+                harness.state["review_ready"] = True
+                output = root / "finished"
+                resumed = U.resume_wait(harness.plan, output, harness.prepare_path,
+                                        original / U.WAIT_RECEIPT_NAME)
+                self.assertEqual("pending", resumed["status"], resumed)
+                self.assertEqual("passed", U.verify(harness.plan, output, harness.prepare_path)["status"])
+                log_path = output / "resumed/rpc.jsonl"
+                rows = [json.loads(line) for line in log_path.read_text().splitlines()]
+                marker = next(row for row in rows if row.get("event") == "resumed_live_started")
+                marker["pid"] = resumed["before"]["app_server_pid"]
+                log_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+                result_path = output / "result.json"
+                updated = json.loads(result_path.read_text())
+                updated["artifacts"]["resumed/rpc.jsonl"] = U.sha(log_path)
+                result_path.write_text(json.dumps(updated))
+                with self.assertRaisesRegex(U.UpgradeError, "identities are not independently bound"):
+                    U.verify(harness.plan, output, harness.prepare_path)
+
     def test_resume_wait_new_hook_review_uses_observing_client(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -3546,8 +3842,6 @@ class WaitResumeControls(unittest.TestCase):
                     self.seq += 1
                     self.log.write(json.dumps({"direction": "request", "message":
                                                {"id": self.seq, "method": method, "params": params}}) + "\n")
-                    if self.seq >= 2:
-                        harness.state["review_ready"] = True
                     return {"data": [{"hooks": harness.hooks_payload()}]}
 
                 def close(self):
@@ -3559,13 +3853,14 @@ class WaitResumeControls(unittest.TestCase):
             with self._resume_seams(harness, ResumeClient):
                 resumed = U.resume_wait(harness.plan, resume_out, harness.prepare_path,
                                         out / U.WAIT_RECEIPT_NAME)
-            self.assertEqual("wait_resolved", resumed["status"], resumed)
+            self.assertEqual("wait_pending", resumed["status"], resumed)
             self.assertIs(False, seen["kwargs"]["require_trusted"])
             self.assertEqual({harness.new_source: U.NEW_VERSION}, seen["sources"])
-            journal = (resume_out / "resume" / "rpc.jsonl").read_text()
-            self.assertEqual({"hooks/list"}, {json.loads(line)["message"]["method"]
-                                              for line in journal.splitlines()})
-            self.assertEqual([{"role": "resume_wait", "pid": 789}],
+            journal = (resume_out / "resumed" / "rpc.jsonl").read_text()
+            self.assertEqual({"hooks/list"}, {row["message"]["method"]
+                                              for line in journal.splitlines()
+                                              if (row := json.loads(line)).get("direction") == "request"})
+            self.assertEqual([{"role": "live", "pid": 789}],
                              [{key: row[key] for key in ("role", "pid")} for row in resumed["cleanup"]])
 
 
@@ -3579,6 +3874,7 @@ class CommandPreflightControls(unittest.TestCase):
         subject = {"codex": str(codex), "old_version": old_version,
                    "old_artifact": str(root / "old"), "new_artifact": str(root / "new"),
                    "home": str(root / "home"), "workspace": str(root / "workspace"),
+                   "other_homes": [str(root / "other HOME 同行")],
                    "sentinel": sentinel, "transition_strategy": strategy,
                    "codex_hardlink_count": 1}
         if wrapper:
@@ -3738,21 +4034,22 @@ class CommandPreflightControls(unittest.TestCase):
             plan_path = root / "plan.json"
             plan_path.write_text("{}")
             out = root / "out"
-            passthrough = ["--preflight", "--plan", str(plan_path), "--output", str(out)]
-            expected_lines = "".join(line + "\n" for line in ["upgrade"] + passthrough).encode()
+            passthrough = ["--preflight", "--plan", str(plan_path), "--output", str(out),
+                           "--auth-home", subject["home"],
+                           "--other-auth-home", subject["other_homes"][0]]
 
             def probe(argv, env=None, timeout=30.0):
                 if argv[1:] == ["--version"]:
                     return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
-                if argv[0] == "powershell" and "-EncodedCommand" in argv:
+                if argv[0] == "pwsh" and "-EncodedCommand" in argv:
                     seen_env.update(env or {})
-                    return subprocess.CompletedProcess(argv, 0, expected_lines, b"")
+                    script = U.base64.b64decode(argv[-1]).decode("utf-16-le")
+                    self.assertIn('& $env:CG_LAUNCHER_PROBE -Target print-argv -Arguments $rest', script)
+                    self.assertIn('ConvertFrom-Json -InputObject $env:CG_PASSTHROUGH_PROBE', script)
+                    return subprocess.CompletedProcess(
+                        argv, 0, json.dumps(["print-argv", passthrough]).encode(), b"")
                 if argv[1:2] == ["-c"] and argv[-1:] == ["--version"]:
                     return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
-                if argv[0] == "powershell" and "-File" in argv and "print-argv" in argv:
-                    return subprocess.CompletedProcess(
-                        argv, 0,
-                        json.dumps(["print-argv", passthrough]).encode(), b"")
                 if argv[1:2] == ["-B"] and argv[-1].endswith("print(sys.flags.utf8_mode)"):
                     return subprocess.CompletedProcess(argv, 0, b"1\n", b"")
                 raise AssertionError("unexpected probe " + repr(argv[:2]))
@@ -3764,22 +4061,18 @@ class CommandPreflightControls(unittest.TestCase):
                                                       side_effect=lambda path, env: str(path)))
                 stack.enter_context(mock.patch.object(U, "_probe_run", side_effect=probe))
                 stack.enter_context(mock.patch.object(U.platform, "system", return_value="Windows"))
+                stack.enter_context(mock.patch.object(U.shutil, "which", return_value="pwsh"))
                 summary = U.preflight_commands({"cli_version": "codex-cli 0.165.0"}, out, plan_path)
             self.assertEqual("powershell", summary["launcher"]["probed"])
             self.assertEqual(["print-argv", passthrough],
                              summary["launcher"]["real_entry"]["echoed"])
             self.assertNotIn("off_platform", summary["launcher"])
-            # The real launcher is parsed, never run: only its path is handed over.
             self.assertEqual(str(U.PS1_LAUNCHER), seen_env["CG_LAUNCHER_PROBE"])
-            self.assertEqual("\n".join(passthrough), seen_env["CG_PASSTHROUGH_PROBE"])
+            self.assertEqual(passthrough, json.loads(seen_env["CG_PASSTHROUGH_PROBE"]))
             self.assertEqual([subject["codex"], "-c"], summary["entry_flags"]["argv"][:2])
             self.assertEqual('windows.sandbox="mxc"', summary["entry_flags"]["argv"][2])
 
             def refused_flags(argv, env=None, timeout=30.0):
-                if argv[0] == "powershell" and "-File" in argv:
-                    return subprocess.CompletedProcess(
-                        argv, 0,
-                        json.dumps(["print-argv", passthrough]).encode(), b"")
                 if argv[1:2] == ["-B"] and argv[-1].endswith("print(sys.flags.utf8_mode)"):
                     return subprocess.CompletedProcess(argv, 0, b"1\n", b"")
                 if argv[1:] == ["--version"]:

@@ -4,26 +4,23 @@
 
 Versions are listed newest first. See [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) for published versions and [local acceptance](docs/LOCAL_ACCEPTANCE.md) for test results and platform limits. The [original detailed changelog](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.md) preserves the earlier implementation and validation notes.
 
-## 0.17.2 — Unreleased
+## 0.17.2 — 2026-11-11
 
 ### Highlights
 
-- Expired Context Guard data is cleaned up automatically again. With no retention policy configured, ordinary use now maintains it: sessions ended more than 30 days move to a 7-day recoverable quarantine and are permanently deleted after that, without running commands, confirming batches, or registering scheduled jobs. The 30-day threshold, recoverable quarantine and permanent-deletion path are the accepted 0.17.0 ones; the old synchronous sweep and direct deletion are not revived.
-- Turning maintenance off stays a first-class choice. `cleanup --maintenance-disable` (or `--policy disable`) writes a durable opt-out that also silences the background trigger, and later upgrades never re-enable maintenance on their own. One honest limitation of earlier versions is documented: a 0.17.1 `--maintenance-disable` left no durable marker, so those roots upgrade to the automatic default; run the disable command once to opt out for good.
-- Explicit choices keep winning: a disabled policy, custom retention periods, quarantine-only mode, and a corrupted or unreadable policy (which never authorizes deletion) are all honored; active, unfinished, recoverable and identity-unverifiable sessions stay protected.
-- Native upgrade acceptance got three repairs: a successful operation no longer fails because a post-step summary could not be read (structured results and journals decide), the official Hook trust wait is a resumable phase with an observable pending receipt, and a command-level preflight verifies the exact commands, shell forms and result directories before an operator is asked for a trust batch.
+- Context Guard automatically maintains eligible session records. Without a retention policy, sessions ended more than 30 days can move to a recoverable quarantine. Later ordinary use can permanently delete them after at least seven days there.
+- Explicit retention settings continue to apply. A disabled policy, custom period, quarantine-only setting, or durable opt-out takes precedence. A damaged or unreadable policy does not authorize deletion. A missing policy uses the automatic default, which permits permanent deletion after quarantine.
+- You can upgrade `context-guard@codex-context-guard` from 0.17.1 in place. Finish tasks that still need the old Hook first, or keep them in a separate Codex environment. A 0.17.1 scheduler disable alone did not record a durable opt-out. If you want cleanup to remain off, the upgrade guide explains how to disable it before and after upgrading. [Upgrade guide](docs/UPGRADE_0_17_2.md)
 
 ### Changes
 
-- SessionEnd now dispatches one bounded, deduplicated, detached maintenance pass (at most one per 6 hours per data root) after the session is saved; the hook itself never scans, deletes or writes a policy object, the trigger respects the remaining hook budget, and failures degrade to recorded skip reasons. Quarantine expiry advances to real purge on later ordinary use.
-- Upgrade note: a root with an explicitly enabled 0.17.x policy now also gets unattended background applies (previously only its scheduler entry or a manual apply ran); run `cleanup --maintenance-disable` once to opt out. A corrupted or unreadable policy object never authorizes deletion; a policy object that was never configured or has been deleted resolves to the automatic default (including permanent purge) -- which is exactly why the durable opt-out exists: it survives policy-object loss, while a custom `--no-purge` setting does not. Every destructive apply is refused while an opt-out exists. New versioned records: `cg-retention-optout/v1`, `cg-retention-trigger/v1`, `cg-retention-trigger-claim/v1`; `cg-retention-policy/v1` gains the `policy_source` resolution (default / explicit / invalid). The `cleanup --policy show` and `--maintenance-status` readbacks report the automatic-maintenance state.
-- The platform scheduler entry (`--maintenance-enable`) remains opt-in and is not auto-registered.
-- A no-model trigger probe (`tools/validation/retention_trigger_probe.py`) verifies parent-exit survival, dedup, opt-out, corrupted-policy protection, stale-claim recovery and hook latency per platform.
-- The README explains what Context Guard does and how to try it. Earlier changelog entries now put the most important changes first.
+- After saving a session, SessionEnd can dispatch a bounded background maintenance pass. Later ordinary use advances eligible quarantined records toward permanent deletion. Scheduled maintenance remains an additional choice.
+- The manual cleanup command previews by default. The upgrade guide and [session storage](docs/SESSION_STORAGE.md) explain how to inspect a policy, turn off automatic maintenance, and restore eligible quarantined records.
+- In the native upgrade runner, a timed-out Hook review can resume a finish-old upgrade from its saved stage. The verifier checks the old and new process records separately. The migration tool can regenerate a missing summary from its saved transaction records.
 
 ### Validation
 
-- This is a source candidate: focused regressions, the full behavior suite and the no-model probe on macOS are recorded; native Windows trigger verification, artifact/install evidence and release gates are pending. See the 0.17.1 entry for the latest published release.
+- The [release acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.2/context-guard-0.17.2-acceptance.json) records the exact ZIP, the isolated upgrade and the platform checks. Daily adoption has separate evidence.
 
 ## 0.17.1 — 2026-11-09
 

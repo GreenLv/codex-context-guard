@@ -24,7 +24,9 @@ as unavailable otherwise (formal refuses unavailable identities).
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
+import datetime as dt
 import hashlib
 import json
 import math
@@ -193,6 +195,13 @@ EVENT_RECOVERY_SECONDS = 5.0
 
 def run_event(wrapper: str, tree: Path, data_dir: Path, payload: bytes,
               timeout: float) -> dict:
+    # Determine the reviewed runtime shape before the Hook clock starts.
+    try:
+        event = json.loads(payload).get("hook_event_name")
+    except (ValueError, AttributeError, TypeError):
+        event = None
+    may_defer_worker = (sys.platform == "win32" and event == "SessionEnd"
+                        and _session_end_worker_mode(tree) == "automatic")
     started = time.perf_counter()
     deadline = started + timeout
     owner = None
@@ -200,6 +209,7 @@ def run_event(wrapper: str, tree: Path, data_dir: Path, payload: bytes,
     returncode, stdout, stderr = None, b"", b""
     communicated = False
     natural = None
+    defer_worker_wait = False
     lifetime = {"event_budget": timeout, "recovery_budget": EVENT_RECOVERY_SECONDS}
     try:
         owner = OwnedProcess.spawn(
@@ -219,11 +229,23 @@ def run_event(wrapper: str, tree: Path, data_dir: Path, payload: bytes,
             error = "TimeoutExpired:whole_command_deadline"
         else:
             natural = {"no_running_members": False, "error": "query_incomplete"}
-            natural_ready = observe_natural_until_deadline(owner, deadline, natural)
-            if natural.get("deadline_exhausted"):
-                error = "TimeoutExpired:natural_completion_deadline"
-            elif not natural_ready:
-                error = "ProcessTreeError:natural_completion_unverified"
+            if may_defer_worker and getattr(owner, "job", None) is not None:
+                first = observe_natural_completion(owner)
+                active = first.get("active_processes")
+                # The Hook leader and its output pipes have already completed.
+                # A remaining Job member may be the maintenance child when
+                # Windows disallowed breakaway. Require a current fixture
+                # claim/attempt before moving only that wait outside timing.
+                if (not first.get("error") and type(active) is int and active > 0
+                        and _session_end_worker_started(data_dir)):
+                    defer_worker_wait = True
+                    natural = first
+            if not defer_worker_wait:
+                natural_ready = observe_natural_until_deadline(owner, deadline, natural)
+                if natural.get("deadline_exhausted"):
+                    error = "TimeoutExpired:natural_completion_deadline"
+                elif not natural_ready:
+                    error = "ProcessTreeError:natural_completion_unverified"
     except subprocess.TimeoutExpired as exc:
         error = f"TimeoutExpired:{exc}"
         stdout, stderr = exc.stdout or b"", exc.stderr or b""
@@ -236,6 +258,23 @@ def run_event(wrapper: str, tree: Path, data_dir: Path, payload: bytes,
     elapsed = time.perf_counter() - started
     if elapsed > timeout and error is None:
         error = "TimeoutExpired:whole_command_deadline"
+    if defer_worker_wait:
+        # Do not close the Job while it still contains the detached worker:
+        # KILL_ON_JOB_CLOSE would terminate it. This convergence happens
+        # after elapsed has been captured, without extending the Hook budget.
+        deferred = {}
+        try:
+            worker_deadline = time.perf_counter() + PERF_WORKER_SETTLE_SECONDS
+            ready = observe_natural_until_deadline(owner, worker_deadline, deferred)
+            if not ready:
+                error = error or "ProcessTreeError:worker_job_completion_unverified"
+        except BaseException as exc:
+            deferred["error"] = type(exc).__name__
+            error = error or "ProcessTreeError:worker_job_completion_unverified"
+            if not isinstance(exc, Exception):
+                interrupt = exc
+        deferred["outside_hook_timing"] = True
+        natural = deferred
     lifetime["natural_completion"] = natural
     recovery_started = time.monotonic()
     recovery_deadline = recovery_started + EVENT_RECOVERY_SECONDS
@@ -1033,115 +1072,95 @@ class ReportPublicationError(RuntimeError):
     pass
 
 
-# Out-of-timing detached-worker convergence (r1 perf boundary): the Hook
-# event budget stays untouched; the SessionEnd trigger's detached worker
-# converges AFTER the measured event, so HOME cleanup must not report
-# "removed" while a worker may still be writing. Constants are module
-# state so tests can shrink the windows.
+# SessionEnd's detached maintenance is outside the measured Hook deadline.
+# The fixture has a fresh data root and exactly one measured SessionEnd.
 PERF_WORKER_SETTLE_SECONDS = 45.0
-PERF_WORKER_QUIET_SECONDS = 3.0
 PERF_WORKER_POLL_SECONDS = 0.25
 
 
-def _worker_control_dir(home: Path) -> Path:
-    return home / "context-guard" / "sessions-v2" / ".locks"
+def _session_end_worker_mode(tree: Path) -> str:
+    """Recognize the two reviewed SessionEnd shapes; unknown stays unknown.
 
-
-def _worker_active_before_cleanup(home: Path) -> bool:
-    """Positive evidence that this attempt dispatched a detached worker:
-    a dispatch claim or trigger record existed before HOME removal. A
-    runtime without the trigger (or a run where nothing was dispatched)
-    skips the settle wait entirely."""
-    controls = _worker_control_dir(home)
+    The current auto-maintenance path invokes the named trigger directly.
+    The published disabled-retention baseline only saves state and recovery.
+    Other source shapes must not be silently treated as worker-free.
+    """
     try:
-        return (controls / "retention-trigger.claim").exists() \
-            or (controls / "retention-trigger.json").exists()
-    except OSError:
+        source = (tree / "scripts" / "context_guard.py").read_text(encoding="utf-8")
+        module = ast.parse(source)
+    except (OSError, UnicodeError, SyntaxError):
+        return "unknown"
+    handlers = [node for node in module.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == "handle_session_end"]
+    if len(handlers) != 1:
+        return "unknown"
+    calls = [node.func for node in ast.walk(handlers[0]) if isinstance(node, ast.Call)]
+    names = {node.id for node in calls if isinstance(node, ast.Name)}
+    if "_retention_session_end_trigger" in names:
+        return "automatic"
+    if all(isinstance(node, ast.Name) for node in calls) and names == {
+            "utc_now", "save_state", "write_recovery"}:
+        return "disabled"
+    return "unknown"
+
+
+def _parse_utc_timestamp(value: object) -> dt.datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+
+def _session_end_worker_started(data_dir: Path) -> bool:
+    """Recognize this fresh fixture's dispatch without relying on a skip."""
+    controls = data_dir / "sessions-v2" / ".locks"
+    try:
+        if (controls / "retention-trigger.claim").is_file():
+            return True
+        state = json.loads((controls / "retention-trigger.json").read_text(encoding="utf-8"))
+        return _parse_utc_timestamp(state.get("last_attempt_at")) is not None
+    except (OSError, ValueError, TypeError, AttributeError):
         return False
 
+def _wait_session_end_worker(data_dir: Path, deadline: float) -> dict | None:
+    """Wait for this fresh fixture's one worker to finish its data writes.
 
-def _wait_worker_terminal(home: Path, deadline: float, poll: float) -> dict | None:
-    """Wait for the detached worker's terminal fact (success/skip recorded
-    and the claim released). None when the deadline passed first."""
-    controls = _worker_control_dir(home)
+    The actual runtime records success before releasing its own claim and
+    performs no further data-root writes on the successful path. In a fresh
+    fixture with one SessionEnd, a matching attempt and later success plus
+    an absent claim therefore prove that path has completed its writes.
+    A skip, unreadable state, refusal or absent record never supplies proof.
+    """
+    controls = data_dir / "sessions-v2" / ".locks"
+    claim_path = controls / "retention-trigger.claim"
+    state_path = controls / "retention-trigger.json"
     while time.monotonic() < deadline:
         try:
-            state_path = controls / "retention-trigger.json"
-            settled = False
-            if state_path.is_file():
-                try:
-                    state = json.loads(state_path.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    state = {}
-                settled = bool(state.get("last_success_at")
-                               or state.get("last_skip"))
-            claim_gone = not (controls / "retention-trigger.claim").exists()
-            if settled and claim_gone:
-                try:
-                    return {"state": json.loads(state_path.read_text(
-                        encoding="utf-8"))}
-                except (OSError, ValueError):
-                    return {"state": None}
-            time.sleep(poll)
-        except OSError:
-            time.sleep(poll)
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            attempt = _parse_utc_timestamp(state.get("last_attempt_at"))
+            success = _parse_utc_timestamp(state.get("last_success_at"))
+            outcome = state.get("last_outcome")
+            try:
+                claim_path.lstat()
+                claim_absent = False
+            except FileNotFoundError:
+                claim_absent = True
+            if (attempt is not None and success is not None and success >= attempt
+                    and isinstance(outcome, dict) and not outcome.get("refused")
+                    and claim_absent):
+                return {"last_attempt_at": state["last_attempt_at"],
+                        "last_success_at": state["last_success_at"],
+                        "claim_released": True}
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        time.sleep(min(PERF_WORKER_POLL_SECONDS,
+                       max(0.0, deadline - time.monotonic())))
     return None
-
-
-def _recreated_paths(home: Path) -> list[str]:
-    try:
-        return [str(path.relative_to(home)) for path in home.rglob("*")][:20]
-    except OSError:
-        return []
-
-
-def _perf_settle_and_remove_home(home: Path) -> dict:
-    """Remove the attempt HOME without mislabeling an unconverged worker.
-
-    Sequence per worker generation: remove; a short quiet window proves
-    nothing recreates (plain ``removed``); when a detached worker DOES
-    recreate control files, wait -- out of the timing measurement -- for
-    its terminal fact and claim release, remove again, and require another
-    quiet window. A worker that never settles within the bounded window is
-    reported ``worker_pending`` (never ``removed``) so the caller stops
-    the batch instead of measuring against an active writer.
-    """
-    generations = []
-    while True:
-        # Remove FIRST, then prove nothing recreates during the quiet
-        # window (a detached worker recreating files is a new generation).
-        # The poll interval adapts to the window so a shortened test
-        # window still samples inside it.
-        quiet_poll = min(PERF_WORKER_POLL_SECONDS,
-                         max(0.02, PERF_WORKER_QUIET_SECONDS / 4))
-        shutil.rmtree(home)
-        recreated = None
-        quiet_deadline = time.monotonic() + PERF_WORKER_QUIET_SECONDS
-        while time.monotonic() < quiet_deadline:
-            found = _recreated_paths(home)
-            if found:
-                recreated = found
-                break
-            time.sleep(quiet_poll)
-        if recreated is None:
-            return {"verdict": "removed", "generations": generations}
-        generation = {"recreated": recreated}
-        generations.append(generation)
-        settle_poll = min(PERF_WORKER_POLL_SECONDS,
-                          max(0.02, PERF_WORKER_SETTLE_SECONDS / 4))
-        terminal = _wait_worker_terminal(
-            home, time.monotonic() + PERF_WORKER_SETTLE_SECONDS,
-            settle_poll)
-        generation["terminal_state"] = (
-            terminal.get("state") if isinstance(terminal, dict) else None)
-        if terminal is None:
-            generation["recreated_now"] = _recreated_paths(home)
-            return {"verdict": "worker_pending", "generations": generations}
-        if len(generations) >= 3:
-            # Bounded: three worker generations without a quiet HOME is
-            # reported as pending rather than looped forever.
-            return {"verdict": "worker_pending", "generations": generations}
-        quiet_deadline = time.monotonic() + PERF_WORKER_QUIET_SECONDS
 
 
 def row_failed(row: dict) -> bool:
@@ -1379,28 +1398,25 @@ def main() -> int:
                         if row.get("retain_home"):
                             row["home_cleanup"] = {"status": "retained", "path": str(home)}
                         else:
-                            worker_may_exist = _worker_active_before_cleanup(home)
                             try:
-                                if worker_may_exist:
-                                    # Out of the timing measurement: the
-                                    # detached maintenance worker converges
-                                    # after the event; an unconverged worker
-                                    # is NEVER labeled "removed".
-                                    settle = _perf_settle_and_remove_home(home)
-                                    if settle["verdict"] == "worker_pending":
-                                        row["home_cleanup"] = {
-                                            "status": "worker_pending",
-                                            "path": str(home),
-                                            "worker_settle": settle}
-                                        row["stop_batch"] = True
-                                    else:
-                                        row["home_cleanup"] = {
-                                            "status": "removed",
-                                            "path": str(home),
-                                            "worker_settle": settle}
+                                worker_mode = (_session_end_worker_mode(tree)
+                                               if cell in {"session_end", "session_end_busy_locks"}
+                                               else "disabled")
+                                terminal = None
+                                if worker_mode == "automatic":
+                                    terminal = _wait_session_end_worker(
+                                        data_dir, time.monotonic() + PERF_WORKER_SETTLE_SECONDS)
+                                if worker_mode == "unknown" or (
+                                        worker_mode == "automatic" and terminal is None):
+                                    row["home_cleanup"] = {
+                                        "status": "worker_pending", "path": str(home),
+                                        "worker_mode": worker_mode}
+                                    row["stop_batch"] = True
                                 else:
                                     shutil.rmtree(home)
                                     row["home_cleanup"] = {"status": "removed"}
+                                    if terminal is not None:
+                                        row["home_cleanup"]["worker_terminal"] = terminal
                             except Exception as exc:
                                 row["home_cleanup"] = {"status": "error", "path": str(home),
                                                        "error": f"{type(exc).__name__}: {exc}"[:200]}

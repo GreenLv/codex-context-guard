@@ -1,77 +1,87 @@
-# Evidence reuse contract
+# Historical behavior evidence reuse
 
-This page declares, for the 0.17.2 candidate and later rounds, which
-behavior checks accept reuse by input identity and which must rebind to the
-exact artifact or commit. It is the authoritative declaration; the
-executable consumer is `tools/validation/behavior_evidence_reuse.py`, and
-its tests live in `tests/test_behavior_evidence_reuse.py`.
+The optional reuse consumer covers an executed historical-incident release
+gate. It does not establish installation, native-host, performance, CI, HOL,
+artifact or publication results. The original report remains the authority for
+its recorded run and the normal historical release gate is unchanged.
 
-## Reusable by complete input identity
+For an owner run, provide `--execute --release-gate --report <new-path>` and
+`--evidence-receipt <new-path> --evidence-environment-id <sha256>` to
+`scripts/check_incident_coverage.py`. Both paths must be outside the checkout
+and must not already exist. The extra environment identity is a non-secret
+fingerprint from the coordinator's independently reviewed description of the
+external inputs, configuration, ignored files and host state relevant to the
+run. Unknown or unreviewed inputs cannot be represented as a passing review.
+Keep that description, the report and the receipt private.
 
-Behavior results — behavior-suite nodes, focused regressions, and
-incident-library case replays — may be reused for a new candidate only when
-EVERY input that affects the result is unchanged AND the result comes from
-a real owner run:
+The owner records the complete tracked Git file inventory, index, status and current HEAD,
+the Python executable and version, installed distribution versions, platform,
+and the reviewed external-input identity before and after execution. Untracked
+repository files, missing tracked files and symlinked tracked inputs are refused.
+A changed inventory prevents reuse evidence being emitted. By default, reuse
+requires the same complete inventory and HEAD, so any tracked change remains
+unestablished. This does not replace the historical release gate or permit
+relabeling its original result as a later-commit gate pass.
 
-- the code bytes under test (each product file bound by sha256);
-- the caller/entry shape that invoked the behavior;
-- the schema/fixture files the behavior reads;
-- the test and judge/decoder bytes defining the node;
-- the runner bytes (and its declared schema) that executed the node;
-- the declared dependency and configuration bindings (each group present;
-  an empty group explicitly means "none");
-- the relevant platform state (OS family, machine, Python version).
+The successful owner run prints the report and receipt SHA-256 values to stderr. The coordinator
+must independently review the run and retain those digests separately from the
+report and receipt. A hash supplied alongside a self-authored report does not
+prove the report came from an execution. The coordinator must also determine
+that the external-input identity still covers ignored and external inputs;
+this tool cannot infer arbitrary test dependencies or authenticate an operator.
 
-## Records bind real owner-executed results (r1)
+Build the reusable record only after that review:
 
-A reuse record (`cg-behavior-evidence/v2`) is produced ONLY by
-`behavior_evidence_reuse.py --build-from-receipt` from an owner execution
-receipt (`cg-behavior-execution-receipt/v1`) written by a wired consumer
-during a real run — today `check_incident_coverage.py --execute
---evidence-receipt <path>`. Each entry carries the node's REAL observed
-outcome and exit code, the receipt file's digest, the owner's complete
-declared input mapping (code, caller, schema, tests, runner, deps,
-config), and the observing environment.
+```shell
+python tools/validation/behavior_evidence_reuse.py \
+  --build-from-receipt --owner-receipt <receipt> \
+  --owner-receipt-sha256 <independently-reviewed-sha256> --owner-report <report> \
+  --owner-report-sha256 <independently-reviewed-sha256> \
+  --environment-id <reviewed-external-input-sha256> --root . \
+  --out-record <new-record>
+```
 
-- A node that did not actually pass is refused at build time (exit 2):
-  failed or unknown nodes are never recorded as reusable evidence; the
-  owner reruns them.
-- Evaluation WITHOUT the owner receipt marks every entry
-  `owner_receipt:not_verified` and the record `not_established` — a pass
-  claim without a real owner run behind it is never established (exit 1).
-- Presenting a receipt whose file digest differs from the record's
-  binding is a refusal (exit 2), as is any malformed or under-bound
-  record (missing groups, missing environment, edited receipt-node
-  bindings). Tampering with the record or the receipt can only produce a
-  refusal, never a reuse.
-- Changed code, tests, runner, schema, config, or environment inputs make
-  the affected entries `stale` with the changed input named; the owner
-  reruns exactly the stale nodes through its own runner. A record with
-  stale entries is `not_established` as a whole. Exit codes: 0 =
-  established, 1 = stale/not verified, 2 = refused. Failed or
-  platform-specific results never transfer: they keep their original
-  subject, failure record and applicable conditions.
+Evaluate it with the same arguments, replacing `--build-from-receipt
+--out-record <new-record>` with `--record <record>`. The consumer re-derives
+the complete historical row and node inventory from the coverage table,
+checks every result, report and receipt binding, and compares the current
+complete source and environment inventory. Missing or changed inputs,
+incomplete nodes, failed results and changed records are not established.
+Output files are not overwritten. Exit 0 establishes this bounded behavior
+coverage only; exit 1 means it was not established.
 
-The incident-coverage consumer (`scripts/check_incident_coverage.py`)
-already binds the library pin, per-record `record_sha256`, per-node test
-file digests, and the candidate identity (HEAD, prepared-source digest,
-dirty paths); it stays the authority for that library and follows this page.
+## One reviewed node across changelog edits
 
-## Bound to the exact artifact or commit — never reused
+The following source-behavior node has a narrower, explicitly reviewed reuse
+scope:
 
-- Distribution-manifest digests, artifact identity, ZIP and marketplace
-  bytes: any changed covered byte invalidates artifact-exact evidence.
-- Installation, isolated install lifecycle, second-run no-op, source/cache
-  parity and `smoke_installed.py` results: bound to the installed artifact.
-- Native platform acceptance (Hook trust flows, background-trigger survival
-  per platform, file locks and permissions, uninstall), performance gates
-  (including the SessionEnd 3-second host budget), and CI/HOL runs: bound to
-  the exact commit or runtime-tree digest of the observed run. A changed
-  runner invalidates the native scenarios that runner executed.
-- Public release evidence (tag target, release body, published notes).
+`tests/test_incident_library_regression.py::DefaultPathAuthorizationCases::test_cgi_2026_009_017_026_default_path_allows_ordinary_business`
 
-`tools/validation/behavior_evidence_reuse.py` never evaluates these gates;
-it reports behavior-node reuse only. The coordinator runs it against the
-prior round's record when deciding which focused checks transfer; nothing
-in CI consumes it automatically, and a record it cannot recognize is
-refused rather than partially accepted.
+Its fixture dispatches synthetic prompts and action strings; it does not read
+`CHANGELOG.md` or `CHANGELOG.zh-CN.md`. A macOS Python file-access observation
+also saw the runtime, assets and test inputs, but did not observe either log.
+This observation is supporting evidence, not exhaustive dependency discovery.
+For this node alone, `--node <the-node-above>` permits the bytes of those two
+existing tracked changelog files and the Git commit/index/status identity to
+change. Every other tracked file's name and bytes, including runtime modules,
+assets, test files, caller, schema and configuration, must remain identical.
+The environment and separately reviewed external-input identity still have to
+match. New or removed tracked files, unknown untracked files, any other node,
+and any other tracked change refuse this narrower reuse. In particular, a
+changed distribution manifest is not a changelog-only change and invalidates
+this node. That conservatism leaves most packaging revisions requiring reruns.
+
+Build the full record from the original successful run first. Then add `--node`
+to an evaluation, not to a build, together with
+`--reviewed-node-inputs-sha256 <digest>`. Independently review the exact
+registered-node source inputs and retain this digest separately from the owner
+record. It is SHA-256 of UTF-8 JSON for the original receipt's `inputs_after`
+`source.files` mapping after removing the two changelog keys, encoded with
+sorted keys and compact separators. A digest copied from an unreviewed receipt
+is not an independent review. An original run against different node code or a
+changed caller requires a fresh review; a matching node name alone is insufficient.
+Its `established` result covers just the
+named source test, regardless of how many historical rows cite it. The original
+complete owner report remains mandatory, and the historical release gate,
+artifact and native checks remain separate. The owner-run and environment
+review requirements above apply to this narrower route as well.
