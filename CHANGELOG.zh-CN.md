@@ -16,7 +16,7 @@
 ### 变更
 
 - SessionEnd 在会话状态可靠落盘后，派发一个有界、去重、后台分离的维护批次（每个数据根至多每 6 小时一次）；Hook 本身不做扫描、不删除、不写策略对象，触发遵守 Hook 剩余预算，失败一律降级为记录在案的跳过原因。隔离期满后由后续普通使用推进到真实清除。
-- 升级提示：已显式启用 0.17.x 策略的根目录现在也会获得无人值守的后台清理（此前只有其系统任务或手动 apply 会执行）；如需关闭，运行一次 `cleanup --maintenance-disable` 即可。损坏或丢失的策略对象永远不会授权删除；存在 opt-out 时所有破坏性 apply 都会被拒绝。新增版本化记录：`cg-retention-optout/v1`、`cg-retention-trigger/v1`、`cg-retention-trigger-claim/v1`；`cg-retention-policy/v1` 增加 `policy_source` 解析（default / explicit / invalid）。`cleanup --policy show` 与 `--maintenance-status` 回读会报告自动维护状态。
+- 升级提示：已显式启用 0.17.x 策略的根目录现在也会获得无人值守的后台清理（此前只有其系统任务或手动 apply 会执行）；如需关闭，运行一次 `cleanup --maintenance-disable` 即可。损坏或无法读取的策略对象永远不会授权删除；从未配置或已被删除的策略对象会解析为自动默认（含永久清除）——这正是持久 opt-out 存在的意义：opt-out 在策略对象丢失后仍然生效，而自定义的 `--no-purge` 设置不会。存在 opt-out 时所有破坏性 apply 都会被拒绝。新增版本化记录：`cg-retention-optout/v1`、`cg-retention-trigger/v1`、`cg-retention-trigger-claim/v1`；`cg-retention-policy/v1` 增加 `policy_source` 解析（default / explicit / invalid）。`cleanup --policy show` 与 `--maintenance-status` 回读会报告自动维护状态。
 - 平台系统任务入口（`--maintenance-enable`）保持显式选择，不自动注册。
 - 新增无模型触发探针（`tools/validation/retention_trigger_probe.py`），按平台验证父进程退出后的后台存活、并发去重、opt-out、损坏策略保护、陈旧 claim 回收与 Hook 延迟。
 - README 更直接地说明了 Context Guard 的用途和试用方法。历史更新日志把各版最重要的改动放到了前面。

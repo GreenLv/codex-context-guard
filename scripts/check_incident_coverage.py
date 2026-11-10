@@ -647,6 +647,78 @@ def prepared_source_identity(root: Path) -> dict:
     return module.prepared_source_identity(root)
 
 
+def build_execution_receipt(root: Path, rows: list, receipts: dict,
+                            index_path: Path, coverage_path: Path,
+                            exceptions_path: Path, identity: dict) -> dict:
+    """Owner-produced execution receipt (``cg-behavior-execution-receipt/v1``).
+
+    Emitted only alongside ``--execute``: every required nodeid of every
+    active row with its REAL outcome and exit code, plus the owner's
+    complete declared input mapping per node (code, caller, schema, tests,
+    runner, deps, config) as file digests and the observing environment.
+    The reuse consumer (``tools/validation/behavior_evidence_reuse.py``)
+    accepts a reuse record only when it binds this receipt by digest, so a
+    pass claim without a real owner-run behind it is never reusable.
+    """
+    import hashlib
+    import platform as _platform
+
+    def digest(rel: str) -> str | None:
+        path = root / rel
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return None
+
+    code = {"scripts/context_guard.py": digest("scripts/context_guard.py")}
+    caller = {"scripts/check_incident_coverage.py":
+              digest("scripts/check_incident_coverage.py")}
+    runner = dict(caller)
+    schema = {index_path.relative_to(root).as_posix(): digest(str(index_path)),
+              coverage_path.relative_to(root).as_posix():
+                  digest(str(coverage_path))}
+    if exceptions_path.is_file():
+        schema[exceptions_path.relative_to(root).as_posix()] = \
+            digest(str(exceptions_path))
+    nodes = []
+    for row in rows:
+        receipt = receipts.get(row.get("id")) or {}
+        for nodeid in receipt.get("nodeids") or []:
+            test_file = nodeid.split("::")[0]
+            nodes.append({
+                "node": nodeid,
+                "row": row.get("id"),
+                "outcome": receipt.get("outcomes", {}).get(nodeid),
+                "exit_code": receipt.get("results", {}).get(nodeid),
+                "test_file_sha256": receipt.get("file_digests", {}).get(nodeid),
+                "bindings": {
+                    "code": dict(code), "caller": dict(caller),
+                    "schema": dict(schema),
+                    "tests": {test_file:
+                              receipt.get("file_digests", {}).get(nodeid)},
+                    "runner": dict(runner),
+                    # stdlib-only product runtime; the executing pytest is
+                    # bound through the runner and the environment block.
+                    "deps": {}, "config": {},
+                },
+            })
+    import datetime as _dt
+    return {
+        "schema": "cg-behavior-execution-receipt/v1",
+        "produced_by": "check_incident_coverage",
+        "produced_at": _dt.datetime.now(
+            _dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "candidate_binding": identity,
+        "environment": {
+            "python": "{}.{}.{}".format(*sys.version_info[:3]),
+            "platform_family": "windows" if sys.platform == "win32"
+            else "macos" if sys.platform == "darwin" else "other",
+            "machine": _platform.machine(),
+        },
+        "nodes": nodes,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", nargs="?", default=".")
@@ -662,6 +734,10 @@ def main() -> int:
     parser.add_argument("--execute", action="store_true",
                         help="run every required in-repo nodeid of each active "
                              "row and require a passing execution receipt")
+    parser.add_argument("--evidence-receipt", type=Path, default=None,
+                        help="with --execute, also write the owner execution "
+                             "receipt (cg-behavior-execution-receipt/v1) for "
+                             "the behavior-evidence reuse consumer")
     parser.add_argument("--release-gate", action="store_true",
                         help="release consumer: exit 3 unless --execute ran, "
                              "the report is valid, closes_release_gate is true "
@@ -737,6 +813,17 @@ def main() -> int:
         "execution_receipts": receipts,
         "errors": errors, "valid": not errors,
     }
+    if args.evidence_receipt:
+        if not args.execute:
+            print("ERROR: --evidence-receipt requires --execute", file=sys.stderr)
+            return 2
+        receipt = build_execution_receipt(
+            root, rows, receipts or {}, root / args.index, root / args.coverage,
+            exceptions_path, identity)
+        args.evidence_receipt.parent.mkdir(parents=True, exist_ok=True)
+        args.evidence_receipt.write_text(
+            json.dumps(receipt, indent=2, default=str) + "\n",
+            encoding="utf-8")
     gate_failures: list[str] = []
     if args.release_gate:
         active_ids = [row.get("id") for row in rows

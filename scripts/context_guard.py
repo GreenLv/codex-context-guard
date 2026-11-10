@@ -24634,6 +24634,13 @@ RETENTION_TRIGGER_STATE_SCHEMA = "cg-retention-trigger/v1"
 RETENTION_TRIGGER_STATE_NAME = "retention-trigger.json"
 _RETENTION_TRIGGER_CLAIM_SCHEMA = "cg-retention-trigger-claim/v1"
 _RETENTION_TRIGGER_CLAIM_NAME = "retention-trigger.claim"
+# Stable, never-deleted cross-process mutex for EVERY claim mutation
+# (r1-A/D1, Windows evidence): an open claim handle blocks unlink with
+# WinError 32, and closing it first would leave an unprotected gap. The
+# mutex lives on its own lock file, so every verify-and-unlink happens
+# while holding a lock on an object that is never removed, with ZERO open
+# handles to the claim itself.
+_RETENTION_TRIGGER_CLAIM_LOCK_NAME = "retention-trigger.claim.lock"
 # One maintenance attempt per data root at most this often; purge progress
 # after quarantine grace therefore advances within hours of real usage.
 _RETENTION_TRIGGER_MIN_INTERVAL_SECONDS = 6 * 3600
@@ -24658,6 +24665,17 @@ def _retention_trigger_state_path(root: Path) -> Path:
 
 def _retention_trigger_claim_path(root: Path) -> Path:
     return root / V2_NAMESPACE / ".locks" / _RETENTION_TRIGGER_CLAIM_NAME
+
+
+def _retention_claim_mutex_path(locks_dir: Path) -> Path:
+    """The stable mutex file, derived from the `.locks` directory itself
+    (never re-derived from a root: a wrong parent level would silently
+    lock a different object)."""
+    return locks_dir / _RETENTION_TRIGGER_CLAIM_LOCK_NAME
+
+
+def _retention_claim_mutex_at(locks_dir: Path):
+    return _retention_claim_mutex(locks_dir)
 
 
 def _retention_read_trigger_state(root: Path) -> dict[str, Any]:
@@ -24694,16 +24712,82 @@ def _retention_write_trigger_state(root: Path, state: dict[str, Any]) -> None:
     atomic_write_text(path, json.dumps(state, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+# Monotonic trigger facts: a later writer must never overwrite a NEWER
+# attempt/dispatch/success with an older value (r1 claim family invariant).
+_TRIGGER_MONOTONIC_FIELDS = ("last_attempt_at", "last_dispatch_at",
+                             "last_success_at")
+
+
+def _merge_trigger_state(current: dict[str, Any], update: dict[str, Any]) -> dict:
+    """Merge one update into the current state under the monotonic guard.
+
+    Pure helper: the caller holds the claim mutex. Monotonic fields keep
+    their NEWEST value; skip notes and outcomes update freely; the schema
+    and updated_at are always refreshed.
+    """
+    merged = dict(current)
+    for key, value in update.items():
+        if value is None:
+            # An explicit None clears an advisory fact (e.g. a stale skip
+            # note outlived by a completed pass) instead of persisting null.
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    for field in _TRIGGER_MONOTONIC_FIELDS:
+        old = parse_time(current.get(field))
+        new = parse_time(merged.get(field))
+        if old is not None and (new is None or new < old):
+            merged[field] = current[field]
+    if merged.get("last_attempt_at"):
+        due = parse_time(merged["last_attempt_at"])
+        if due is not None:
+            merged["next_due_at"] = (
+                due + dt.timedelta(seconds=_RETENTION_TRIGGER_MIN_INTERVAL_SECONDS)
+            ).isoformat().replace("+00:00", "Z")
+    merged["schema"] = RETENTION_TRIGGER_STATE_SCHEMA
+    merged["updated_at"] = utc_now()
+    return merged
+
+
+def _retention_trigger_state_mutate(root: Path, update: dict[str, Any]) -> dict:
+    """THE only writer of the trigger state outside claim acquisition.
+
+    One mutex-protected read-merge-write window per producer (skip notes,
+    dispatch confirmation, child outcome): the read happens INSIDE the
+    mutex, so a late writer can never clobber a newer attempt, dispatch
+    or success fact recorded there by another process (r1 counterexample:
+    a skip note that read the file outside the mutex erased the locked-in
+    last_attempt and re-armed a second dispatch).
+    """
+    locks = root / V2_NAMESPACE / ".locks"
+    try:
+        with _retention_claim_mutex(locks):
+            current = _retention_read_trigger_state(root)
+            merged = _merge_trigger_state(current, update)
+            _retention_write_trigger_state(root, merged)
+            return merged
+    except _ClaimMutexBusy:
+        # Losing the mutex means another producer is mid-update; our fact
+        # is dropped rather than written stale. Skips are advisory; a
+        # dropped dispatch confirmation is re-recorded by the child's own
+        # outcome write. Never spin inside a hook.
+        return {}
+
+
 def _retention_trigger_note_skip(
     root: Path, reason: str, *, detail: Any = None, next_due_at: str | None = None,
 ) -> None:
     """Best-effort skip bookkeeping: never raises, never blocks SessionEnd.
 
-    Idempotent: an unchanged skip (same reason and detail, no new due
-    date) is not rewritten, so steady-state skips (an opted-out root, a
-    throttled root within its interval) cost one small read, not a write,
-    on every SessionEnd.
+    Idempotent (an unchanged skip is not rewritten) and written through
+    the mutex-protected merge, so a skip can never erase newer monotonic
+    facts. Raw exception text is never persisted (class names only).
     """
+    skip = {"reason": reason,
+            **({"detail": detail} if detail is not None else {})}
+    update: dict[str, Any] = {"last_skip": skip}
+    if next_due_at:
+        update["next_due_at"] = next_due_at
     try:
         if not _maintenance_boundary_ok(root):
             return
@@ -24714,100 +24798,217 @@ def _retention_trigger_note_skip(
                 and (next_due_at is None
                      or state.get("next_due_at") == next_due_at)):
             return
-        state["schema"] = RETENTION_TRIGGER_STATE_SCHEMA
-        state["updated_at"] = utc_now()
-        state["last_skip"] = {"reason": reason, "at": state["updated_at"],
-                              **({"detail": detail} if detail is not None else {})}
-        if next_due_at:
-            state["next_due_at"] = next_due_at
-        _retention_write_trigger_state(root, state)
+        _retention_trigger_state_mutate(root, update)
     except Exception:  # noqa: BLE001 - skip bookkeeping must never fail the hook
         return
 
 
-def _retention_release_trigger_claim(root: Path, *, token: str | None = None) -> None:
-    """Remove this root's dispatch claim.
+class _ClaimMutexBusy(RuntimeError):
+    """Another participant holds the claim mutex."""
 
-    With a ``token``, only the claim this dispatch created is removed: a
-    late or superseded child can never delete a newer claim. The token is
-    read from the claim object itself; an unreadable or foreign claim is
-    left for TTL recovery rather than deleted blind.
+
+@contextlib.contextmanager
+def _retention_claim_mutex(locks_dir: Path):
+    """Cross-process mutex over all claim mutations (r1-A/D1).
+
+    A stable, never-deleted lock file under `.locks`; POSIX flock or
+    Windows msvcrt locks THAT object. The claim file itself is never held
+    open across an unlink, so the Windows close-then-unlink gap cannot
+    occur: replacements require this same mutex, and every unlink happens
+    with zero open claim handles. Busy is reported, never spun on: the
+    hook records a skip and the next SessionEnd retries.
     """
-    path = _retention_trigger_claim_path(root)
-    if not token:
-        # No token (direct API/tests): unconditional release. Production
-        # dispatches always carry the claim token they created.
-        with contextlib.suppress(OSError):
-            path.unlink(missing_ok=True)
-        return
+    path = _retention_claim_mutex_path(locks_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                 0o600)
     try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return
-    except OSError:
-        return
-    if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_size > 65536:
-        return
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
-        return
-    if isinstance(data, dict) and data.get("token") == token:
-        with contextlib.suppress(OSError):
-            path.unlink(missing_ok=True)
-
-
-def _retention_remove_stale_claim(claim_path: Path) -> bool:
-    """Retire a stranded claim without a remove/recreate race.
-
-    The winner locks the claim OBJECT itself (fcntl/msvcrt), re-verifies
-    that the locked inode is still the object named by the path and still
-    stale, and only then unlinks it. A concurrent hook locking the same
-    inode loses and skips; a hook that arrived after a replacement sees a
-    fresh object and never reaches this path. No unlink happens through a
-    name that no longer names the locked inode.
-    """
-    try:
-        fd = os.open(claim_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
-    except FileNotFoundError:
-        return True  # already gone: the caller can claim exclusively
-    except OSError:
-        return False
-    try:
-        if _msvcrt is not None:
-            _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
-        elif _fcntl is not None:
-            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-        else:
-            return False
-    except OSError:
-        os.close(fd)
-        return False
-    try:
-        locked = os.fstat(fd)
-        try:
-            named = claim_path.lstat()
-        except FileNotFoundError:
-            named = None
-        except OSError:
-            named = None
-        if (named is None
-                or (named.st_ino, named.st_dev) != (locked.st_ino, locked.st_dev)
-                or time.time() - named.st_mtime < _RETENTION_TRIGGER_CLAIM_TTL_SECONDS):
-            # The name now belongs to a different (or fresh) object.
-            return False
-        claim_path.unlink(missing_ok=True)
-        return True
-    finally:
         try:
             if _msvcrt is not None:
                 os.lseek(fd, 0, os.SEEK_SET)
-                _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+                _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
             elif _fcntl is not None:
-                _fcntl.flock(fd, _fcntl.LOCK_UN)
-        except OSError:
-            pass
+                _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            else:
+                raise RuntimeError("no kernel locking primitive available")
+        except OSError as exc:
+            raise _ClaimMutexBusy(
+                "claim mutex held by another participant") from exc
+        try:
+            yield path
+        finally:
+            try:
+                if _msvcrt is not None:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+                elif _fcntl is not None:
+                    _fcntl.flock(fd, _fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
         os.close(fd)
+
+
+def _retention_read_claim_object(claim_path: Path) -> tuple[str, dict | None]:
+    """Read one claim object WITHOUT keeping a handle open: (status, data).
+
+    Statuses: ``absent`` / ``ok`` / ``unparseable`` (a regular private
+    file whose bytes are empty, truncated or not our JSON -- a create
+    interrupted before the write; bounded TTL recovery may remove it) /
+    ``foreign`` (a link, non-regular or oversized object at the managed
+    name -- never removed, reported instead).
+    """
+    try:
+        info = claim_path.lstat()
+    except FileNotFoundError:
+        return "absent", None
+    except OSError:
+        return "foreign", None
+    if not stat.S_ISREG(info.st_mode) or claim_path.is_symlink():
+        return "foreign", None
+    if info.st_size > 65536:
+        return "foreign", None
+    try:
+        data = json.loads(claim_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return "unparseable", None
+    if not isinstance(data, dict):
+        return "unparseable", None
+    return "ok", data
+
+
+def _retention_release_claim_object(
+    claim_path: Path, *, token: str | None = None, stale_only: bool = False,
+) -> str:
+    """The ONE cross-process protocol for removing a dispatch claim.
+
+    Every participant -- a child releasing its own token, a hook recovering
+    a stranded claim -- holds the claim mutex and verifies, BEFORE any
+    unlink and with the mutex still held, the facts it needs:
+
+    - the claim object still exists and parses (a replaced or unreadable
+      object is never touched);
+    - when ``token`` is given, the claim content carries that exact token
+      (a late worker can never delete a newer claim);
+    - when ``stale_only`` is given, the object is actually older than the
+      claim TTL (a fresh claim is never retired).
+
+    Because every remover, every stale recovery and every creation runs
+    under the same mutex, the claim cannot change between the verification
+    and the unlink, and the unlink happens with zero open claim handles
+    (Windows: an open handle blocks unlink with WinError 32; closing first
+    would be an unprotected gap). Outcomes: ``released`` / ``absent`` /
+    ``foreign`` / ``busy`` / ``fresh`` / ``token_mismatch``. Only
+    ``released`` unlinks anything; ``absent`` also lets a stale recovery
+    proceed to its exclusive create.
+    """
+    try:
+        # The mutex lives in the SAME `.locks` directory as the claim --
+        # derived from the claim path itself, never from a re-derived root.
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(_retention_claim_mutex_at(claim_path.parent))
+            status, data = _retention_read_claim_object(claim_path)
+            if status == "absent":
+                return "absent"
+            if status == "foreign":
+                # A link or non-regular object at the managed name is
+                # never removed by this protocol; it keeps the trigger
+                # skipped and stays visible as a skip reason.
+                return "foreign"
+            try:
+                named = claim_path.lstat()
+            except OSError:
+                return "absent"
+            if stale_only and time.time() - named.st_mtime < (
+                    _RETENTION_TRIGGER_CLAIM_TTL_SECONDS):
+                return "fresh"
+            if status == "unparseable":
+                # A regular file under our managed name with empty,
+                # truncated or foreign bytes is a create-interrupted
+                # leftover of THIS flow; after the TTL it is bounded
+                # recovery, never blind deletion of a live claim (a fresh
+                # one is left alone above). Token release still refuses:
+                # an unparseable object cannot prove token ownership.
+                if stale_only:
+                    claim_path.unlink(missing_ok=True)
+                    return "released"
+                return "token_mismatch"
+            if token is not None and data.get("token") != token:
+                return "token_mismatch"
+            claim_path.unlink(missing_ok=True)
+            return "released"
+    except _ClaimMutexBusy:
+        return "busy"
+
+
+def _retention_claim_acquire(root: Path, token: str) -> str:
+    """Acquire the dispatch claim under the mutex (r1-A/D1).
+
+    One atomic window holds the throttle RE-CHECK, the exclusive-create
+    and the attempt-state record: two hooks that both read a stale
+    throttle timestamp cannot both dispatch, because the second one
+    re-reads the freshly recorded attempt under the mutex before its
+    exclusive create. Outcomes: ``created`` / ``throttled`` /
+    ``claim_exists`` / ``busy`` / ``failed``.
+    """
+    try:
+        with _retention_claim_mutex(root / V2_NAMESPACE / ".locks"):
+            state = _retention_read_trigger_state(root)
+            last_attempt = parse_time(state.get("last_attempt_at"))
+            now_dt = dt.datetime.now(dt.timezone.utc)
+            if last_attempt is not None:
+                elapsed = (now_dt - last_attempt).total_seconds()
+                if 0 <= elapsed < _RETENTION_TRIGGER_MIN_INTERVAL_SECONDS:
+                    return "throttled"
+            claim_path = _retention_trigger_claim_path(root)
+            claim = {"schema": _RETENTION_TRIGGER_CLAIM_SCHEMA,
+                     "pid": os.getpid(), "started_at": utc_now(),
+                     "token": token}
+            try:
+                fd = os.open(claim_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                             | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            except FileExistsError:
+                return "claim_exists"
+            except OSError:
+                return "failed"
+            try:
+                os.write(fd, (json.dumps(claim, ensure_ascii=False)
+                              + "\n").encode("utf-8"))
+            finally:
+                os.close(fd)  # zero claim handles before the mutex releases
+            # The attempt is recorded INSIDE the same mutex window with the
+            # shared merge guard, so claim availability always implies a
+            # recorded attempt and no late writer can regress it.
+            try:
+                state = _retention_read_trigger_state(root)
+                merged = _merge_trigger_state(
+                    state, {"last_attempt_at": utc_now()})
+                _retention_write_trigger_state(root, merged)
+            except Exception:  # noqa: BLE001 - claim already exists
+                pass
+            return "created"
+    except _ClaimMutexBusy:
+        return "busy"
+    except Exception:  # noqa: BLE001 - acquisition failure never raises
+        return "failed"
+
+
+def _retention_release_trigger_claim(root: Path, *, token: str | None = None) -> None:
+    """Release this root's dispatch claim through the mutex protocol.
+
+    Production dispatches always carry the token they created; a tokenless
+    release (direct API/tests) still verifies object identity, so a claim
+    replaced before the unlink is never deleted.
+    """
+    _retention_release_claim_object(
+        _retention_trigger_claim_path(root), token=token or None)
+
+
+def _retention_remove_stale_claim(claim_path: Path) -> bool:
+    """Retire a stranded claim through the mutex protocol (True when the
+    caller may proceed to its exclusive create)."""
+    return _retention_release_claim_object(
+        claim_path, stale_only=True) in ("released", "absent")
 
 
 def _retention_trigger_spawn(argv: list[str]) -> bool:
@@ -24946,47 +25147,30 @@ def _retention_session_end_trigger_inner(
                 root, "throttled",
                 next_due_at=next_due.isoformat().replace("+00:00", "Z"))
             return
-    claim = {"schema": _RETENTION_TRIGGER_CLAIM_SCHEMA,
-             "pid": os.getpid(), "started_at": utc_now(), "token": token}
-    try:
-        claim_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(claim_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                     | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(claim, ensure_ascii=False) + "\n")
-    except FileExistsError:
+    # Acquire under the claim mutex: the authoritative throttle re-check,
+    # the exclusive create and the attempt record are one atomic window
+    # (r1-A/D1), so two hooks that both read a stale throttle timestamp
+    # cannot both dispatch, and every later acquirer sees the attempt.
+    outcome = _retention_claim_acquire(root, token)
+    if outcome == "throttled":
+        _retention_trigger_note_skip(root, "throttled")
+        return
+    if outcome in ("claim_exists", "busy"):
         _retention_trigger_note_skip(root, "claim_race")
         return
-    except OSError:
-        # The failure class is enough for diagnosis; raw exception text can
-        # carry local paths and is never persisted.
+    if outcome != "created":
+        # The failure class is enough for diagnosis; raw exception text
+        # can carry local paths and is never persisted.
         _retention_trigger_note_skip(root, "claim_failed",
                                      detail="OSError")
         return
-    # The attempt is recorded BEFORE the spawn: the claim plus this record
-    # are the durable dedup facts even if this process dies mid-spawn.
-    try:
-        attempted = _retention_read_trigger_state(root)
-        attempted["schema"] = RETENTION_TRIGGER_STATE_SCHEMA
-        attempted["updated_at"] = utc_now()
-        attempted["last_attempt_at"] = attempted["updated_at"]
-        attempted["next_due_at"] = (
-            parse_time(attempted["updated_at"])
-            + dt.timedelta(seconds=_RETENTION_TRIGGER_MIN_INTERVAL_SECONDS)
-        ).isoformat().replace("+00:00", "Z")
-        _retention_write_trigger_state(root, attempted)
-    except Exception:  # noqa: BLE001 - claim already exists
-        pass
     if not _retention_trigger_spawn(argv):
         _retention_release_trigger_claim(root, token=token)
         _retention_trigger_note_skip(root, "spawn_failed")
         return
     try:
-        attempted = _retention_read_trigger_state(root)
-        attempted["schema"] = RETENTION_TRIGGER_STATE_SCHEMA
-        attempted["updated_at"] = utc_now()
-        attempted["last_dispatch_at"] = attempted["updated_at"]
-        _retention_write_trigger_state(root, attempted)
+        _retention_trigger_state_mutate(
+            root, {"last_dispatch_at": utc_now()})
     except Exception:  # noqa: BLE001 - dispatch already succeeded
         return
 
@@ -25039,12 +25223,20 @@ def _retention_trigger_child_pass(
     the hook's reads and this write always wins), runs one bounded apply
     pass through the ordinary executor — which re-reads the policy and the
     durable opt-out inside the lock as its own linearization point —
-    records the bounded outcome, and releases ITS OWN claim token in every
-    path. Normal deferrals (opt-out, invalid policy, busy lock) exit 0;
-    only an unexpected internal error exits 2.
+    records the bounded outcome, and releases ONLY the claim whose token
+    matches the one this dispatch created, in every path. A child invoked
+    without its dispatch token (or with a token that no longer matches the
+    claim object) NEVER releases: the stranded claim is left to bounded
+    TTL recovery instead of risking a newer claim (r1 counterexample: a
+    tokenless boundary release could delete a replacement claim). Normal
+    deferrals (opt-out, invalid policy, busy lock) exit 0; only an
+    unexpected internal error exits 2.
     """
     def released_skip(reason: str, *, detail: Any = None, code: int = 0) -> int:
-        _retention_release_trigger_claim(root, token=token)
+        if token:
+            # Token-owned release only; the protocol re-verifies the token
+            # against the claim object under the mutex.
+            _retention_release_trigger_claim(root, token=token)
         _retention_trigger_note_skip(root, reason, detail=detail)
         return code
 
@@ -25092,24 +25284,24 @@ def _retention_trigger_child_pass(
                 detail=None if opted_out else type(exc).__name__)
         try:
             if not _maintenance_boundary_ok(root):
-                _retention_release_trigger_claim(root)
-                return 0
-            state = _retention_read_trigger_state(root)
-            state["schema"] = RETENTION_TRIGGER_STATE_SCHEMA
-            state["updated_at"] = utc_now()
-            state["last_attempt_at"] = state["updated_at"]
-            state["last_success_at"] = state["updated_at"]
-            state["last_outcome"] = _retention_trigger_compact_outcome(report)
-            state.pop("last_skip", None)
-            _retention_write_trigger_state(root, state)
+                return released_skip("child_boundary")
+            _retention_trigger_state_mutate(root, {
+                "last_success_at": utc_now(),
+                "last_outcome": _retention_trigger_compact_outcome(report),
+                # The pass ran; a stale skip note must not outlive it.
+                "last_skip": None,
+            })
         except Exception:  # noqa: BLE001 - pass already ran; report anyway
             pass
         finally:
-            _retention_release_trigger_claim(root, token=token)
+            if token:
+                _retention_release_trigger_claim(root, token=token)
         return 0
     except Exception:  # noqa: BLE001 - unexpected child failure stays bounded
         try:
-            _retention_release_trigger_claim(root, token=token)
+            if token:
+                _retention_release_trigger_claim(root, token=token)
+            _retention_trigger_note_skip(root, "child_internal_error")
         except Exception:  # noqa: BLE001
             pass
         return 2

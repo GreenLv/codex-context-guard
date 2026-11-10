@@ -3341,6 +3341,39 @@ class SummaryParseControls(unittest.TestCase):
                     U.verify(harness.plan, out, harness.prepare_path)
 
 
+@unittest.skip("repair-1 pending: resume-same-phase is not implemented yet; "
+               "this class pins the accepted contract verbatim and stays "
+               "inert until the repair lands (r1 checkpoint)")
+class ResumeRestoresPhase(unittest.TestCase):
+    """Repair 1 contract: a resumed wait restores the SAME phase in the
+    original output directory, so --verify consumes it without redoing the
+    phase. Pinned by independent Mac review; NOT satisfied by the current
+    wait-only resume."""
+
+    def test_reproducer_resume_restores_a_verifiable_phase(self):
+        # Baseline gap this pins: --resume-wait only wrote wait_resolved into a
+        # NEW directory, the original result stayed wait_pending, verify()
+        # refused both ("execution remains incomplete"), and resuming in the
+        # original directory was refused, so a half-transitioned host needed
+        # the whole phase redone.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            harness = _TransitionHarness(root, "0.16.1", review_timeout=4)
+            harness.state["review_ready"] = False
+            harness.state["disable_after_poll"] = 2
+            with harness.patched():
+                out, pending = harness.run_transition()
+                self.assertEqual("wait_pending", pending["status"])
+                self.assertEqual("new_hook_review", pending["wait"]["wait"])
+                harness.state["review_ready"] = True
+                resumed = U.resume_wait(harness.plan, out, harness.prepare_path,
+                                        out / U.WAIT_RECEIPT_NAME)
+                self.assertEqual("pending", resumed["status"], resumed)
+                verified = U.verify(harness.plan, out, harness.prepare_path)
+            self.assertEqual("passed", verified["status"])
+            self.assertEqual("cancelled_old_before_transition", verified["observed_boundary"])
+
+
 class WaitResumeControls(unittest.TestCase):
     """Fix 2: bounded waits record wait_pending plus a resumable receipt."""
 
@@ -3626,10 +3659,12 @@ class CommandPreflightControls(unittest.TestCase):
                     return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
                 if argv[0] == "sh" and "-n" in argv:
                     return subprocess.CompletedProcess(argv, 0, b"", b"")
-                if argv[0] == "sh":
-                    lines = ["upgrade"] + argv[5:]
-                    return subprocess.CompletedProcess(argv, 0, "".join(line + "\n" for line in lines).encode(), b"")
-                if argv[1:3] == ["-I", "-B"]:
+                if argv[0] == "/bin/sh" and "--print-argv" in argv:
+                    rest = argv[argv.index("--print-argv") + 2:]
+                    return subprocess.CompletedProcess(
+                        argv, 0, "".join(word + "\n" for word in ["upgrade", *rest]).encode(), b"")
+                if argv[1:2] == ["-B"] and argv[-1].endswith("print(sys.flags.utf8_mode)"):
+                    # The real child form: env-carried PYTHONUTF8 applies.
                     return subprocess.CompletedProcess(argv, 0, b"1\n", b"")
                 raise AssertionError("unexpected probe " + repr(argv))
 
@@ -3680,10 +3715,13 @@ class CommandPreflightControls(unittest.TestCase):
                     return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
                 if argv[0] == "sh" and "-n" in argv:
                     return subprocess.CompletedProcess(argv, 0, b"", b"")
-                if argv[0] == "sh":
-                    lines = ["upgrade"] + argv[5:]
-                    return subprocess.CompletedProcess(argv, 0, "".join(line + "\n" for line in lines).encode(), b"")
-                if argv[1:3] == ["-I", "-B"]:
+                if argv[0] == "/bin/sh" and "--print-argv" in argv:
+                    rest = argv[argv.index("--print-argv") + 2:]
+                    return subprocess.CompletedProcess(
+                        argv, 0, "".join(word + "\n" for word in ["upgrade", *rest]).encode(), b"")
+                if argv[1:2] == ["-B"] and argv[-1].endswith("print(sys.flags.utf8_mode)"):
+                    # Simulate the -I false-positive shape the r1 fix removes:
+                    # the observed child mode is 0 and the preflight refuses.
                     return subprocess.CompletedProcess(argv, 0, b"0\n", b"")
                 raise AssertionError("unexpected probe " + repr(argv))
 
@@ -3711,7 +3749,11 @@ class CommandPreflightControls(unittest.TestCase):
                     return subprocess.CompletedProcess(argv, 0, expected_lines, b"")
                 if argv[1:2] == ["-c"] and argv[-1:] == ["--version"]:
                     return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
-                if argv[1:3] == ["-I", "-B"]:
+                if argv[0] == "powershell" and "-File" in argv and "print-argv" in argv:
+                    return subprocess.CompletedProcess(
+                        argv, 0,
+                        json.dumps(["print-argv", passthrough]).encode(), b"")
+                if argv[1:2] == ["-B"] and argv[-1].endswith("print(sys.flags.utf8_mode)"):
                     return subprocess.CompletedProcess(argv, 0, b"1\n", b"")
                 raise AssertionError("unexpected probe " + repr(argv[:2]))
 
@@ -3724,7 +3766,8 @@ class CommandPreflightControls(unittest.TestCase):
                 stack.enter_context(mock.patch.object(U.platform, "system", return_value="Windows"))
                 summary = U.preflight_commands({"cli_version": "codex-cli 0.165.0"}, out, plan_path)
             self.assertEqual("powershell", summary["launcher"]["probed"])
-            self.assertEqual(["upgrade"] + passthrough, summary["launcher"]["argv_echo"])
+            self.assertEqual(["print-argv", passthrough],
+                             summary["launcher"]["real_entry"]["echoed"])
             self.assertNotIn("off_platform", summary["launcher"])
             # The real launcher is parsed, never run: only its path is handed over.
             self.assertEqual(str(U.PS1_LAUNCHER), seen_env["CG_LAUNCHER_PROBE"])
@@ -3733,6 +3776,12 @@ class CommandPreflightControls(unittest.TestCase):
             self.assertEqual('windows.sandbox="mxc"', summary["entry_flags"]["argv"][2])
 
             def refused_flags(argv, env=None, timeout=30.0):
+                if argv[0] == "powershell" and "-File" in argv:
+                    return subprocess.CompletedProcess(
+                        argv, 0,
+                        json.dumps(["print-argv", passthrough]).encode(), b"")
+                if argv[1:2] == ["-B"] and argv[-1].endswith("print(sys.flags.utf8_mode)"):
+                    return subprocess.CompletedProcess(argv, 0, b"1\n", b"")
                 if argv[1:] == ["--version"]:
                     return subprocess.CompletedProcess(argv, 0, b"codex-cli 0.165.0\n", b"")
                 if argv[1:2] == ["-c"] and argv[-1:] == ["--version"]:

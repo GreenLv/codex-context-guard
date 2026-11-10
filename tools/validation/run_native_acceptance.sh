@@ -19,6 +19,18 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
+# Real-entry probe mode (r1 B2): prints the launcher's parsed argument
+# vector one word per line and exits 0 without touching any target. This
+# lets the command preflight prove the REAL launcher parses and passes
+# this run's argv (the parse-only and synthetic echo probes cannot).
+if [ "${1:-}" = "--print-argv" ]; then
+    shift
+    for word in "$@"; do
+        printf '%s\n' "$word"
+    done
+    exit 0
+fi
+
 case "${1:-}" in
     upgrade) target="$script_dir/native_upgrade_acceptance.py" ;;
     acceptance) target="$script_dir/native_acceptance.py" ;;

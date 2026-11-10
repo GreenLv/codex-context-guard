@@ -10,33 +10,47 @@ its tests live in `tests/test_behavior_evidence_reuse.py`.
 
 Behavior results — behavior-suite nodes, focused regressions, and
 incident-library case replays — may be reused for a new candidate only when
-EVERY input that affects the result is unchanged:
+EVERY input that affects the result is unchanged AND the result comes from
+a real owner run:
 
 - the code bytes under test (each product file bound by sha256);
 - the caller/entry shape that invoked the behavior;
 - the schema/fixture files the behavior reads;
 - the test and judge/decoder bytes defining the node;
 - the runner bytes (and its declared schema) that executed the node;
-- the dependency and tool versions of the environment;
+- the declared dependency and configuration bindings (each group present;
+  an empty group explicitly means "none");
 - the relevant platform state (OS family, machine, Python version).
 
-An entry binds exactly the three file groups (`code`, `tests`, `runner`)
-and the three environment keys (`python`, `platform_family`, `machine`).
-Caller shape, judge/decoder logic, fixtures and dependency facts are bound
-by including the files that carry them in the appropriate group — an entry
-that cannot express an input that way must not be recorded as reusable.
-The record's shape is validated before evaluation; a malformed or
-under-bound record is REFUSED outright, never partially evaluated or
-treated as reusable (a missing environment never fails open). An entry
-whose every bound digest and environment field still matches is
-`reusable`; anything else is `stale` with the changed input named. A
-missing bound file makes the entry stale (fail closed). Reuse is per node:
-a record with some stale entries is `not_established` as a whole, and
-callers rerun the stale nodes rather than replaying the whole family. The
-consumer exits 0 only when the whole record is established, 1 when any
-node is stale, and 2 when the record is refused. Failed or
-platform-specific results never transfer: they keep their original
-subject, failure record and applicable conditions.
+## Records bind real owner-executed results (r1)
+
+A reuse record (`cg-behavior-evidence/v2`) is produced ONLY by
+`behavior_evidence_reuse.py --build-from-receipt` from an owner execution
+receipt (`cg-behavior-execution-receipt/v1`) written by a wired consumer
+during a real run — today `check_incident_coverage.py --execute
+--evidence-receipt <path>`. Each entry carries the node's REAL observed
+outcome and exit code, the receipt file's digest, the owner's complete
+declared input mapping (code, caller, schema, tests, runner, deps,
+config), and the observing environment.
+
+- A node that did not actually pass is refused at build time (exit 2):
+  failed or unknown nodes are never recorded as reusable evidence; the
+  owner reruns them.
+- Evaluation WITHOUT the owner receipt marks every entry
+  `owner_receipt:not_verified` and the record `not_established` — a pass
+  claim without a real owner run behind it is never established (exit 1).
+- Presenting a receipt whose file digest differs from the record's
+  binding is a refusal (exit 2), as is any malformed or under-bound
+  record (missing groups, missing environment, edited receipt-node
+  bindings). Tampering with the record or the receipt can only produce a
+  refusal, never a reuse.
+- Changed code, tests, runner, schema, config, or environment inputs make
+  the affected entries `stale` with the changed input named; the owner
+  reruns exactly the stale nodes through its own runner. A record with
+  stale entries is `not_established` as a whole. Exit codes: 0 =
+  established, 1 = stale/not verified, 2 = refused. Failed or
+  platform-specific results never transfer: they keep their original
+  subject, failure record and applicable conditions.
 
 The incident-coverage consumer (`scripts/check_incident_coverage.py`)
 already binds the library pin, per-record `record_sha256`, per-node test

@@ -797,12 +797,127 @@ def cmd_apply(args: argparse.Namespace) -> int:
         _persist_apply_result(result_path, manifest)
     manifest.update(status="failed" if manifest["failed"] else "applied", finished_at_epoch=time.time())
     _persist_apply_result(result_path, manifest)
-    print(json.dumps({"created": len(manifest["created"]),
-                      "skipped": len(manifest["skipped"]),
-                      "isolated": len(manifest["isolated"]),
-                      "failed": len(manifest["failed"]),
-                      "workspace": str(workspace)}))
+    # r1 D3b control: the operation is COMPLETE and durably recorded here;
+    # a summary construction failure is recorded as a fact and never
+    # rolls back, never re-applies, and never changes the exit code (which
+    # derives from the structured manifest state only).
+    try:
+        summary = {"created": len(manifest["created"]),
+                   "skipped": len(manifest["skipped"]),
+                   "isolated": len(manifest["isolated"]),
+                   "failed": len(manifest["failed"]),
+                   "workspace": str(workspace)}
+        print(json.dumps(summary))
+    except (KeyError, TypeError, ValueError) as exc:
+        # Building OR serializing the run summary failed after the
+        # operation completed: record the fact, print a bounded fallback,
+        # and leave the exit code to the structured manifest state. Never
+        # a rollback, never a re-apply.
+        manifest["summary_unavailable"] = type(exc).__name__
+        _persist_apply_result(result_path, manifest)
+        print(json.dumps({"summary_unavailable": manifest["summary_unavailable"],
+                          "workspace": str(workspace)}))
     return 0 if not manifest["failed"] else 1
+
+
+def _export_summary(workspace: Path) -> tuple[dict, list[Path]]:
+    """Re-read/export the operation summary from the persisted structured
+    artifacts ONLY (apply-manifest.json, verify-result.json): the repair
+    path for a lost or unreadable run summary. Read-only -- never rolls
+    back, never re-applies, never restores, never touches a data root.
+
+    Everything reported binds the CURRENT plan/apply/workspace/objects
+    (r1 B3): the apply manifest goes through the same checked-manifest
+    validation as verify (so a truncated or unbound file -- e.g. missing
+    the ``created`` group -- is refused instead of silently exporting
+    zeros); a verify result without the binding triple (workspace, plan
+    digest, apply-manifest digest) is reported as the historical snapshot
+    it is (``historical_unbound``), never as the current state; a bound
+    verify result is re-checked read-only against the CURRENT copies, so
+    a target changed after verify is reported ``stale`` with the changed
+    rows named. Returns (summary, protected_roots) where the protected
+    roots are the plan's data roots that an export output path must never
+    enter.
+    """
+    manifest = _checked_manifest(workspace)
+    plan_path = _absolute_real(manifest.get("plan"), "apply plan", file=True)
+    plan = _check_apply_plan(plan_path)
+    protected = [Path(plan["source_data_root"]).resolve(strict=True),
+                 Path(plan["target_data_root"]).resolve(strict=True)]
+    exported = {
+        "schema": "cg-guard-state-summary/v1",
+        "workspace": str(workspace),
+        "plan_sha256": manifest.get("plan_sha256"),
+        "apply_status": manifest.get("status"),
+        "created": len(manifest.get("created") or []),
+        "skipped": len(manifest.get("skipped") or []),
+        "isolated": len(manifest.get("isolated") or []),
+        "failed": len(manifest.get("failed") or []),
+        "summary_unavailable": manifest.get("summary_unavailable"),
+    }
+    verify_path = workspace / "verify-result.json"
+    if verify_path.is_symlink() or not verify_path.is_file():
+        exported["verify_status"] = "not_verified"
+        return exported, protected
+    try:
+        verify = json.loads(verify_path.read_text(encoding="utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        verify = None
+    bound = (isinstance(verify, dict) and verify.get("schema") == SCHEMA
+             and verify.get("stage") == "verify"
+             and verify.get("workspace") == str(workspace)
+             and verify.get("plan_sha256") == manifest.get("plan_sha256")
+             and verify.get("apply_manifest_sha256")
+             == _digest_file(workspace / "apply-manifest.json"))
+    if not bound:
+        # A verify file that cannot prove it belongs to THIS workspace,
+        # plan and apply transaction is history, not current state.
+        exported["verify_status"] = "historical_unbound"
+        return exported, protected
+    stale: list[dict[str, str]] = []
+    for row in manifest["created"] + manifest["isolated"]:
+        try:
+            _check_recorded_copy(row, Path(row["path"]))
+        except (MigrationError, OSError) as exc:
+            stale.append({"id": row.get("id"), "reason": str(exc)})
+    if stale:
+        exported["verify_status"] = "stale"
+        exported["verify_stale"] = stale
+    else:
+        exported["verify_status"] = verify.get("status")
+        exported["verify_problems"] = len(verify.get("problems") or [])
+    return exported, protected
+
+
+def cmd_summary(args: argparse.Namespace) -> int:
+    workspace = _absolute_real(args.workspace, "workspace")
+    exported, protected = _export_summary(workspace)
+    print(json.dumps(exported))
+    if args.out:
+        # A NEW export file. Refusals come BEFORE any creation: an
+        # existing object is never replaced, a link (including a dangling
+        # symlink pointing into a data root) is never followed, and the
+        # target may not live inside a protected data root. Creation is
+        # exclusive with no handle left open.
+        raw = Path(args.out)
+        require(not raw.is_symlink() and not raw.exists(),
+                "summary output already exists or is a link; exports never replace")
+        resolved = raw.resolve(strict=False)
+        for root in protected:
+            require(root != resolved and not _within(resolved, root)
+                    and not _within(root, resolved),
+                    "summary output must stay outside the protected data roots")
+        _no_link_ancestors(resolved.parent)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        require(not resolved.exists() and not resolved.is_symlink(),
+                "summary output appeared during export; exports never replace")
+        fd = os.open(resolved, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                     | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            os.write(fd, (json.dumps(exported, indent=2) + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+    return 0
 
 
 def _checked_manifest(workspace: Path, plan_path: Path | None = None) -> dict[str, Any]:
@@ -866,13 +981,26 @@ def cmd_verify(args: argparse.Namespace) -> int:
             problems.append({"id": row["id"], "reason": str(exc)})
     result = {
         "schema": SCHEMA, "stage": "verify",
+        # Binding facts (r1 B3): a verify result that does not bind THIS
+        # workspace, plan and apply manifest is a historical snapshot and
+        # is never presented as the current state by the summary export.
+        "workspace": str(workspace),
+        "plan_sha256": _digest_file(plan_path),
+        "apply_manifest_sha256": _digest_file(workspace / "apply-manifest.json"),
         "created": len(manifest["created"]),
         "isolated": len(manifest["isolated"]),
         "problems": problems,
         "status": "verified" if not problems else "problems",
     }
     _supersede_then_write(workspace / "verify-result.json", result)
-    print(json.dumps({"status": result["status"], "problems": len(problems)}))
+    try:
+        printed = {"status": result["status"], "problems": len(problems)}
+        print(json.dumps(printed))
+    except (KeyError, TypeError, ValueError) as exc:
+        result["summary_unavailable"] = type(exc).__name__
+        _supersede_then_write(workspace / "verify-result.json", result)
+        print(json.dumps({"summary_unavailable":
+                          result["summary_unavailable"]}))
     return 0 if not problems else 1
 
 
@@ -951,6 +1079,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
     verify.add_argument("--workspace", required=True)
     verify.set_defaults(func=cmd_verify)
 
+    summary = subparsers.add_parser(
+        "summary",
+        help="re-read/export the operation summary from the persisted "
+             "structured artifacts (read-only; the repair path for a lost "
+             "run summary -- never a rollback)")
+    summary.add_argument("--workspace", required=True)
+    summary.add_argument("--out", default=None,
+                         help="write the exported summary to this new file")
+    summary.set_defaults(func=cmd_summary)
     restore = subparsers.add_parser(
         "restore", help="remove exactly this migration's created paths")
     restore.add_argument("--workspace", required=True)

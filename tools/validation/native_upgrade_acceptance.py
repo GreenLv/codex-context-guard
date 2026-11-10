@@ -48,19 +48,23 @@ EVENTS = frozenset(host.EVENTS)
 # NEW_VERSION is the upgrade target this toolkit revision verifies; a release
 # round updates it (and its OLD_* bindings) in its own tool commit so every
 # result binds the exact old/new pair it exercised.
-NEW_VERSION = "0.17.1"
+NEW_VERSION = "0.17.2"
 OLD_MARKETS = {"0.15.1": "codex-context-guard", "0.16.1": "codex-context-guard-v016",
-               "0.17.0": "codex-context-guard"}
+               "0.17.0": "codex-context-guard", "0.17.1": "codex-context-guard"}
 OLD_0161_WRAPPER_MARKET = "codex-context-guard-v0161"
 NEW_MARKET = "codex-context-guard"
 OLD_0151_COMMIT = "111fe03b98803c6b06e8a70c010d27ca04d81af3"
 OLD_0151_EXPORT_SHA256 = "37899ae37bc5e09c62c459e6b840b0929b0ba368d7dd51873732b78f7a5102f6"
 OLD_0161_ZIP_SHA256 = "d554dc732b900412bd46d8c0b2b01e3e1304cb823f163a11c49e0e7c3687fb92"
 OLD_0170_ZIP_SHA256 = "3c92503b8f0b7f2bf406804d9c348fb5375f836984b25e00d1979a0cd25a8767"
+# Published 0.17.1 ZIP (the old artifact for the 0.17.1 -> 0.17.2
+# stable-identity route), pinned by the release readback.
+OLD_0171_ZIP_SHA256 = "2db6028b1a5206d3f5fc9935fe1f139fd66b3d22f1526d63df066498d37451f8"
 # Published release ZIP digests per accepted old ZIP-route version. A
 # stable-identity in-place upgrade (old marketplace name == NEW_MARKET) is
 # accepted for versions listed here.
-OLD_ZIP_SHA256 = {"0.16.1": OLD_0161_ZIP_SHA256, "0.17.0": OLD_0170_ZIP_SHA256}
+OLD_ZIP_SHA256 = {"0.16.1": OLD_0161_ZIP_SHA256, "0.17.0": OLD_0170_ZIP_SHA256,
+                  "0.17.1": OLD_0171_ZIP_SHA256}
 # A bounded official-confirmation wait that times out records this receipt
 # beside result.json; --resume-wait re-enters only that wait.
 WAIT_RECEIPT = "cg-native-upgrade-wait-pending/v1"
@@ -1352,14 +1356,18 @@ def _probe_sh_launcher(launcher: Path, passthrough: list[str]) -> dict[str, Any]
     """Parse-only POSIX sh launcher probe; the real launcher never executes."""
     parsed = _probe_run(["sh", "-n", str(launcher)], {})
     require(parsed.returncode == 0, "sh launcher parse probe failed: sh -n " + str(launcher))
-    echo_argv = ["sh", "-c", 'for word in "$@"; do printf \'%s\\n\' "$word"; done',
-                 "probe", "upgrade", *passthrough]
-    replay = _probe_run(echo_argv, {})
+    # r1 B2: invoke the REAL launcher in its side-effect-free --print-argv
+    # mode with this run's argv; a synthetic echo cannot prove the
+    # launcher itself parses and passes the arguments.
+    real_argv = ["/bin/sh", str(launcher), "--print-argv", "upgrade",
+                 *passthrough]
+    replay = _probe_run(real_argv, {})
     lines = replay.stdout.decode("utf-8").splitlines()
     require(replay.returncode == 0 and lines == ["upgrade", *passthrough],
-            "sh launcher argument vector probe failed: " + " ".join(echo_argv[:3]) + " ...")
+            "sh launcher REAL entry probe failed (the launcher did not "
+            "parse and pass this run's argv): " + repr(real_argv))
     return {"probed": "sh", "parse": ["sh", "-n", str(launcher)],
-            "argv_echo": ["upgrade", *passthrough]}
+            "real_entry": {"argv": real_argv, "echoed": lines}}
 
 
 def _probe_ps1_launcher(launcher: Path, passthrough: list[str]) -> dict[str, Any]:
@@ -1391,8 +1399,20 @@ def _probe_ps1_launcher(launcher: Path, passthrough: list[str]) -> dict[str, Any
     lines = replay.stdout.decode("utf-8-sig").splitlines()
     require(replay.returncode == 0 and lines == ["upgrade", *passthrough],
             "PowerShell launcher parse probe failed: " + str(launcher))
+    # r1 B2: real side-effect-free entry invocation with this run's argv.
+    real_argv = ["powershell", "-NoProfile", "-NonInteractive", "-File",
+                 str(launcher), "-Target", "print-argv",
+                 "-Arguments", "@(" + ",".join('"' + word + '"'
+                                               for word in passthrough) + ")"]
+    real = _probe_run(real_argv, env, timeout=60.0)
+    try:
+        echoed = json.loads(real.stdout.decode("utf-8-sig").strip() or "[]")
+    except ValueError:
+        echoed = None
+    require(real.returncode == 0 and echoed == ["print-argv", passthrough],
+            "PowerShell launcher REAL entry probe failed: " + repr(real_argv))
     return {"probed": "powershell", "parse": "Parser::ParseFile " + str(launcher),
-            "argv_echo": ["upgrade", *passthrough]}
+            "real_entry": {"argv": real_argv, "echoed": echoed}}
 
 
 def preflight_commands(plan: dict[str, Any], output: Path, plan_path: Path) -> dict[str, Any]:
@@ -1429,16 +1449,28 @@ def preflight_commands(plan: dict[str, Any], output: Path, plan_path: Path) -> d
     else:
         launcher = _probe_sh_launcher(SH_LAUNCHER, passthrough)
         launcher["off_platform"] = {"launcher": "powershell", "recorded": "skip_off_platform"}
-    utf8 = _probe_run([sys.executable, "-I", "-B", "-c", "import sys; print(sys.flags.utf8_mode)"], env)
-    require(utf8.returncode == 0 and utf8.stdout.strip() == b"1",
-            "UTF-8 child environment probe failed for [" + sys.executable + ", -I, -B, -c]")
+    # r1 B1: probe UTF-8 with the ACTUAL child subprocess form the run
+    # uses (env-carried PYTHONUTF8, no -I: isolated mode ignores the
+    # environment and would false-report a healthy host). The observed
+    # mode is recorded, never assumed.
+    utf8_argv = [sys.executable, "-B", "-c", "import sys; print(sys.flags.utf8_mode)"]
+    utf8 = _probe_run(utf8_argv, env)
+    observed_utf8_mode = None
+    try:
+        observed_utf8_mode = int(utf8.stdout.decode("ascii").strip())
+    except (UnicodeError, ValueError):
+        pass
+    require(utf8.returncode == 0 and observed_utf8_mode == 1,
+            "UTF-8 child environment probe failed for " + repr(utf8_argv)
+            + " (observed utf8_mode=" + repr(observed_utf8_mode)
+            + "; -I ignores the env-carried PYTHONUTF8 and is not the run's form)")
     require(str(ROOT) in sys.path and Path.cwd().is_dir(), "driver cwd or module search path unavailable")
     _writable_directory(output.parent)
     return {"planned_commands": planned, "executable": resolved,
             "entry_probe": {"argv": [codex, "--version"], "version": plan["cli_version"]},
             "entry_flags": entry_flags, "launcher": launcher,
             "environment": {"driver_cwd": str(Path.cwd()), "module_search_path": str(ROOT),
-                            "utf8_child_mode": 1},
+                            "utf8_child_mode": observed_utf8_mode},
             "writable_parent": str(output.parent)}
 
 

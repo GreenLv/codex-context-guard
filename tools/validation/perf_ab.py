@@ -1033,6 +1033,117 @@ class ReportPublicationError(RuntimeError):
     pass
 
 
+# Out-of-timing detached-worker convergence (r1 perf boundary): the Hook
+# event budget stays untouched; the SessionEnd trigger's detached worker
+# converges AFTER the measured event, so HOME cleanup must not report
+# "removed" while a worker may still be writing. Constants are module
+# state so tests can shrink the windows.
+PERF_WORKER_SETTLE_SECONDS = 45.0
+PERF_WORKER_QUIET_SECONDS = 3.0
+PERF_WORKER_POLL_SECONDS = 0.25
+
+
+def _worker_control_dir(home: Path) -> Path:
+    return home / "context-guard" / "sessions-v2" / ".locks"
+
+
+def _worker_active_before_cleanup(home: Path) -> bool:
+    """Positive evidence that this attempt dispatched a detached worker:
+    a dispatch claim or trigger record existed before HOME removal. A
+    runtime without the trigger (or a run where nothing was dispatched)
+    skips the settle wait entirely."""
+    controls = _worker_control_dir(home)
+    try:
+        return (controls / "retention-trigger.claim").exists() \
+            or (controls / "retention-trigger.json").exists()
+    except OSError:
+        return False
+
+
+def _wait_worker_terminal(home: Path, deadline: float, poll: float) -> dict | None:
+    """Wait for the detached worker's terminal fact (success/skip recorded
+    and the claim released). None when the deadline passed first."""
+    controls = _worker_control_dir(home)
+    while time.monotonic() < deadline:
+        try:
+            state_path = controls / "retention-trigger.json"
+            settled = False
+            if state_path.is_file():
+                try:
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    state = {}
+                settled = bool(state.get("last_success_at")
+                               or state.get("last_skip"))
+            claim_gone = not (controls / "retention-trigger.claim").exists()
+            if settled and claim_gone:
+                try:
+                    return {"state": json.loads(state_path.read_text(
+                        encoding="utf-8"))}
+                except (OSError, ValueError):
+                    return {"state": None}
+            time.sleep(poll)
+        except OSError:
+            time.sleep(poll)
+    return None
+
+
+def _recreated_paths(home: Path) -> list[str]:
+    try:
+        return [str(path.relative_to(home)) for path in home.rglob("*")][:20]
+    except OSError:
+        return []
+
+
+def _perf_settle_and_remove_home(home: Path) -> dict:
+    """Remove the attempt HOME without mislabeling an unconverged worker.
+
+    Sequence per worker generation: remove; a short quiet window proves
+    nothing recreates (plain ``removed``); when a detached worker DOES
+    recreate control files, wait -- out of the timing measurement -- for
+    its terminal fact and claim release, remove again, and require another
+    quiet window. A worker that never settles within the bounded window is
+    reported ``worker_pending`` (never ``removed``) so the caller stops
+    the batch instead of measuring against an active writer.
+    """
+    generations = []
+    while True:
+        # Remove FIRST, then prove nothing recreates during the quiet
+        # window (a detached worker recreating files is a new generation).
+        # The poll interval adapts to the window so a shortened test
+        # window still samples inside it.
+        quiet_poll = min(PERF_WORKER_POLL_SECONDS,
+                         max(0.02, PERF_WORKER_QUIET_SECONDS / 4))
+        shutil.rmtree(home)
+        recreated = None
+        quiet_deadline = time.monotonic() + PERF_WORKER_QUIET_SECONDS
+        while time.monotonic() < quiet_deadline:
+            found = _recreated_paths(home)
+            if found:
+                recreated = found
+                break
+            time.sleep(quiet_poll)
+        if recreated is None:
+            return {"verdict": "removed", "generations": generations}
+        generation = {"recreated": recreated}
+        generations.append(generation)
+        settle_poll = min(PERF_WORKER_POLL_SECONDS,
+                          max(0.02, PERF_WORKER_SETTLE_SECONDS / 4))
+        terminal = _wait_worker_terminal(
+            home, time.monotonic() + PERF_WORKER_SETTLE_SECONDS,
+            settle_poll)
+        generation["terminal_state"] = (
+            terminal.get("state") if isinstance(terminal, dict) else None)
+        if terminal is None:
+            generation["recreated_now"] = _recreated_paths(home)
+            return {"verdict": "worker_pending", "generations": generations}
+        if len(generations) >= 3:
+            # Bounded: three worker generations without a quiet HOME is
+            # reported as pending rather than looped forever.
+            return {"verdict": "worker_pending", "generations": generations}
+        quiet_deadline = time.monotonic() + PERF_WORKER_QUIET_SECONDS
+
+
 def row_failed(row: dict) -> bool:
     return (row.get("outcome_class") != "completed" or row.get("assertion") != "ok"
             or row.get("home_cleanup", {}).get("status") in {"error", "retained"}
@@ -1268,9 +1379,28 @@ def main() -> int:
                         if row.get("retain_home"):
                             row["home_cleanup"] = {"status": "retained", "path": str(home)}
                         else:
+                            worker_may_exist = _worker_active_before_cleanup(home)
                             try:
-                                shutil.rmtree(home)
-                                row["home_cleanup"] = {"status": "removed"}
+                                if worker_may_exist:
+                                    # Out of the timing measurement: the
+                                    # detached maintenance worker converges
+                                    # after the event; an unconverged worker
+                                    # is NEVER labeled "removed".
+                                    settle = _perf_settle_and_remove_home(home)
+                                    if settle["verdict"] == "worker_pending":
+                                        row["home_cleanup"] = {
+                                            "status": "worker_pending",
+                                            "path": str(home),
+                                            "worker_settle": settle}
+                                        row["stop_batch"] = True
+                                    else:
+                                        row["home_cleanup"] = {
+                                            "status": "removed",
+                                            "path": str(home),
+                                            "worker_settle": settle}
+                                else:
+                                    shutil.rmtree(home)
+                                    row["home_cleanup"] = {"status": "removed"}
                             except Exception as exc:
                                 row["home_cleanup"] = {"status": "error", "path": str(home),
                                                        "error": f"{type(exc).__name__}: {exc}"[:200]}

@@ -330,18 +330,44 @@ class Probe:
         })
 
     def s6_hook_latency_within_budget(self) -> None:
+        """Three trigger generations, each PROVEN: the previous worker's
+        claim released, a strictly newer attempt/dispatch recorded, and a
+        strictly newer worker completion observed -- with the Hook wall
+        time measured per iteration inside the 3 s budget."""
         data, project = self.new_root("s6")
         self.make_expired_session(data, project, "expired-45d")
+        claim = (data / "sessions-v2" / ".locks"
+                 / self.cg._RETENTION_TRIGGER_CLAIM_NAME)
         worst = 0.0
-        for _ in range(3):
+        dispatches = 0
+        previous_success = None
+        for index in range(3):
+            deadline = time.monotonic() + 60
+            while claim.exists():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"iteration {index}: previous claim never released")
+                time.sleep(POLL_INTERVAL_SECONDS)
+            self.backdate_last_attempt(data, hours=8)
+            pre = self.trigger_state(data)
             elapsed, _ = self.run_session_end_hook(
                 data, project, "current-probe")
+            post = self.trigger_state(data)
+            if (not post.get("last_attempt_at")
+                    or post.get("last_attempt_at") == pre.get("last_attempt_at")):
+                raise RuntimeError(
+                    f"iteration {index}: no new dispatch recorded")
+            dispatches += 1
+            self.await_success(data, timeout=POLL_TIMEOUT_SECONDS,
+                               after=previous_success)
+            previous_success = self.trigger_state(data).get("last_success_at")
             worst = max(worst, elapsed)
-            self.backdate_last_attempt(data, hours=8)
-        ok = worst < SESSION_END_HOST_BUDGET_SECONDS
+        ok = worst < SESSION_END_HOST_BUDGET_SECONDS and dispatches == 3
         self.record("S6_session_end_hook_latency_including_trigger", ok, {
             "worst_hook_seconds": round(worst, 3),
             "host_budget_seconds": SESSION_END_HOST_BUDGET_SECONDS,
+            "iterations": 3,
+            "dispatches_proven": dispatches,
             "platform": sys.platform,
         })
 

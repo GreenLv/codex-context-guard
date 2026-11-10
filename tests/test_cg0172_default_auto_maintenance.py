@@ -31,6 +31,7 @@ import importlib.util  # noqa: E402
 
 from test_cg0170_retention_restored import (  # noqa: E402
     RetentionFixtureBase,
+    symlink_or_skip,
 )
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "context_guard.py"
@@ -211,19 +212,319 @@ class TriggerDecisionTests(RetentionFixtureBase):
         self.assertEqual(dispatched, [])
         self.assertEqual(state["last_skip"]["reason"], "claim_held")
 
-    def test_stale_claim_takeover_verifies_the_locked_identity(self):
-        # The takeover unlinks only when the locked inode still matches the
-        # path: a replacement object (fresh claim) is never removed blind.
+    def hold_claim_lock(self, claim: Path):
+        """Hold the claim MUTEX (stable lock file) like another protocol
+        participant. The claim object itself is never held open across an
+        unlink (Windows: WinError 32)."""
+        import fcntl
+        lock_path = claim.parent / (claim.name + ".lock")
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+
+    def release_claim_lock(self, fd) -> None:
+        import fcntl
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+    def test_replaced_claim_survives_a_late_token_release(self):
+        # The independently reproduced r1-A race: a late worker's token
+        # release must never delete a replacement claim that another
+        # participant created while it was mid-protocol. Under the unified
+        # protocol the replacement attempt BLOCKS on the object lock, and
+        # a token re-check against the replaced object is a mismatch.
         claim = locks_dir(self.data_dir) / CLAIM
         write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
-                           "pid": os.getpid(), "started_at": cg.utc_now()})
+                           "pid": os.getpid(), "started_at": cg.utc_now(),
+                           "token": "late-worker"})
         old = time.time() - (cg._RETENTION_TRIGGER_CLAIM_TTL_SECONDS + 60)
         os.utime(claim, (old, old))
-        with mock.patch.object(cg.os, "fstat",
-                               side_effect=lambda _fd: mock.Mock(
-                                   st_ino=999999, st_dev=1)):
-            self.assertFalse(cg._retention_remove_stale_claim(claim))
+        # Another participant holds the object lock (mid-protocol).
+        fd = self.hold_claim_lock(claim)
+        try:
+            cg._retention_release_trigger_claim(self.data_dir, token="late-worker")
+            self.assertTrue(claim.exists())  # busy: nothing deleted
+        finally:
+            self.release_claim_lock(fd)
+        # The stale recovery + replacement now completes (it needed the lock).
+        self.assertEqual(cg._retention_release_claim_object(
+            claim, stale_only=True), "released")
+        write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
+                           "pid": os.getpid(), "started_at": cg.utc_now(),
+                           "token": "replacement"})
+        # The late worker retries: identity and token both verify against
+        # the REPLACEMENT object and refuse.
+        self.assertEqual(cg._retention_release_claim_object(
+            claim, token="late-worker"), "token_mismatch")
         self.assertTrue(claim.exists())
+        self.assertEqual(
+            json.loads(claim.read_text(encoding="utf-8"))["token"],
+            "replacement")
+
+    def test_stale_recovery_never_retires_a_fresh_replacement(self):
+        claim = locks_dir(self.data_dir) / CLAIM
+        write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
+                           "pid": os.getpid(), "started_at": cg.utc_now(),
+                           "token": "fresh"})
+        self.assertEqual(cg._retention_release_claim_object(
+            claim, stale_only=True), "fresh")
+        self.assertTrue(claim.exists())
+
+    def test_protocol_outcome_matrix(self):
+        claim = locks_dir(self.data_dir) / CLAIM
+        # absent: nothing to remove; a stale recovery may proceed.
+        self.assertEqual(cg._retention_release_claim_object(
+            claim, stale_only=True), "absent")
+        write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
+                           "pid": os.getpid(), "started_at": cg.utc_now(),
+                           "token": "owner"})
+        # foreign: the name no longer names a regular claim object.
+        claim.unlink()
+        (locks_dir(self.data_dir) / CLAIM).mkdir()  # a directory, not a file
+        self.assertEqual(cg._retention_release_claim_object(
+            claim, token="owner"), "foreign")
+        self.assertTrue(claim.is_dir())
+        claim.rmdir()
+        write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
+                           "pid": os.getpid(), "started_at": cg.utc_now(),
+                           "token": "owner"})
+        # busy: another participant holds the object lock.
+        fd = self.hold_claim_lock(claim)
+        try:
+            self.assertEqual(cg._retention_release_claim_object(
+                claim, token="owner"), "busy")
+            self.assertEqual(cg._retention_release_claim_object(
+                claim, stale_only=True), "busy")
+        finally:
+            self.release_claim_lock(fd)
+        # token check reads the LOCKED fd: the owner releases cleanly.
+        self.assertEqual(cg._retention_release_claim_object(
+            claim, token="owner"), "released")
+        self.assertFalse(claim.exists())
+
+    def test_concurrent_releases_exactly_one_wins(self):
+        import threading
+        claim = locks_dir(self.data_dir) / CLAIM
+        write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
+                           "pid": os.getpid(), "started_at": cg.utc_now(),
+                           "token": "owner"})
+        outcomes = []
+
+        def attempt(token):
+            outcomes.append(cg._retention_release_claim_object(claim,
+                                                               token=token))
+
+        threads = [threading.Thread(target=attempt, args=("owner",)),
+                   threading.Thread(target=attempt, args=("other",))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        # Exactly one participant releases; the other is refused with a
+        # no-delete outcome (busy under the object lock, or a token
+        # mismatch if it verified after the winner's unlink window).
+        self.assertEqual(outcomes.count("released"), 1)
+        self.assertIn(outcomes[0] if outcomes[0] != "released" else outcomes[1],
+                      ("busy", "token_mismatch"))
+        self.assertFalse(claim.exists())
+
+    def test_release_is_cross_process_exclusive(self):
+        # True cross-process check: another PROCESS holding the object
+        # lock makes the release busy; after it exits, the release wins.
+        holder_code = (
+            "import fcntl, os, sys, time\n"
+            "fd = os.open(sys.argv[1] + '.lock', os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "sys.stdout.write('held\\n'); sys.stdout.flush()\n"
+            "time.sleep(1.5)\n"
+        )
+        claim = locks_dir(self.data_dir) / CLAIM
+        write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
+                           "pid": os.getpid(), "started_at": cg.utc_now(),
+                           "token": "owner"})
+        proc = subprocess.Popen(
+            [sys.executable, "-c", holder_code, str(claim)],
+            stdout=subprocess.PIPE, text=True)
+        self.assertEqual(proc.stdout.readline().strip(), "held")
+        try:
+            self.assertEqual(cg._retention_release_claim_object(
+                claim, token="owner"), "busy")
+            self.assertTrue(claim.exists())
+        finally:
+            proc.wait(timeout=30)
+        self.assertEqual(cg._retention_release_claim_object(
+            claim, token="owner"), "released")
+        self.assertFalse(claim.exists())
+
+    def test_late_writer_never_regresses_monotonic_facts(self):
+        # r1 CE1: any producer writing through the shared merge cannot
+        # overwrite a NEWER attempt/dispatch/success fact with an older
+        # value, so a stale skip note can never re-arm a second dispatch.
+        # A real acquisition (through the mutex protocol) records the
+        # attempt and creates its own claim.
+        outcome = cg._retention_claim_acquire(self.data_dir, "owner")
+        self.assertEqual(outcome, "created")
+        state = cg._retention_read_trigger_state(self.data_dir)
+        self.assertIsNotNone(state["last_attempt_at"])
+        newer_attempt = state["last_attempt_at"]
+        # A stale writer holding a pre-dispatch copy of the state.
+        cg._retention_trigger_state_mutate(
+            self.data_dir, {"last_attempt_at": "2020-01-01T00:00:00Z"})
+        after = cg._retention_read_trigger_state(self.data_dir)
+        self.assertEqual(after["last_attempt_at"], newer_attempt)
+        # A skip note after the dispatch keeps the attempt intact...
+        cg._retention_trigger_note_skip(self.data_dir, "claim_race")
+        self.assertEqual(
+            cg._retention_read_trigger_state(self.data_dir)["last_attempt_at"],
+            newer_attempt)
+        # ...so the authoritative re-check still throttles: no second
+        # dispatch is possible from a clobbered state.
+        outcome = cg._retention_claim_acquire(self.data_dir, "second")
+        self.assertEqual(outcome, "throttled")
+
+    def test_write_interrupted_claim_is_recovered_after_ttl(self):
+        # r1 CE2: an O_EXCL create that crashed before the JSON write left
+        # an empty/truncated claim; after the TTL it is bounded recovery
+        # (not a permanent "foreign" stall), while a FRESH truncated object
+        # waits and a replaced link object is never deleted.
+        claim = locks_dir(self.data_dir) / CLAIM
+        claim.write_bytes(b'{"tok')  # create interrupted mid-write
+        old = time.time() - (cg._RETENTION_TRIGGER_CLAIM_TTL_SECONDS + 60)
+        os.utime(claim, (old, old))
+        self.assertEqual(cg._retention_release_claim_object(
+            claim, stale_only=True), "released")
+        self.assertFalse(claim.exists())
+        # Fresh truncated object: wait, never delete.
+        claim.write_bytes(b'{"tok')
+        self.assertEqual(cg._retention_release_claim_object(
+            claim, stale_only=True), "fresh")
+        self.assertTrue(claim.exists())
+        # A link at the managed name: foreign, never removed.
+        claim.unlink()
+        outside = self.root / "outside-claim"
+        outside.write_text("external", encoding="utf-8")
+        symlink_or_skip(self, claim, outside)
+        self.assertEqual(cg._retention_release_claim_object(
+            claim, stale_only=True), "foreign")
+        self.assertEqual(outside.read_text(), "external")
+        self.assertTrue(claim.is_symlink())
+
+    def test_child_never_releases_a_claim_it_does_not_own(self):
+        # r1 CE3: a child invoked with a foreign (or absent) dispatch
+        # token never releases the claim -- not on boundary errors, not on
+        # internal errors. The stranded claim is left to TTL recovery.
+        self.make_session("expired", ended_days_ago=45)
+        claim = locks_dir(self.data_dir) / CLAIM
+        write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
+                           "pid": os.getpid(), "started_at": cg.utc_now(),
+                           "token": "real-owner"})
+        for token in ("", "foreign-token"):
+            with self.subTest(token=token or "<absent>"):
+                self.assertEqual(cg._retention_trigger_child_pass(
+                    self.data_dir, budget_seconds=5.0,
+                    trigger_token=token), 0)
+                self.assertTrue(claim.exists())
+                self.assertEqual(
+                    json.loads(claim.read_text(encoding="utf-8"))["token"],
+                    "real-owner")
+        # The rightful owner still releases through the protocol.
+        self.assertEqual(cg._retention_trigger_child_pass(
+            self.data_dir, budget_seconds=5.0,
+            trigger_token="real-owner"), 0)
+        self.assertFalse(claim.exists())
+
+    def test_throttle_reread_inside_mutex_prevents_double_dispatch(self):
+        # The independently reproduced r1-A/D1 race: two triggers both read
+        # a stale throttle timestamp; A completes and releases; B must NOT
+        # dispatch. The authoritative throttle re-check runs inside the
+        # claim mutex during acquisition, after A's attempt is durably
+        # recorded there.
+        import threading
+        gated = threading.Event()
+        proceed = threading.Event()
+        spawned = []
+        original_state = cg._retention_read_trigger_state
+        original_acquire = cg._retention_claim_acquire
+        gated_once = []
+
+        # Park B BEFORE its fast-path throttle read, so A can complete a
+        # full dispatch while B has already consumed the stale timestamp.
+        def gated_state(root):
+            if (threading.current_thread().name == "B"
+                    and not gated_once):
+                gated_once.append(True)
+                gated.set()
+                proceed.wait(10)
+            return original_state(root)
+
+        def spawn(argv):
+            # The trigger thread is the dispatcher; record WHO spawned.
+            spawned.append(threading.current_thread().name)
+            # The real child releases its claim when it finishes.
+            cg._retention_release_trigger_claim(
+                self.data_dir, token=argv[-1])
+            return True
+
+        with mock.patch.dict(os.environ,
+                             {"CONTEXT_GUARD_DISABLE_RETENTION_TRIGGER": ""}), \
+                mock.patch.object(cg, "_retention_read_trigger_state",
+                                  side_effect=gated_state), \
+                mock.patch.object(cg, "_retention_claim_acquire",
+                                  side_effect=original_acquire), \
+                mock.patch.object(cg, "_retention_trigger_spawn",
+                                  side_effect=spawn):
+            b = threading.Thread(
+                target=cg._retention_session_end_trigger_inner,
+                kwargs={"root": self.data_dir, "remaining_budget": 2.5},
+                name="B")
+            b.start()
+            self.assertTrue(gated.wait(10), "B did not reach the fast path")
+            # A runs to completion while B holds the stale read.
+            cg._retention_session_end_trigger_inner(
+                self.data_dir, remaining_budget=2.5)
+            proceed.set()
+            b.join(15)
+            self.assertFalse(b.is_alive())
+        # Exactly one dispatch (A, on the main thread); B must not dispatch.
+        self.assertEqual(len(spawned), 1)
+        self.assertNotIn("B", spawned)
+        state = cg._retention_read_trigger_state(self.data_dir)
+        self.assertEqual(state["last_skip"]["reason"], "throttled")
+
+    def test_concurrent_triggers_dispatch_exactly_one(self):
+        import threading
+        spawned = []
+
+        def spawn(argv):
+            spawned.append(argv[-1])
+            cg._retention_release_trigger_claim(
+                self.data_dir, token=argv[-1])
+            return True
+
+        with mock.patch.dict(os.environ,
+                             {"CONTEXT_GUARD_DISABLE_RETENTION_TRIGGER": ""}), \
+                mock.patch.object(cg, "_retention_trigger_spawn",
+                                  side_effect=spawn):
+            threads = [
+                threading.Thread(
+                    target=cg._retention_session_end_trigger_inner,
+                    kwargs={"root": self.data_dir,
+                            "remaining_budget": 2.5})
+                for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(15)
+                self.assertFalse(thread.is_alive())
+        self.assertEqual(len(spawned), 1)
+        state = cg._retention_read_trigger_state(self.data_dir)
+        # The attempt fact always survives; the losers' skip notes are
+        # advisory and may be dropped when they lose the mutex.
+        self.assertTrue(state.get("last_attempt_at"))
+        skip = (state.get("last_skip") or {}).get("reason")
+        self.assertIn(skip, ("throttled", "claim_race", None))
 
     def test_trigger_failure_never_fails_session_end(self):
         def broken(argv):
@@ -263,8 +564,11 @@ class TriggerChildPassTests(RetentionFixtureBase):
     """The detached child: independent authorization, default materialize,
     bounded apply pass, outcome record, claim release."""
 
-    def run_child(self, budget=5.0):
-        return cg._retention_trigger_child_pass(self.data_dir, budget_seconds=budget)
+    FIXTURE_TOKEN = "fixture-child-token"
+
+    def run_child(self, budget=5.0, token=FIXTURE_TOKEN):
+        return cg._retention_trigger_child_pass(
+            self.data_dir, budget_seconds=budget, trigger_token=token)
 
     def setUp(self):
         super().setUp()
@@ -272,7 +576,8 @@ class TriggerChildPassTests(RetentionFixtureBase):
         self.make_session("young", ended_days_ago=2)
         claim = locks_dir(self.data_dir) / CLAIM
         write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
-                           "pid": os.getpid(), "started_at": cg.utc_now()})
+                           "pid": os.getpid(), "started_at": cg.utc_now(),
+                           "token": self.FIXTURE_TOKEN})
 
     def claim_present(self) -> bool:
         return (locks_dir(self.data_dir) / CLAIM).exists()
@@ -360,7 +665,8 @@ class TriggerChildPassTests(RetentionFixtureBase):
             subprocess.run(
                 [sys.executable, "-B", str(MODULE_PATH), "cleanup",
                  "--data-dir", str(self.data_dir), "--apply", "--json",
-                 "--budget-seconds", "10", "--trigger-run"],
+                 "--budget-seconds", "10", "--trigger-run",
+                 "--trigger-token", self.FIXTURE_TOKEN],
                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
                 text=True, capture_output=True, timeout=120).returncode, 0)
         self.assertTrue(cg._retention_policy_path(self.data_dir).exists())
@@ -560,13 +866,16 @@ class TailAdvancementTests(RetentionFixtureBase):
         for index in range(total):
             self.make_session(f"bulk-{index:03d}", ended_days_ago=45)
         self.make_session("keeper", ended_days_ago=1)
+        fixture_token = "tail-child-token"
         claim = locks_dir(self.data_dir) / CLAIM
         write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
-                           "pid": os.getpid(), "started_at": cg.utc_now()})
+                           "pid": os.getpid(), "started_at": cg.utc_now(),
+                           "token": fixture_token})
         quarantined = 0
         for _ in range(40):
-            code = cg._retention_trigger_child_pass(self.data_dir,
-                                                    budget_seconds=0.35)
+            code = cg._retention_trigger_child_pass(
+                self.data_dir, budget_seconds=0.35,
+                trigger_token=fixture_token)
             self.assertEqual(code, 0)
             state = cg._retention_read_trigger_state(self.data_dir)
             quarantined += ((state.get("last_outcome") or {})
@@ -600,11 +909,15 @@ class SessionEndIntegrationTests(RetentionFixtureBase):
         # The hook itself never touched the expired session or the policy.
         self.assertTrue(self.session_dir("expired").is_dir())
         self.assertFalse(cg._retention_policy_path(self.data_dir).exists())
-        # The child (run for real here) cleans up under the same contract.
+        # The child (run for real here) cleans up under the same contract;
+        # it releases only the claim token this dispatch created.
         claim = locks_dir(self.data_dir) / CLAIM
         self.assertTrue(claim.exists())
+        dispatch_token = json.loads(claim.read_text(encoding="utf-8"))["token"]
         self.assertEqual(
-            cg._retention_trigger_child_pass(self.data_dir, budget_seconds=5.0), 0)
+            cg._retention_trigger_child_pass(
+                self.data_dir, budget_seconds=5.0,
+                trigger_token=dispatch_token), 0)
         self.assertFalse(self.session_dir("expired").is_dir())
         self.assertFalse(claim.exists())
 

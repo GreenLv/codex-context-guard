@@ -718,6 +718,93 @@ class PerfDriverLifecycleTests(unittest.TestCase):
         self.assertIn('cleanup denied', row['home_cleanup']['error'])
 
     @unittest.skipUnless(os.name == 'posix', 'real POSIX group fixture, not Windows proof')
+    def test_real_detached_worker_converges_before_home_removed(self):
+        """Real detached grandchild (r1 perf boundary): the measured event
+        dispatches a worker that recreates control files AFTER the cleanup
+        starts. HOME must never be labeled removed while the worker runs;
+        after its terminal fact and claim release, the verdict is removed
+        with the out-of-timing settle facts recorded."""
+        grandchild = self.work / "grandchild-worker.py"
+        # The measured event: leave the dispatch claim, then detach a real
+        # grandchild (new session, survives the process-group cleanup)
+        # that writes the terminal fact ~1s later and releases the claim.
+        def runner(wrapper, tree, cell, spec, data_dir, budget):
+            controls = data_dir.parent / "context-guard" / "sessions-v2" / ".locks"
+            controls.mkdir(parents=True, exist_ok=True)
+            (controls / "retention-trigger.claim").write_text(
+                json.dumps({"token": "perf"}) + "\n", encoding="utf-8")
+            script = (
+                "import json,os,time\n"
+                f"controls = Path({str(controls)!r})\n"
+                "time.sleep(1.0)\n"
+                "controls.mkdir(parents=True, exist_ok=True)\n"
+                "(controls / 'retention-trigger.json').write_text("
+                "json.dumps({'last_success_at': '2026-01-01T00:00:00Z'}) + '\\n')\n"
+                "os.remove(controls / 'retention-trigger.claim')\n")
+            grandchild.write_text(
+                "import sys\nfrom pathlib import Path\n" + script)
+            subprocess.Popen([sys.executable, str(grandchild)],
+                             start_new_session=True,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            return {'elapsed': 0.05, 'returncode': 0, 'error': None,
+                    'outcome_class': 'completed', 'assertion': 'ok'}
+        code, report, _, _ = self.main_run(runner=runner, name="worker-converges")
+        self.assertEqual(code, 0)
+        row = report['cells']['pretool_safe']['sides']['baseline']['raw_rows'][0]
+        self.assertEqual(row['home_cleanup']['status'], 'removed')
+        settle = row['home_cleanup']['worker_settle']
+        self.assertEqual(settle['verdict'], 'removed')
+        self.assertTrue(settle['generations'], 'worker evidence missing')
+        self.assertEqual(settle['generations'][0]['terminal_state']
+                         ['last_success_at'], '2026-01-01T00:00:00Z')
+        # The Hook event budget is untouched by the out-of-timing settle.
+        self.assertLess(row['elapsed'], 3.0)
+        self.assertEqual(row['outcome_class'], 'completed')
+
+    def test_real_detached_worker_pending_is_never_labeled_removed(self):
+        """A detached worker that never settles blocks the batch with
+        status worker_pending (never removed), out of the event timing."""
+        def runner(wrapper, tree, cell, spec, data_dir, budget):
+            controls = data_dir.parent / "context-guard" / "sessions-v2" / ".locks"
+            controls.mkdir(parents=True, exist_ok=True)
+            (controls / "retention-trigger.claim").write_text(
+                json.dumps({"token": "perf"}) + "\n", encoding="utf-8")
+            grandchild = self.work / "grandchild-pending.py"
+            # Recreates its control object right after the cleanup removes
+            # it, then never reaches a terminal fact within the settle
+            # window: the verdict must be worker_pending, never removed.
+            grandchild.write_text(
+                "import json,os,time\nfrom pathlib import Path\n"
+                f"controls = Path({str(controls)!r})\n"
+                "end = time.time() + 30\n"
+                "while time.time() < end:\n"
+                "    try:\n"
+                "        controls.mkdir(parents=True, exist_ok=True)\n"
+                "        (controls / 'retention-trigger.claim').write_text("
+                "json.dumps({'token': 'perf'}) + '\\n')\n"
+                "    except OSError:\n"
+                "        pass\n"
+                "    time.sleep(0.05)\n")
+            subprocess.Popen([sys.executable, str(grandchild)],
+                             start_new_session=True,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            return {'elapsed': 0.05, 'returncode': 0, 'error': None,
+                    'outcome_class': 'completed', 'assertion': 'ok'}
+        with unittest.mock.patch.object(self.driver, 'PERF_WORKER_SETTLE_SECONDS', 0.6), \
+                unittest.mock.patch.object(self.driver, 'PERF_WORKER_QUIET_SECONDS', 0.2):
+            code, report, _, _ = self.main_run(runner=runner,
+                                               name="worker-pending")
+        self.assertEqual(code, 1)
+        row = report['cells']['pretool_safe']['sides']['baseline']['raw_rows'][0]
+        self.assertEqual(row['home_cleanup']['status'], 'worker_pending')
+        self.assertEqual(row['home_cleanup']['worker_settle']['verdict'],
+                         'worker_pending')
+        self.assertTrue(row['stop_batch'])
+        self.assertFalse(report['accepted'])
+        self.assertEqual(report['execution_state'], 'stopped')
+
     def test_real_timeout_with_inherited_output_is_reaped_before_home_cleanup(self):
         self.real_descendant(hold_stdout=True, parent_wait=True)
 

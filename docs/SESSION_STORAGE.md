@@ -86,7 +86,12 @@ following checks:
   saved against the unmaterialized default (version 0) is refused after the
   child materializes version 1, because the policy version changed). An
   explicit
-  policy file always wins, values in a valid policy are honored verbatim
+  policy file always wins, values in a valid policy are honored verbatim.
+  Note the two different loss semantics: a DELETED (or never-created)
+  policy object resolves to the automatic default -- including permanent
+  purge -- so a custom `--no-purge` policy must be re-created or replaced
+  by the durable opt-out to survive; a CORRUPTED or unreadable object
+  disables everything instead
   (`enabled=false`, `purge_enabled=false`, custom periods), and a corrupted,
   unreadable or boundary-failing policy disables everything with the failing
   fact named — untrusted policy bytes never authorize deletion. Every disable

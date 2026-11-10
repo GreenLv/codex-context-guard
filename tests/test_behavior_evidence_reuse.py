@@ -1,9 +1,12 @@
-"""0.17.2 evidence-reuse contract: per-node input-bound reuse decisions."""
+"""0.17.2 r1 evidence-reuse contract: records bind REAL owner-executed
+results; a pass claim without a real owner run behind it is never
+established, and a recorded failure/unknown node is refused."""
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,7 +20,14 @@ reuse = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reuse)
 
 
-class BehaviorEvidenceReuseTests(unittest.TestCase):
+def sha(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class ReceiptFixture(unittest.TestCase):
+    """A minimal owner receipt bound to REAL files in a scratch root."""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -28,124 +38,152 @@ class BehaviorEvidenceReuseTests(unittest.TestCase):
                                                           encoding="utf-8")
         (self.root / "tests" / "test_product.py").write_text("b = 2\n",
                                                              encoding="utf-8")
-        (self.root / "tools").mkdir()
-        (self.root / "tools" / "runner.py").write_text("c = 3\n",
-                                                       encoding="utf-8")
+        (self.root / "scripts" / "runner.py").write_text("c = 3\n",
+                                                         encoding="utf-8")
+        self.receipt_path = self.root / "receipt.json"
 
-    def record(self, **overrides):
-        spec = [{"node": "tests.test_product.test_one",
-                 "code": ["scripts/product.py"],
-                 "tests": ["tests/test_product.py"],
-                 "runner": ["tools/runner.py"]}]
-        spec = [{**spec[0], **overrides.get("spec", {})}]
-        record = reuse.build_record(spec, root=self.root)
-        record = {**record, **overrides.get("record", {})}
-        return record
+    def write_receipt(self, *, outcome="passed", exit_code=0, node=None):
+        node = node or "tests/test_product.py::TestX::test_one"
+        receipt = {
+            "schema": reuse.RECEIPT_SCHEMA,
+            "produced_by": "check_incident_coverage",
+            "produced_at": "2026-11-11T00:00:00Z",
+            "candidate_binding": {"head": "0" * 40},
+            "environment": dict(reuse.current_environment()),
+            "nodes": [{
+                "node": node,
+                "row": "CGI-X",
+                "outcome": outcome,
+                "exit_code": exit_code,
+                "test_file_sha256": sha(self.root / "tests" / "test_product.py"),
+                "bindings": {
+                    "code": {"scripts/product.py":
+                             sha(self.root / "scripts" / "product.py")},
+                    "caller": {"scripts/runner.py":
+                               sha(self.root / "scripts" / "runner.py")},
+                    "schema": {},
+                    "tests": {"tests/test_product.py":
+                              sha(self.root / "tests" / "test_product.py")},
+                    "runner": {"scripts/runner.py":
+                               sha(self.root / "scripts" / "runner.py")},
+                    "deps": {},
+                    "config": {},
+                },
+            }],
+        }
+        self.receipt_path.write_text(json.dumps(receipt) + "\n",
+                                     encoding="utf-8")
+        return receipt
 
-    def test_unchanged_inputs_reuse_and_acceptance_established(self):
-        record = self.record()
-        verdict = reuse.evaluate(record, self.root)
+    def build(self, **kwargs):
+        self.write_receipt(**kwargs)
+        return reuse.build_record_from_receipt(self.receipt_path)
+
+    def call_cli(self, *args):
+        return subprocess.run(
+            [sys.executable, "-B", str(TOOLS / "behavior_evidence_reuse.py"),
+             *args], text=True, capture_output=True, timeout=60)
+
+
+class ReceiptBindingTests(ReceiptFixture):
+    def test_real_passed_run_reuses_with_verified_owner_receipt(self):
+        record = self.build()
+        self.assertEqual(record["source_receipt_sha256"],
+                         sha(self.receipt_path))
+        verdict = reuse.evaluate(record, self.root, receipt=self.write_receipt(),
+                                 receipt_sha256=sha(self.receipt_path))
         self.assertEqual(verdict["reusable_count"], 1)
-        self.assertEqual(verdict["stale_count"], 0)
         self.assertEqual(verdict["acceptance"], "established")
         self.assertEqual(verdict["entries"][0]["changed_inputs"], [])
 
-    def test_changed_code_test_or_runner_bytes_are_stale_with_named_input(self):
-        for group, path in (("code", "scripts/product.py"),
-                            ("tests", "tests/test_product.py"),
-                            ("runner", "tools/runner.py")):
-            with self.subTest(group=group):
-                record = self.record()
-                (self.root / path).write_text("changed\n", encoding="utf-8")
-                verdict = reuse.evaluate(record, self.root)
-                entry = verdict["entries"][0]
-                self.assertEqual(entry["verdict"], "stale")
-                self.assertEqual(entry["changed_inputs"], [f"{group}:{path}"])
-                self.assertEqual(verdict["acceptance"], "not_established")
-                (self.root / path).write_text({"code": "a = 1\n",
-                                               "tests": "b = 2\n",
-                                               "runner": "c = 3\n"}[group],
-                                              encoding="utf-8")
-
-    def test_missing_bound_file_is_stale_fail_closed(self):
-        record = self.record()
-        (self.root / "scripts" / "product.py").unlink()
+    def test_without_owner_receipt_nothing_is_established(self):
+        # The r1 counterexample: a record whose entries claim a pass with
+        # arbitrary node names and files must NEVER evaluate as
+        # established on its own.
+        record = self.build()
         verdict = reuse.evaluate(record, self.root)
+        self.assertEqual(verdict["acceptance"], "not_established")
         self.assertEqual(verdict["entries"][0]["changed_inputs"],
-                         ["code:scripts/product.py:missing"])
-        self.assertEqual(verdict["entries"][0]["verdict"], "stale")
-
-    def test_environment_change_is_stale_but_platform_family_matches_host(self):
-        record = self.record()
-        record["entries"][0]["environment"]["python"] = "3.9.0"
-        verdict = reuse.evaluate(record, self.root)
-        self.assertEqual(verdict["entries"][0]["changed_inputs"],
-                         ["environment:python"])
-
-    def test_partial_reuse_never_establishes_the_record(self):
-        record = self.record(spec={"node": "tests.test_product.test_one"})
-        second = dict(record["entries"][0])
-        second["node"] = "tests.test_product.test_two"
-        second["code"] = {"scripts/product.py": "0" * 64}
-        record["entries"].append(second)
-        verdict = reuse.evaluate(record, self.root)
-        self.assertEqual(verdict["reusable_count"], 1)
+                         ["owner_receipt:not_verified"])
         self.assertEqual(verdict["stale_count"], 1)
+
+    def test_tampered_receipt_digest_is_refused(self):
+        record = self.build()
+        other = self.root / "other.json"
+        other.write_text(json.dumps(self.write_receipt()), encoding="utf-8")
+        # Same content re-serialized under a different name: the record's
+        # bound digest does not match the presented receipt file.
+        with self.assertRaisesRegex(ValueError, "receipt"):
+            reuse.evaluate(record, self.root,
+                           receipt=json.loads(other.read_text()),
+                           receipt_sha256=sha(other))
+
+    def test_failed_node_is_refused_at_build_time(self):
+        self.write_receipt(outcome="failed", exit_code=1)
+        with self.assertRaisesRegex(ValueError, "re-run the node"):
+            reuse.build_record_from_receipt(self.receipt_path)
+
+    def test_changed_code_or_environment_is_stale(self):
+        record = self.build()
+        bound_receipt = json.loads(self.receipt_path.read_text())
+        bound_sha = sha(self.receipt_path)
+        (self.root / "scripts" / "product.py").write_text("a = 2\n",
+                                                          encoding="utf-8")
+        verdict = reuse.evaluate(record, self.root, receipt=bound_receipt,
+                                 receipt_sha256=bound_sha)
+        self.assertEqual(verdict["entries"][0]["changed_inputs"],
+                         ["code:scripts/product.py"])
         self.assertEqual(verdict["acceptance"], "not_established")
 
-    def test_unrecognized_record_shape_is_refused(self):
-        for bad in ({}, {"schema": "other"}, {"schema": reuse.RECORD_SCHEMA}):
-            with self.subTest(bad=bool(bad)):
-                with self.assertRaises(ValueError):
-                    reuse.evaluate(bad, self.root)
+    def test_incomplete_owner_mapping_is_refused(self):
+        record = self.build()
+        del record["entries"][0]["deps"]
+        with self.assertRaisesRegex(ValueError, "deps binding missing"):
+            reuse.evaluate(record, self.root, receipt=self.write_receipt(),
+                           receipt_sha256=sha(self.receipt_path))
 
-    def test_cli_refuses_unreadable_records_and_reports_stale_nodes(self):
-        record = self.record()
-        record_path = self.root / "record.json"
-        record_path.write_text(json.dumps(record), encoding="utf-8")
-        (self.root / "tools" / "runner.py").write_text("drift\n",
-                                                       encoding="utf-8")
-        out = self.root / "verdict.json"
-        proc = __import__("subprocess").run(
-            [sys.executable, "-B", str(TOOLS / "behavior_evidence_reuse.py"),
-             "--record", str(record_path), "--root", str(self.root),
-             "--json-out", str(out)],
-            text=True, capture_output=True, timeout=60)
-        # A stale record is a nonzero outcome: silence is never reuse.
+    def test_tampered_node_claim_is_refused_not_staled(self):
+        # A record edited to claim a node the owner receipt never ran is
+        # REFUSED outright (the receipt-node binding must equal the node),
+        # never partially evaluated.
+        record = self.build()
+        bound_receipt = json.loads(self.receipt_path.read_text())
+        bound_sha = sha(self.receipt_path)
+        record["entries"][0]["result"]["receipt_node"] = \
+            "tests/test_product.py::TestX::test_never_ran"
+        with self.assertRaisesRegex(ValueError, "result must bind"):
+            reuse.evaluate(record, self.root, receipt=bound_receipt,
+                           receipt_sha256=bound_sha)
+
+    def test_record_schema_refuses_legacy_shape(self):
+        record = self.build()
+        record["schema"] = "cg-behavior-evidence/v1"
+        with self.assertRaisesRegex(ValueError, "v2"):
+            reuse.evaluate(record, self.root, receipt=self.write_receipt(),
+                           receipt_sha256=sha(self.receipt_path))
+
+    def test_cli_build_evaluate_and_refusals(self):
+        self.write_receipt()
+        out = self.root / "record.json"
+        proc = self.call_cli("--build-from-receipt", str(self.receipt_path),
+                             "--out-record", str(out))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # Evaluation without the owner receipt: not established, exit 1.
+        proc = self.call_cli("--record", str(out), "--root", str(self.root))
         self.assertEqual(proc.returncode, 1)
-        verdict = json.loads(out.read_text(encoding="utf-8"))
-        self.assertEqual(verdict["acceptance"], "not_established")
-        self.assertIn("runner:tools/runner.py", proc.stdout)
-        bad = self.root / "bad.json"
-        bad.write_text("{", encoding="utf-8")
-        proc = __import__("subprocess").run(
-            [sys.executable, "-B", str(TOOLS / "behavior_evidence_reuse.py"),
-             "--record", str(bad), "--root", str(self.root)],
-            text=True, capture_output=True, timeout=60)
+        self.assertIn("owner_receipt:not_verified", proc.stdout)
+        # With the owner receipt: established, exit 0.
+        proc = self.call_cli("--record", str(out), "--root", str(self.root),
+                             "--owner-receipt", str(self.receipt_path))
+        self.assertEqual(proc.returncode, 0)
+        verdict = json.loads(proc.stdout)
+        self.assertEqual(verdict["acceptance"], "established")
+        # A failed node in the receipt: build refused, exit 2.
+        self.write_receipt(outcome="failed", exit_code=1)
+        proc = self.call_cli("--build-from-receipt", str(self.receipt_path),
+                             "--out-record", str(self.root / "bad.json"))
         self.assertEqual(proc.returncode, 2)
-
-    def test_under_bound_or_malformed_records_are_refused(self):
-        # A missing environment never fails open, and malformed shapes are
-        # refused cleanly (ValueError, exit 2) instead of crashing.
-        for mutate in (
-                lambda e: e.pop("environment"),
-                lambda e: e["environment"].pop("machine"),
-                lambda e: e.update(runner=None),
-                lambda e: e.update(code={}),
-                lambda e: e.update(code={"../escape": "0" * 64}),
-                lambda e: e.update(code={"scripts/product.py": "zz"})):
-            with self.subTest():
-                record = self.record()
-                mutate(record["entries"][0])
-                with self.assertRaises(ValueError):
-                    reuse.evaluate(record, self.root)
-
-    def test_build_record_refuses_missing_files_upfront(self):
-        with self.assertRaisesRegex(ValueError, "missing"):
-            reuse.build_record([{
-                "node": "n", "code": ["scripts/absent.py"],
-                "tests": ["tests/test_product.py"],
-                "runner": ["tools/runner.py"]}])
+        self.assertIn("re-run the node", proc.stderr)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("upgrade", "acceptance", "retention", "scheduler")]
+    [ValidateSet("upgrade", "acceptance", "retention", "scheduler",
+                 "print-argv")]
     [string]$Target,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Arguments = @()
@@ -28,6 +29,12 @@ param(
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# Real-entry probe mode (r1 B2): echoes the parsed argument vector as
+# JSON and exits 0 without touching any target.
+if ($Target -eq "print-argv") {
+    ConvertTo-Json -InputObject @("print-argv", $Arguments) -Compress
+    exit 0
+}
 $targets = @{
     upgrade    = "native_upgrade_acceptance.py"
     acceptance = "native_acceptance.py"

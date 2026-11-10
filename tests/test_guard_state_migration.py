@@ -394,6 +394,180 @@ class ApplyControls(unittest.TestCase):
                 {row["id"] for row in manifest3["created"]})
 
 
+class SummaryUnavailableControls(unittest.TestCase):
+    """r1 D3b: an operation that COMPLETED but whose summary construction
+    failed records summary_unavailable and never rolls back; the summary
+    subcommand re-reads/exports from the persisted structured artifacts
+    only."""
+
+    def plan_for(self, base: Path):
+        shim = ApplyControls("plan_for")
+        return ApplyControls.plan_for(shim, base)
+
+    def test_summary_export_reconstructs_from_persisted_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            home, plan_path, target_root = self.plan_for(base)
+            workspace = base / "workspace"
+            self.assertEqual(0, run(["apply", "--plan", str(plan_path),
+                                     "--workspace", str(workspace)]))
+            self.assertEqual(0, run(["verify", "--plan", str(plan_path),
+                                     "--workspace", str(workspace)]))
+            before = {p: p.read_bytes() for p in target_root.rglob("*")
+                      if p.is_file()}
+            out = base / "summary-export.json"
+            self.assertEqual(0, run(["summary", "--workspace", str(workspace),
+                                     "--out", str(out)]))
+            exported = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(exported["apply_status"], "applied")
+            self.assertEqual(exported["created"], 1)
+            self.assertEqual(exported["isolated"], 1)
+            self.assertEqual(exported["verify_status"], "verified")
+            self.assertIsNone(exported["summary_unavailable"])
+            # Read-only: the exported summary changes no data-root bytes
+            # and no persisted artifact.
+            self.assertEqual(
+                before,
+                {p: p.read_bytes() for p in target_root.rglob("*")
+                 if p.is_file()})
+
+    def test_summary_refuses_another_workspace_and_never_overwrites(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            home, plan_path, _ = self.plan_for(base)
+            workspace = base / "workspace"
+            self.assertEqual(0, run(["apply", "--plan", str(plan_path),
+                                     "--workspace", str(workspace)]))
+            out = base / "summary.json"
+            self.assertEqual(0, run(["summary", "--workspace", str(workspace),
+                                     "--out", str(out)]))
+            # A foreign workspace is refused (fail closed).
+            self.assertNotEqual(0, run(["summary", "--workspace",
+                                        str(base / "nowhere")]))
+            # Exports never replace an existing file.
+            self.assertNotEqual(0, run(["summary", "--workspace",
+                                        str(workspace), "--out", str(out)]))
+
+    def test_unbound_or_truncated_verify_and_manifest_are_refused(self):
+        # r1 B3 CE1/CE2: a verify file with only stage/status/problems (no
+        # binding) is historical, never "verified"; an apply manifest
+        # missing the created group is refused, never exported as zeros.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            home, plan_path, _ = self.plan_for(base)
+            workspace = base / "workspace"
+            self.assertEqual(0, run(["apply", "--plan", str(plan_path),
+                                     "--workspace", str(workspace)]))
+            # CE1: unbound verify result -> historical_unbound, not verified.
+            (workspace / "verify-result.json").write_text(json.dumps(
+                {"schema": GSM.SCHEMA, "stage": "verify",
+                 "status": "verified", "problems": []}),
+                encoding="utf-8")
+            exported, _ = GSM._export_summary(workspace)
+            self.assertEqual(exported["verify_status"], "historical_unbound")
+            # CE2: truncated apply manifest (created group missing) ->
+            # refused, never zeros.
+            manifest = json.loads(
+                (workspace / "apply-manifest.json").read_text(encoding="utf-8"))
+            broken = {k: v for k, v in manifest.items() if k != "created"}
+            (workspace / "apply-manifest.json").write_text(
+                json.dumps(broken), encoding="utf-8")
+            with self.assertRaisesRegex(GSM.MigrationError,
+                                        "rows missing|does not bind"):
+                GSM._export_summary(workspace)
+
+    def test_target_changed_after_verify_is_reported_stale(self):
+        # r1 B3 CE3: a bound verify result whose copies changed afterwards
+        # is reported stale with the changed row named -- never "verified".
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            home, plan_path, target_root = self.plan_for(base)
+            workspace = base / "workspace"
+            self.assertEqual(0, run(["apply", "--plan", str(plan_path),
+                                     "--workspace", str(workspace)]))
+            self.assertEqual(0, run(["verify", "--plan", str(plan_path),
+                                     "--workspace", str(workspace)]))
+            copied = target_root / "0dd00000-0000-0000-0000-000000000001"
+            state = json.loads((copied / "state.json").read_text(encoding="utf-8"))
+            state["changed_after_verify"] = True
+            (copied / "state.json").write_text(json.dumps(state),
+                                               encoding="utf-8")
+            exported, _ = GSM._export_summary(workspace)
+            self.assertEqual(exported["verify_status"], "stale")
+            self.assertEqual(exported["verify_stale"][0]["id"],
+                             "0dd00000-0000-0000-0000-000000000001")
+
+    def test_export_output_refuses_protected_roots_and_links(self):
+        # r1 B3 CE4: the export path may not live in (or point into) a
+        # protected data root, and dangling symlinks are never followed.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            home, plan_path, target_root = self.plan_for(base)
+            workspace = base / "workspace"
+            self.assertEqual(0, run(["apply", "--plan", str(plan_path),
+                                     "--workspace", str(workspace)]))
+            inside = target_root / "sessions-v2" / "summary.json"
+            self.assertNotEqual(0, run(["summary", "--workspace",
+                                        str(workspace), "--out", str(inside)]))
+            self.assertFalse(inside.exists())
+            # A dangling symlink pointing INTO the data root is refused
+            # before any creation.
+            link = base / "dangling.json"
+            try:
+                link.symlink_to(target_root / "sessions-v2" / "smuggled.json")
+            except OSError:
+                self.skipTest("symlink creation capability unavailable")
+            self.assertNotEqual(0, run(["summary", "--workspace",
+                                        str(workspace), "--out", str(link)]))
+            self.assertFalse((target_root / "sessions-v2" / "smuggled.json").exists())
+            self.assertFalse(link.exists())
+            # A regular path outside the roots still exports exclusively.
+            ok = base / "summary.json"
+            self.assertEqual(0, run(["summary", "--workspace",
+                                     str(workspace), "--out", str(ok)]))
+            self.assertTrue(ok.is_file())
+
+    def test_apply_summary_failure_records_fact_without_rollback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            home, plan_path, target_root = self.plan_for(base)
+            workspace = base / "workspace"
+            import importlib.util as _iu
+            from unittest import mock
+            spec = _iu.spec_from_file_location(
+                "mig", str(Path(__file__).resolve().parents[1]
+                           / "tools" / "guard_state_migration.py"))
+            mig = _iu.module_from_spec(spec)
+            spec.loader.exec_module(mig)
+            real_dumps = json.dumps
+
+            def poisoned_dumps(value, *a, **k):
+                # Poison ONLY the run's stdout summary shape: the summary
+                # dict built by cmd_apply hits a missing key.
+                if isinstance(value, dict) and set(value) >= {"created",
+                                                              "workspace"}:
+                    broken = dict(value)
+                    broken.pop("created")
+                    return real_dumps(broken["created"], *a, **k)
+                return real_dumps(value, *a, **k)
+
+            with mock.patch.object(GSM.json, "dumps", poisoned_dumps):
+                code = GSM.main(["apply", "--plan", str(plan_path),
+                                 "--workspace", str(workspace)])
+            # The exit code derives from the structured manifest state.
+            self.assertEqual(0, code)
+            manifest = json.loads((workspace / "apply-manifest.json").read_text(
+                encoding="utf-8"))
+            self.assertEqual(manifest["status"], "applied")
+            self.assertEqual(manifest.get("summary_unavailable"), "KeyError")
+            # The copies are intact and the summary subcommand reconstructs
+            # the same counts from the persisted artifacts alone.
+            exported, _ = GSM._export_summary(workspace)
+            self.assertEqual(exported["created"], 1)
+            self.assertEqual(exported["isolated"], 1)
+            self.assertEqual(exported["apply_status"], "applied")
+
+
 class VerifyRestoreControls(unittest.TestCase):
     def full_cycle(self, base: Path):
         home = make_home(base)
