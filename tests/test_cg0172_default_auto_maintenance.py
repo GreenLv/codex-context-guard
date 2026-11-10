@@ -316,18 +316,17 @@ class TriggerDecisionTests(RetentionFixtureBase):
             outcomes.append(cg._retention_release_claim_object(claim,
                                                                token=token))
 
-        threads = [threading.Thread(target=attempt, args=("owner",)),
-                   threading.Thread(target=attempt, args=("other",))]
+        # Competing attempts by the owner are idempotent. A different
+        # token could take the mutex and be refused while the owner is
+        # busy, which would leave the claim for a later attempt.
+        threads = [threading.Thread(target=attempt, args=("owner",)) for _ in range(2)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
-        # Exactly one participant releases; the other is refused with a
-        # no-delete outcome (busy under the object lock, or a token
-        # mismatch if it verified after the winner's unlink window).
         self.assertEqual(outcomes.count("released"), 1)
         self.assertIn(outcomes[0] if outcomes[0] != "released" else outcomes[1],
-                      ("busy", "token_mismatch"))
+                      ("busy", "absent"))
         self.assertFalse(claim.exists())
 
     def test_release_is_cross_process_exclusive(self):
