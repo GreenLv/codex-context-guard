@@ -592,14 +592,6 @@ class PublicContractTests(unittest.TestCase):
                 "context-guard diagnose",
             ):
                 self.assertIn(term, readme)
-        self.assertIn(
-            f"[release notes](docs/releases/v{contract.VERSION}.md)",
-            english,
-        )
-        self.assertIn(
-            f"[发布说明](docs/releases/v{contract.VERSION}.md)",
-            chinese,
-        )
         self.assertIn("Waiting for the user, an external result", english)
         self.assertIn("等待用户、外部结果或明确延期", chinese)
         self.assertIn("The message is normal when requested work is still open.", english)
@@ -670,6 +662,13 @@ class PublicContractTests(unittest.TestCase):
         self.assertEqual(
             version_heading.findall(changelog), version_heading.findall(changelog_zh)
         )
+        latest_published = next(
+            version for version, date in version_heading.findall(changelog) if date
+        )
+        release_notes = f"docs/releases/v{latest_published}.md"
+        self.assertTrue((ROOT / release_notes).is_file())
+        self.assertIn(f"[release notes]({release_notes})", english)
+        self.assertIn(f"[发布说明]({release_notes})", chinese)
         self.assertIn("### 变更", changelog_zh)
         self.assertIn("### 验证", changelog_zh)
         self.assertNotIn("execution checklist", english + changelog)

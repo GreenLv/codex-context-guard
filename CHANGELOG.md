@@ -4,6 +4,21 @@
 
 Versions are listed newest first. See [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) for published versions and [local acceptance](docs/LOCAL_ACCEPTANCE.md) for test results and platform limits. The [original detailed changelog](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.md) preserves the earlier implementation and validation notes.
 
+## 0.17.2 — Unreleased
+
+### Highlights
+
+- The README explains what Context Guard does and how to try it. Earlier changelog entries now put the most important changes first.
+
+### Changes
+
+- The session storage guide shows how to preview cleanup, move records to quarantine and restore them. Cleanup behavior is unchanged.
+- The ZIP includes the revised guides and changelog under a new version. The 0.17.1 release remains available from its original tag.
+
+### Validation
+
+- This is a source candidate. See the 0.17.1 entry for the latest published release and its acceptance results.
+
 ## 0.17.1 — 2026-11-09
 
 ### Highlights

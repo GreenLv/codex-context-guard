@@ -14,6 +14,8 @@ Context Guard 帮 Codex 在长任务里记住你交代过的要求。执行 `/co
 
 **最新发布版是 0.17.1。** 如果你已经装过，请先处理还依赖旧插件的任务。升级指南会说明哪些版本可以在原入口升级，哪些需要换入口。 [发布说明](docs/releases/v0.17.1.md) · [升级指南](docs/UPGRADE_0_17_1.zh-CN.md)
 
+主分支正在准备[尚未发布的 0.17.2 源码候选](CHANGELOG.zh-CN.md#0172--未发布)。以下步骤安装的是 0.17.1。
+
 ## 用 Codex 安装
 
 需要 Python 3.10 或更新版本，以及能加载插件和自动脚本（Hook）的 Codex 客户端。先运行 `codex plugin list --json`。如果列表里已有任何 Context Guard 入口，请按[升级指南](docs/UPGRADE_0_17_1.zh-CN.md)选择路线。下面是首次安装的步骤。

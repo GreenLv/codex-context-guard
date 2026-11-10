@@ -4,6 +4,21 @@
 
 版本从新到旧排列。正式发布的版本见 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases)，测试结果和平台范围见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。[原始详细更新日志](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.zh-CN.md)保留了此前逐项记录的实现和验证过程。
 
+## 0.17.2 — 未发布
+
+### 亮点
+
+- README 更直接地说明了 Context Guard 的用途和试用方法。历史更新日志把各版最重要的改动放到了前面。
+
+### 变更
+
+- 会话存储指南补充了如何预览清理、隔离记录和恢复记录。清理行为没有变化。
+- 新版本的 ZIP 收录修订后的指南和更新日志。0.17.1 的发行包仍可从原发布标签获取。
+
+### 验证
+
+- 本版是源码候选。最新正式版及其验收结果见下方 0.17.1 条目。
+
 ## 0.17.1 — 2026-11-09
 
 ### 亮点

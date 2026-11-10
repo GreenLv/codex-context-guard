@@ -4,6 +4,13 @@ The release entries begin with the newest version. Historical candidate
 sections preserve the status of their specific source revision at the time of
 review; a later release of the same version does not change that evidence.
 
+## 0.17.2 — Unreleased
+
+The ZIP includes the revised README, changelog and guides. Those files and
+the version metadata have a new distribution manifest. The nine Hooks,
+schema 13, Stop protocol 5.0.0 and retention behavior are unchanged. The
+0.17.1 release and its checksums are tied to the published tag.
+
 ## 0.17.1 — 2026-11-09
 
 Schema 13, Stop protocol 5.0.0, the nine Hook events, and the default
