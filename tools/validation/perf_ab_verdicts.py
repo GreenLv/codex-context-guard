@@ -18,9 +18,11 @@ tail-only regression whose median LoCI is exactly 1 and whose p95 LoCI is
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import random
+import sys
 from pathlib import Path
 
 RESAMPLES = 10_000
@@ -85,9 +87,46 @@ def delta_hi99(baseline, candidate, statistic, rng):
     return deltas[min(len(deltas) - 1, math.ceil(0.99 * len(deltas)) - 1)]
 
 
-def validate_scoped(raw, scope):
+def inspect_windows_wrappers(raw: dict, scope: dict) -> dict[str, str]:
+    """Recompute wrappers from independently re-identified runtime trees."""
+    root = Path(__file__).resolve().parents[2]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from tools.validation.acceptance_identity import runtime_tree_digest
+
+    identities = raw.get("identities")
+    if not isinstance(identities, dict):
+        raise ValueError("runtime tree identities missing")
+    wrappers = {}
+    for side in ("baseline", "candidate"):
+        location = identities.get(f"{side}_tree")
+        if not isinstance(location, str) or not location:
+            raise ValueError(f"{side} runtime tree location missing")
+        tree = Path(location).resolve(strict=True)
+        if not tree.is_dir():
+            raise ValueError(f"{side} runtime tree is not a directory")
+        expected = scope.get(f"{side}_runtime_digest")
+        if runtime_tree_digest(tree) != expected:
+            raise ValueError(f"{side} runtime tree identity differs")
+        try:
+            hooks = json.loads((tree / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+            wrapper = hooks["hooks"]["SessionEnd"][0]["hooks"][0]["commandWindows"]
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{side} SessionEnd Windows wrapper missing") from exc
+        if not isinstance(wrapper, str) or not wrapper:
+            raise ValueError(f"{side} SessionEnd Windows wrapper invalid")
+        if runtime_tree_digest(tree) != expected:
+            raise ValueError(f"{side} runtime tree changed during wrapper inspection")
+        wrappers[side] = hashlib.sha256(wrapper.encode("utf-8")).hexdigest()
+    return wrappers
+
+
+def validate_scoped(raw, scope, windows_shell_identity=None, windows_wrapper_hashes=None):
     """Reject partial/censored batches and identity or declaration drift."""
-    if (raw.get('mode') != 'scoped-formal' or raw.get('scope_manifest') != scope
+    if (not isinstance(scope, dict)
+            or set(scope) != {'schema', 'cells', 'attempts', 'baseline_runtime_digest',
+                              'candidate_runtime_digest', 'budgets'}
+            or raw.get('mode') != 'scoped-formal' or raw.get('scope_manifest') != scope
             or scope.get('schema') != 'perf-scoped/v1'
             or raw.get('execution_state') != 'completed'
             or raw.get('accepted') is not True or raw.get('coverage_complete') is not True
@@ -106,6 +145,24 @@ def validate_scoped(raw, scope):
                 or any(c not in '0123456789abcdef' for c in expected)
                 or identities.get(f'{side}_runtime_digest') != expected):
             raise ValueError('scoped identity differs')
+    shell = identities.get('windows_shell')
+    if (sys.platform == 'win32' and cells == ['session_end']
+            and shell is None and windows_shell_identity is None):
+        raise ValueError('Windows session_end requires explicit shell verification')
+    if shell is not None or windows_shell_identity is not None or windows_wrapper_hashes is not None:
+        if (not isinstance(shell, dict) or set(shell) != {'before', 'after', 'wrapper_sha256'}
+                or windows_shell_identity is None or windows_wrapper_hashes is None
+                or cells != ['session_end']
+                or shell.get('before') != windows_shell_identity
+                or shell.get('after') != windows_shell_identity):
+            raise ValueError('explicit Windows shell identity differs or is missing')
+        wrappers = shell.get('wrapper_sha256')
+        if (not isinstance(wrappers, dict) or set(wrappers) != {'baseline', 'candidate'}
+                or wrappers != windows_wrapper_hashes
+                or any(not isinstance(value, str) or len(value) != 64
+                       or any(c not in '0123456789abcdef' for c in value)
+                       for value in wrappers.values())):
+            raise ValueError('Windows wrapper identity differs or is missing')
     budgets = scope.get('budgets')
     if not isinstance(budgets, dict) or set(budgets) != ({'elapsed', 'peak_bytes'} if 'memory_stop' in cells else {'elapsed'}):
         raise ValueError('missing metric budgets')
@@ -122,6 +179,8 @@ def validate_scoped(raw, scope):
             if len(rows) != n:
                 raise ValueError('scoped sample count differs')
             for index, row in enumerate(rows):
+                if shell is not None and row.get('wrapper_sha256') != wrappers[side]:
+                    raise ValueError('Windows sample wrapper differs')
                 metrics = ['stop_wall' if cell == 'stop_s1' else 'elapsed'] + (['peak_bytes'] if cell == 'memory_stop' else [])
                 if (row.get('index') != index or row.get('side') != side
                         or row.get('outcome_class') != 'completed' or row.get('assertion') != 'ok'
@@ -144,11 +203,15 @@ def cell_metrics(cell: str, rows_baseline: list[dict], rows_candidate: list[dict
     return metrics
 
 
-def verdicts_from_raw(raw: dict, seed: int = SEED, scope: dict | None = None) -> dict:
+def verdicts_from_raw(raw: dict, seed: int = SEED, scope: dict | None = None,
+                      windows_shell_identity: dict | None = None,
+                      windows_wrapper_hashes: dict | None = None) -> dict:
     if raw.get('mode') == 'scoped-formal' and scope is None:
         raise ValueError('scoped-formal results require their scope manifest')
     if scope is not None:
-        validate_scoped(raw, scope)
+        validate_scoped(raw, scope, windows_shell_identity, windows_wrapper_hashes)
+    elif raw.get("identities", {}).get("windows_shell") is not None or windows_shell_identity is not None or windows_wrapper_hashes is not None:
+        raise ValueError("explicit Windows shell requires a scoped formal result")
     rng = random.Random(seed)
     verdicts = {}
     declared = []
@@ -256,10 +319,14 @@ def main(argv=None) -> int:
                         help="formal A/B raw JSON; omit with --check-tail-oracle")
     parser.add_argument("--out", type=Path)
     parser.add_argument('--scope-manifest', type=Path)
+    parser.add_argument('--windows-shell', type=Path,
+                        help='recheck the explicit Windows shell used for sampling')
     parser.add_argument("--check-tail-oracle", action="store_true",
                         help="run the synthetic tail-only negative control")
     args = parser.parse_args(argv)
     if args.check_tail_oracle:
+        if args.windows_shell is not None:
+            parser.error('--windows-shell is not used by the tail oracle')
         report = verdicts_from_raw(synthetic_tail_only())
         cell = report["verdicts"]["synthetic-tail-only-regression"]
         ok = (cell["verdict"] == "DECLARED-SLOWER(p95)"
@@ -277,7 +344,24 @@ def main(argv=None) -> int:
     scope = json.loads(args.scope_manifest.read_text(encoding='utf-8')) if args.scope_manifest else None
     if raw.get('mode') == 'scoped-formal' and scope is None:
         parser.error('scoped-formal results require their scope manifest')
-    report = verdicts_from_raw(raw, scope=scope)
+    shell_identity = None
+    wrapper_hashes = None
+    if args.windows_shell is not None:
+        # Resolve through the producer's exact inspector so preflight and
+        # independent consumer enforce identical executable/version facts.
+        root = Path(__file__).resolve().parents[2]
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from tools.validation.perf_ab import inspect_windows_shell
+        try:
+            shell_identity = inspect_windows_shell(args.windows_shell)
+            if scope is None:
+                raise ValueError("explicit Windows shell requires a scoped formal result")
+            wrapper_hashes = inspect_windows_wrappers(raw, scope)
+        except (OSError, ValueError) as exc:
+            parser.error(f'Windows shell verification failed: {exc}')
+    report = verdicts_from_raw(raw, scope=scope, windows_shell_identity=shell_identity,
+                               windows_wrapper_hashes=wrapper_hashes)
     target = args.out or args.raw.with_name(
         args.raw.name.replace(".json", "-verdicts.json"))
     target.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")

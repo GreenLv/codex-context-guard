@@ -31,6 +31,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -52,6 +53,57 @@ LIFECYCLE_PAIRS = 50  # planned 100-event matched cell
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
+
+
+def inspect_windows_shell(path: Path) -> dict:
+    """Bind the explicit native PowerShell executable and its actual version."""
+    if sys.platform != "win32":
+        raise ValueError("--windows-shell is supported only on Windows")
+    if not path.is_absolute() or path.suffix.lower() != ".exe" or path.is_symlink() or not path.is_file():
+        raise ValueError("Windows shell must be an absolute regular .exe")
+    shell = path.resolve(strict=True)
+
+    def file_hash() -> str:
+        digest = hashlib.sha256()
+        with shell.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    before = file_hash()
+    try:
+        completed = subprocess.run(
+            [str(shell), "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30, check=False)
+        version = completed.stdout.decode("utf-8-sig").strip()
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
+        raise ValueError("Windows shell version probe failed") from exc
+    if (completed.returncode != 0 or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?", version)
+            or file_hash() != before):
+        raise ValueError("Windows shell version or file identity is invalid")
+    return {"path": str(shell), "version": version, "sha256": before}
+
+
+def preflight_windows_wrappers(shell: dict, wrappers: dict[str, str]) -> dict[str, str]:
+    """Parse the exact production commandWindows for each measured tree."""
+    script = ("$tokens=$null; $errors=$null; "
+              "[void][System.Management.Automation.Language.Parser]::ParseInput("
+              "$env:CG_PERF_WRAPPER_INPUT,[ref]$tokens,[ref]$errors); "
+              "if ($errors.Count -ne 0) { exit 2 }; [Console]::Out.Write('CG-PARSE-OK')")
+    result = {}
+    for side, wrapper in wrappers.items():
+        env = dict(os.environ, CG_PERF_WRAPPER_INPUT=wrapper)
+        try:
+            completed = subprocess.run([shell["path"], "-NoProfile", "-Command", script],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, env=env, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("Windows production wrapper parse probe failed") from exc
+        if completed.returncode != 0 or completed.stdout != b"CG-PARSE-OK":
+            raise ValueError("Windows production wrapper parse probe failed")
+        result[side] = sha256_bytes(wrapper.encode("utf-8"))
+    return result
 
 def load_wrapper(tree: Path, event: str) -> str:
     hooks = json.loads((tree / "hooks" / "hooks.json").read_text(encoding="utf-8"))
@@ -194,7 +246,7 @@ EVENT_RECOVERY_SECONDS = 5.0
 
 
 def run_event(wrapper: str, tree: Path, data_dir: Path, payload: bytes,
-              timeout: float) -> dict:
+              timeout: float, *, windows_shell: str | None = None) -> dict:
     # Determine the reviewed runtime shape before the Hook clock starts.
     try:
         event = json.loads(payload).get("hook_event_name")
@@ -214,7 +266,7 @@ def run_event(wrapper: str, tree: Path, data_dir: Path, payload: bytes,
     try:
         owner = OwnedProcess.spawn(
             ["sh", "-c", wrapper] if sys.platform != "win32"
-            else ["powershell", "-NoProfile", "-Command", wrapper],
+            else [windows_shell or "powershell", "-NoProfile", "-Command", wrapper],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=dict(os.environ, PLUGIN_ROOT=str(tree), CODEX_HOME=str(data_dir.parent),
                      CONTEXT_GUARD_DATA_DIR=str(data_dir)))
@@ -898,9 +950,11 @@ def run_busy_lock_session_end_attempt(tree: Path, data_dir: Path) -> dict:
 
 
 def run_standard_attempt(wrapper: str, tree: Path, cell: str, spec: dict,
-                         data_dir: Path, timeout: float) -> dict:
+                         data_dir: Path, timeout: float, *,
+                         windows_shell: str | None = None) -> dict:
     payload = json.dumps(spec["payload"], ensure_ascii=False).encode("utf-8")
-    timing = run_event(wrapper, tree, data_dir, payload, timeout)
+    timing = (run_event(wrapper, tree, data_dir, payload, timeout, windows_shell=windows_shell)
+              if windows_shell is not None else run_event(wrapper, tree, data_dir, payload, timeout))
     row = {"event": cell, "payload_sha256": sha256_bytes(payload),
            "returncode": timing["returncode"], "error": timing["error"],
            "outcome_class": classify_outcome(timing.get("elapsed_raw", timing["elapsed"]),
@@ -909,6 +963,8 @@ def run_standard_attempt(wrapper: str, tree: Path, cell: str, spec: dict,
     check_semantics(cell, row, data_dir, timing["_stdout"],
                     {"session": spec.get("session")})
     row.update(report_row(timing))
+    if windows_shell is not None:
+        row["wrapper_sha256"] = sha256_bytes(wrapper.encode("utf-8"))
     return row
 
 
@@ -1216,6 +1272,8 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=None,
                         help="optional tighter timeout; declared event deadlines remain upper bounds")
+    parser.add_argument("--windows-shell", type=Path, default=None,
+                        help="absolute PowerShell executable for Windows session_end")
     parser.add_argument("--wrapper-override", default=None,
                         help="negative-testing only: replace every cell's wrapper; "
                              "refused together with --formal")
@@ -1285,6 +1343,22 @@ def main() -> int:
         parser.error("unknown, empty or duplicate cell selection")
     if args.formal and not scope and set(selected) != set(cell_specs()):
         parser.error("formal batches require the full registered cell profile")
+    if scope and sys.platform == "win32" and selected == ["session_end"] and args.windows_shell is None:
+        parser.error("Windows scoped session_end requires --windows-shell")
+    shell_identity = None
+    if args.windows_shell is not None:
+        if selected != ["session_end"] or args.wrapper_override:
+            parser.error("--windows-shell requires only session_end and the production wrapper")
+        try:
+            shell_identity = inspect_windows_shell(args.windows_shell)
+            wrapper_hashes = preflight_windows_wrappers(shell_identity, {
+                "baseline": load_wrapper(args.baseline, "SessionEnd"),
+                "candidate": load_wrapper(args.candidate, "SessionEnd"),
+            })
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            parser.error(f"Windows shell preflight failed: {exc}")
+        identities["windows_shell"] = {"before": shell_identity, "after": None,
+                                        "wrapper_sha256": wrapper_hashes}
 
     report = {"mode": "scoped-formal" if scope else ("formal" if args.formal else "diagnostic"),
               "predeclared_attempts_per_cell": args.attempts, "fail_fast": args.fail_fast,
@@ -1374,7 +1448,11 @@ def main() -> int:
                         elif cell == "stop_s1":
                             result = run_stop_cell(tree, 1, home)
                         else:
-                            result = run_standard_attempt(wrapper, tree, cell, spec, data_dir, budget)
+                            if shell_identity is None:
+                                result = run_standard_attempt(wrapper, tree, cell, spec, data_dir, budget)
+                            else:
+                                result = run_standard_attempt(wrapper, tree, cell, spec, data_dir, budget,
+                                                              windows_shell=shell_identity["path"])
                         row.update(result)
                         row["host_deadline"] = budget
                 except BaseException as exc:  # preserve event ownership on interruption
@@ -1432,6 +1510,14 @@ def main() -> int:
                 break
         if not stop:
             report["execution_state"] = "completed"
+        if shell_identity is not None:
+            try:
+                observed_after = inspect_windows_shell(Path(shell_identity["path"]))
+                report["identities"]["windows_shell"]["after"] = observed_after
+                if observed_after != shell_identity:
+                    report["driver_failure"] = "Windows shell identity changed during sampling"
+            except (OSError, ValueError) as exc:
+                report["driver_failure"] = "Windows shell identity unavailable after sampling: " + type(exc).__name__
         finalize_report(report, selected, args.attempts)
         persist()
     except ReportPublicationError as exc:

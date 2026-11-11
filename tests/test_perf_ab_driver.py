@@ -1167,5 +1167,125 @@ class NaturalQuiescenceTests(unittest.TestCase):
         self.assertEqual(record['observations'], 0)
 
 
+class ExplicitWindowsShellTests(unittest.TestCase):
+    def setUp(self):
+        from tools.validation import perf_ab
+        self.driver = perf_ab
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.shell = self.root / 'pwsh.exe'
+        self.shell.write_bytes(b'fake shell executable')
+
+    def test_version_identity_and_exact_production_parse_arguments(self):
+        from types import SimpleNamespace
+        def run(argv, **kwargs):
+            self.assertEqual(argv[:3], [str(self.shell.resolve()), '-NoProfile', '-Command'])
+            if 'CG_PERF_WRAPPER_INPUT' in kwargs.get('env', {}):
+                self.assertIn('Parser]::ParseInput', argv[3])
+                seen.append(kwargs['env']['CG_PERF_WRAPPER_INPUT'])
+                return SimpleNamespace(returncode=0, stdout=b'CG-PARSE-OK')
+            self.assertEqual(argv[3], '$PSVersionTable.PSVersion.ToString()')
+            return SimpleNamespace(returncode=0, stdout=b'7.5.0\n')
+        seen = []
+        wrappers = {'baseline': '$value = "a b"', 'candidate': '$value = "中文"'}
+        with patch.object(sys, 'platform', 'win32'), patch.object(self.driver.subprocess, 'run', side_effect=run):
+            identity = self.driver.inspect_windows_shell(self.shell)
+            hashes = self.driver.preflight_windows_wrappers(identity, wrappers)
+        self.assertEqual(identity['version'], '7.5.0')
+        self.assertEqual(identity['sha256'], self.driver.sha256_bytes(self.shell.read_bytes()))
+        self.assertEqual(seen, list(wrappers.values()))
+        self.assertEqual(hashes, {name: self.driver.sha256_bytes(text.encode())
+                                  for name, text in wrappers.items()})
+
+    def test_missing_changed_and_bad_version_are_rejected(self):
+        from types import SimpleNamespace
+        with patch.object(sys, 'platform', 'win32'):
+            with self.assertRaisesRegex(ValueError, 'absolute regular'):
+                self.driver.inspect_windows_shell(self.root / 'missing.exe')
+            for returncode, stdout in ((0, b'bad-version'), (1, b'7.5.0')):
+                with self.subTest(returncode=returncode, stdout=stdout), \
+                        patch.object(self.driver.subprocess, 'run',
+                                     return_value=SimpleNamespace(returncode=returncode, stdout=stdout)), \
+                        self.assertRaisesRegex(ValueError, 'version or file identity'):
+                    self.driver.inspect_windows_shell(self.shell)
+            def changed(*_args, **_kwargs):
+                self.shell.write_bytes(b'changed executable')
+                return SimpleNamespace(returncode=0, stdout=b'7.5.0')
+            with patch.object(self.driver.subprocess, 'run', side_effect=changed), \
+                    self.assertRaisesRegex(ValueError, 'version or file identity'):
+                self.driver.inspect_windows_shell(self.shell)
+
+    def test_bad_production_parse_output_is_rejected(self):
+        from types import SimpleNamespace
+        identity = {'path': str(self.shell), 'version': '7.5.0', 'sha256': 'a' * 64}
+        with patch.object(self.driver.subprocess, 'run',
+                          return_value=SimpleNamespace(returncode=0, stdout=b'wrong')), \
+                self.assertRaisesRegex(ValueError, 'wrapper parse probe failed'):
+            self.driver.preflight_windows_wrappers(identity, {'candidate': 'production command'})
+
+    def test_non_windows_rejects_explicit_shell(self):
+        with patch.object(sys, 'platform', 'darwin'), \
+                self.assertRaisesRegex(ValueError, 'only on Windows'):
+            self.driver.inspect_windows_shell(self.shell)
+
+    def test_explicit_shell_cannot_select_other_cells_or_wrapper_override(self):
+        for extra in (['--cells', 'pretool_safe'],
+                      ['--cells', 'session_end', '--wrapper-override', 'echo test']):
+            argv = ['perf_ab', '--baseline', str(REPO_ROOT), '--candidate', str(REPO_ROOT),
+                    '--attempts', '1', '--windows-shell', str(self.shell),
+                    '--out', str(self.root / 'bad.json'), *extra]
+            with self.subTest(extra=extra), patch.object(sys, 'argv', argv), \
+                    patch.object(self.driver, 'load_hasher', return_value=True), \
+                    patch.object(self.driver, 'tree_digest', return_value='a' * 64), \
+                    patch.object(self.driver, 'source_identities', return_value={}), \
+                    self.assertRaises(SystemExit) as stopped:
+                self.driver.main()
+            self.assertEqual(stopped.exception.code, 2)
+            self.assertFalse((self.root / 'bad.json').exists())
+
+    def test_real_event_call_passes_exact_wrapper_without_requoting(self):
+        from types import SimpleNamespace
+        process = SimpleNamespace(pid=123, args=['fixture'], returncode=0,
+                                  poll=lambda: 0, communicate=lambda *a, **kw: (b'{}', b''))
+        owner = SimpleNamespace(process=process, close=lambda timeout: {
+            'owned_process_exited': True, 'owned_tree_no_running_members': True})
+        wrapper = '$f = "C:\\Program Files\\中文"; & $f hook SessionEnd'
+        with patch.object(sys, 'platform', 'win32'), \
+                patch.object(self.driver, '_session_end_worker_mode', return_value='disabled'), \
+                patch.object(self.driver.OwnedProcess, 'spawn', return_value=owner) as spawn, \
+                patch.object(self.driver, 'observe_natural_completion',
+                             return_value={'no_running_members': True}):
+            timing = self.driver.run_event(wrapper, REPO_ROOT, self.root,
+                                           b'{"hook_event_name":"SessionEnd"}', 3.0,
+                                           windows_shell=str(self.shell))
+        self.assertIsNone(timing['error'])
+        self.assertEqual(spawn.call_args.args[0],
+                         [str(self.shell), '-NoProfile', '-Command', wrapper])
+
+    def test_windows_scoped_session_end_cannot_omit_explicit_shell(self):
+        digest = 'a' * 64
+        manifest = self.root / 'scope.json'
+        manifest.write_text(json.dumps({
+            'schema': 'perf-scoped/v1', 'cells': ['session_end'], 'attempts': 20,
+            'baseline_runtime_digest': digest, 'candidate_runtime_digest': digest,
+            'budgets': {'elapsed': {'relative': 0.1, 'absolute': 0.05}},
+        }), encoding='utf-8')
+        output = self.root / 'missing-shell.json'
+        argv = ['perf_ab', '--baseline', str(REPO_ROOT), '--candidate', str(REPO_ROOT),
+                '--attempts', '20', '--formal', '--scope-manifest', str(manifest),
+                '--out', str(output)]
+        with patch.object(sys, 'argv', argv), patch.object(sys, 'platform', 'win32'), \
+                patch.object(self.driver, 'load_hasher', return_value=True), \
+                patch.object(self.driver, 'tree_digest', return_value=digest), \
+                patch.object(self.driver, 'source_identities', return_value={}), \
+                patch.object(self.driver.OwnedProcess, 'spawn') as spawn, \
+                self.assertRaises(SystemExit) as stopped:
+            self.driver.main()
+        self.assertEqual(stopped.exception.code, 2)
+        spawn.assert_not_called()
+        self.assertFalse(output.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

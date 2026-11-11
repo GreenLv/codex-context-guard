@@ -226,3 +226,145 @@ class RepairR2PerformanceTests(unittest.TestCase):
         del contract["repair_r1_addendum"]["new_cells"]["terminal_read_large"]["budgets"]
         with self.assertRaises(ValueError):
             perf_standalone.contract_budgets(contract, "terminal_read_large")
+
+
+class ScopedWindowsShellTests(unittest.TestCase):
+    def run_batch(self, directory, *, after_changed=False):
+        root = Path(directory)
+        baseline, candidate = root / 'baseline', root / 'candidate'
+        for tree, suffix in ((baseline, 'base'), (candidate, 'candidate')):
+            (tree / 'hooks').mkdir(parents=True)
+            hook = {'hooks': {'SessionEnd': [{'hooks': [{
+                'commandWindows': '$value = "' + suffix + '"; Write-Output $value'}]}]}}
+            (tree / 'hooks/hooks.json').write_text(json.dumps(hook))
+        digest = 'a' * 64
+        scope = {'schema': 'perf-scoped/v1', 'cells': ['session_end'], 'attempts': 20,
+                 'baseline_runtime_digest': digest, 'candidate_runtime_digest': digest,
+                 'budgets': {'elapsed': {'relative': 0.1, 'absolute': 0.05}}}
+        manifest, output = root / 'scope.json', root / 'raw.json'
+        manifest.write_text(json.dumps(scope), encoding='utf-8')
+        shell = {'path': str(root / 'pwsh.exe'), 'version': '7.5.0', 'sha256': 'f' * 64}
+        expected = [shell, {**shell, 'sha256': 'e' * 64} if after_changed else shell]
+        invoked = []
+        def run(wrapper, _tree, _cell, _spec, _data, _budget, *, windows_shell):
+            invoked.append((wrapper, windows_shell))
+            return {'outcome_class': 'completed', 'assertion': 'ok', 'elapsed': 1.0,
+                    'wrapper_sha256': driver.sha256_bytes(wrapper.encode('utf-8'))}
+        argv = ['perf_ab', '--baseline', str(baseline), '--candidate', str(candidate),
+                '--attempts', '20', '--formal', '--scope-manifest', str(manifest),
+                '--windows-shell', shell['path'], '--out', str(output)]
+        with patch.object(sys, 'argv', argv), patch.object(sys, 'platform', 'win32'), \
+                patch.object(driver, 'load_hasher', return_value=True), \
+                patch.object(driver, 'tree_digest', return_value=digest), \
+                patch.object(driver, 'source_identities', return_value={}), \
+                patch.object(driver, 'inspect_windows_shell', side_effect=expected), \
+                patch.object(driver, 'preflight_windows_wrappers', side_effect=lambda _shell, wrappers: {
+                    key: driver.sha256_bytes(value.encode('utf-8')) for key, value in wrappers.items()}), \
+                patch.object(driver, 'seed_active_session'), \
+                patch.object(driver, '_session_end_worker_mode', return_value='disabled'), \
+                patch.object(driver, 'run_standard_attempt', side_effect=run):
+            rc = driver.main()
+        return rc, json.loads(output.read_text()), scope, shell, invoked
+
+    def inspected_wrappers(self, raw, scope):
+        with patch('tools.validation.acceptance_identity.runtime_tree_digest',
+                   return_value=scope['baseline_runtime_digest']):
+            return verdicts.inspect_windows_wrappers(raw, scope)
+
+    def test_explicit_shell_is_bound_and_consumer_requires_same_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rc, raw, scope, shell, invoked = self.run_batch(directory)
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(invoked), 40)
+            self.assertTrue(all(path == shell['path'] for _, path in invoked))
+            self.assertEqual(raw['scope_manifest'], scope)
+            self.assertEqual(raw['identities']['windows_shell']['before'], shell)
+            self.assertEqual(raw['identities']['windows_shell']['after'], shell)
+            wrappers = self.inspected_wrappers(raw, scope)
+            verdicts.validate_scoped(raw, scope, shell, wrappers)
+            for wrong in (None, {**shell, 'path': '/another/pwsh.exe'},
+                          {**shell, 'version': '7.4.0'}, {**shell, 'sha256': 'd' * 64}):
+                with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                    verdicts.validate_scoped(raw, scope, wrong, wrappers)
+            changed = json.loads(json.dumps(raw))
+            changed['cells']['session_end']['sides']['candidate']['raw_rows'][0]['wrapper_sha256'] = '0' * 64
+            with self.assertRaisesRegex(ValueError, 'sample wrapper differs'):
+                verdicts.validate_scoped(changed, scope, shell, wrappers)
+            changed = json.loads(json.dumps(raw))
+            del changed['identities']['windows_shell']
+            with self.assertRaisesRegex(ValueError, 'shell identity differs'):
+                verdicts.validate_scoped(changed, scope, shell, wrappers)
+            with patch.object(sys, 'platform', 'win32'), \
+                    self.assertRaisesRegex(ValueError, 'requires explicit shell'):
+                verdicts.validate_scoped(changed, scope)
+            with self.assertRaisesRegex(ValueError, 'shell identity differs'):
+                verdicts.validate_scoped(raw, scope, shell)
+            changed = json.loads(json.dumps(raw))
+            changed['identities']['windows_shell']['wrapper_sha256']['candidate'] = '0' * 64
+            for row in changed['cells']['session_end']['sides']['candidate']['raw_rows']:
+                row['wrapper_sha256'] = '0' * 64
+            with self.assertRaisesRegex(ValueError, 'wrapper identity differs'):
+                verdicts.validate_scoped(changed, scope, shell, wrappers)
+
+    def test_consumer_cli_requires_and_rechecks_explicit_shell(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rc, _raw, _scope, shell, _ = self.run_batch(directory)
+            self.assertEqual(rc, 0)
+            root = Path(directory)
+            argv = [str(root / 'raw.json'), '--scope-manifest', str(root / 'scope.json')]
+            with self.assertRaisesRegex(ValueError, 'shell identity differs'):
+                verdicts.main([*argv, '--out', str(root / 'missing-shell.json')])
+            with patch.object(driver, 'inspect_windows_shell', return_value=shell) as inspect, \
+                    patch('tools.validation.acceptance_identity.runtime_tree_digest',
+                          return_value='a' * 64):
+                code = verdicts.main([*argv, '--windows-shell', shell['path'],
+                                      '--out', str(root / 'verified.json')])
+            self.assertEqual(code, 0)
+            inspect.assert_called_once_with(Path(shell['path']))
+            with patch.object(driver, 'inspect_windows_shell',
+                              return_value={**shell, 'sha256': 'd' * 64}), \
+                    patch('tools.validation.acceptance_identity.runtime_tree_digest',
+                          return_value='a' * 64), \
+                    self.assertRaisesRegex(ValueError, 'shell identity differs'):
+                verdicts.main([*argv, '--windows-shell', shell['path'],
+                               '--out', str(root / 'wrong-shell.json')])
+
+    def test_cli_rejects_coherent_forged_wrapper_and_changed_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, raw, scope, shell, _ = self.run_batch(directory)
+            root = Path(directory)
+            raw['identities']['windows_shell']['wrapper_sha256']['candidate'] = '0' * 64
+            for row in raw['cells']['session_end']['sides']['candidate']['raw_rows']:
+                row['wrapper_sha256'] = '0' * 64
+            (root / 'raw.json').write_text(json.dumps(raw), encoding='utf-8')
+            argv = [str(root / 'raw.json'), '--scope-manifest', str(root / 'scope.json'),
+                    '--windows-shell', shell['path'], '--out', str(root / 'out.json')]
+            with patch.object(driver, 'inspect_windows_shell', return_value=shell), \
+                    patch('tools.validation.acceptance_identity.runtime_tree_digest',
+                          return_value=scope['baseline_runtime_digest']), \
+                    self.assertRaisesRegex(ValueError, 'wrapper identity differs'):
+                verdicts.main(argv)
+            with patch.object(driver, 'inspect_windows_shell', return_value=shell), \
+                    patch('tools.validation.acceptance_identity.runtime_tree_digest',
+                          return_value='b' * 64), \
+                    self.assertRaises(SystemExit):
+                verdicts.main(argv)
+
+    def test_consumer_enforces_exact_six_scope_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, raw, scope, shell, _ = self.run_batch(directory)
+            wrappers = self.inspected_wrappers(raw, scope)
+            scope['unexpected'] = True
+            raw['scope_manifest'] = scope
+            with self.assertRaisesRegex(ValueError, 'differs from declaration'):
+                verdicts.validate_scoped(raw, scope, shell, wrappers)
+
+    def test_changed_shell_after_sampling_is_failed_raw(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rc, raw, scope, shell, _ = self.run_batch(directory, after_changed=True)
+            self.assertEqual(rc, 1)
+            self.assertFalse(raw['accepted'])
+            self.assertIn('identity changed', raw['driver_failure'])
+            wrappers = self.inspected_wrappers(raw, scope)
+            with self.assertRaises(ValueError):
+                verdicts.validate_scoped(raw, scope, shell, wrappers)
