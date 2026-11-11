@@ -30,8 +30,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import importlib.util  # noqa: E402
 
+from cg_process_tree import OwnedProcess  # noqa: E402
 from test_cg0170_retention_restored import (  # noqa: E402
     RetentionFixtureBase,
+    acquire_exclusive_lock,
+    release_exclusive_lock,
     symlink_or_skip,
 )
 
@@ -217,18 +220,11 @@ class TriggerDecisionTests(RetentionFixtureBase):
         """Hold the claim MUTEX (stable lock file) like another protocol
         participant. The claim object itself is never held open across an
         unlink (Windows: WinError 32)."""
-        import fcntl
         lock_path = claim.parent / (claim.name + ".lock")
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return fd
+        return acquire_exclusive_lock(lock_path)
 
     def release_claim_lock(self, fd) -> None:
-        import fcntl
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
+        release_exclusive_lock(fd)
 
     def test_replaced_claim_survives_a_late_token_release(self):
         # The independently reproduced r1-A race: a late worker's token
@@ -335,26 +331,53 @@ class TriggerDecisionTests(RetentionFixtureBase):
         # True cross-process check: another PROCESS holding the object
         # lock makes the release busy; after it exits, the release wins.
         holder_code = (
-            "import fcntl, os, sys, time\n"
-            "fd = os.open(sys.argv[1] + '.lock', os.O_RDWR | os.O_CREAT, 0o600)\n"
-            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
-            "sys.stdout.write('held\\n'); sys.stdout.flush()\n"
-            "time.sleep(1.5)\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "sys.path.insert(0, sys.argv[2])\n"
+            "from test_cg0170_retention_restored import acquire_exclusive_lock, release_exclusive_lock\n"
+            "handle = acquire_exclusive_lock(Path(sys.argv[1] + '.lock'))\n"
+            "try:\n"
+            "    Path(sys.argv[3]).write_text('held', encoding='utf-8')\n"
+            "    if sys.stdin.readline() != 'release\\n':\n"
+            "        raise RuntimeError('missing release signal')\n"
+            "finally:\n"
+            "    release_exclusive_lock(handle)\n"
         )
         claim = locks_dir(self.data_dir) / CLAIM
         write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
                            "pid": os.getpid(), "started_at": cg.utc_now(),
                            "token": "owner"})
-        proc = subprocess.Popen(
-            [sys.executable, "-c", holder_code, str(claim)],
-            stdout=subprocess.PIPE, text=True)
-        self.assertEqual(proc.stdout.readline().strip(), "held")
-        try:
-            self.assertEqual(cg._retention_release_claim_object(
-                claim, token="owner"), "busy")
-            self.assertTrue(claim.exists())
-        finally:
-            proc.wait(timeout=30)
+        ready = self.data_dir / "claim-holder-ready"
+        error_log = self.data_dir / "claim-holder-stderr"
+        with error_log.open("w", encoding="utf-8") as errors:
+            owned = OwnedProcess.spawn(
+                [sys.executable, "-c", holder_code, str(claim),
+                 str(MODULE_PATH.parents[1] / "tests"), str(ready)],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=errors, text=True)
+            proc = owned.process
+            try:
+                deadline = time.monotonic() + 15
+                while not ready.exists() and proc.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                if not ready.is_file():
+                    errors.flush()
+                    self.fail(f"lock holder did not become ready: "
+                              f"{error_log.read_text(encoding='utf-8')}")
+                self.assertIsNone(proc.poll(), "lock holder exited before the busy assertion")
+                self.assertEqual(cg._retention_release_claim_object(
+                    claim, token="owner"), "busy")
+                self.assertTrue(claim.exists())
+                assert proc.stdin is not None
+                proc.stdin.write("release\n")
+                proc.stdin.flush()
+                self.assertEqual(proc.wait(timeout=10), 0)
+            finally:
+                result = owned.close(5)
+                if proc.stdin is not None:
+                    proc.stdin.close()
+                self.assertTrue(result["owned_process_exited"], result)
+                self.assertTrue(result["owned_tree_no_running_members"], result)
+                self.assertIsNone(result["process_group_cleanup_error"], result)
         self.assertEqual(cg._retention_release_claim_object(
             claim, token="owner"), "released")
         self.assertFalse(claim.exists())
@@ -804,6 +827,21 @@ class DisableUpgradePersistenceTests(RetentionFixtureBase):
             return subprocess.CompletedProcess(argv, 1, b"", b"")
         with mock.patch.multiple(
                 cg, _retention_schedule_platform=lambda: "macos",
+                _retention_scheduler_run=adapter,
+                _retention_macos_loaded=lambda _label: False):
+            code = self.run_policy_command("--maintenance-disable")
+        self.assertEqual(code, 0)
+        self.assertFalse(cg.read_retention_policy(self.data_dir)["enabled"])
+        record = cg._retention_read_optout(self.data_dir)
+        self.assertIsNotNone(record)
+        self.assertEqual(record.get("reason"), "maintenance-disable")
+        self.assertEqual(self.dispatched(), [])
+
+    def test_windows_maintenance_disable_records_optout_when_task_absent(self):
+        def adapter(argv):
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+        with mock.patch.multiple(
+                cg, _retention_schedule_platform=lambda: "windows",
                 _retention_scheduler_run=adapter):
             code = self.run_policy_command("--maintenance-disable")
         self.assertEqual(code, 0)
@@ -874,17 +912,24 @@ class TailAdvancementTests(RetentionFixtureBase):
                            "pid": os.getpid(), "started_at": cg.utc_now(),
                            "token": fixture_token})
         quarantined = 0
+        last_success = None
         for _ in range(40):
             code = cg._retention_trigger_child_pass(
                 self.data_dir, budget_seconds=0.35,
                 trigger_token=fixture_token)
             self.assertEqual(code, 0)
             state = cg._retention_read_trigger_state(self.data_dir)
-            quarantined += ((state.get("last_outcome") or {})
-                            .get("counts", {}).get("quarantined", 0))
+            outcome = state.get("last_outcome") or {}
+            success = state.get("last_success_at")
+            new_outcome = success is not None and success != last_success
+            if new_outcome:
+                quarantined += outcome.get("counts", {}).get("quarantined", 0)
+                last_success = success
             remaining = [entry for entry in (self.data_dir / cg.V2_NAMESPACE).iterdir()
                          if entry.name.startswith("bulk-")]
-            if not remaining:
+            # Isolating the final expired session can exhaust this pass's
+            # budget before discovery has also scanned the remaining tail.
+            if not remaining and new_outcome and outcome.get("scan_complete"):
                 break
         self.assertFalse(list((self.data_dir / cg.V2_NAMESPACE).glob("bulk-*")))
         self.assertEqual(quarantined, total)

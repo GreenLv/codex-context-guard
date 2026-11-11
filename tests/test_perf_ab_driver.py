@@ -32,6 +32,15 @@ def shell_output(value: str) -> str:
     return "printf '%s\\n' " + shlex.quote(value)
 
 
+def fixture_python_command(executable: str, script: str, *, windows: bool) -> str:
+    """Invoke a fixture through the same shell family as run_event."""
+    if windows:
+        def quote(value):
+            return "'" + value.replace("'", "''") + "'"
+        return f"& {quote(executable)} {quote(script)}"
+    return 'exec ' + shlex.quote(executable) + ' ' + shlex.quote(script)
+
+
 def run_driver(args: list[str]) -> tuple[int, dict | None, str]:
     completed = subprocess.run(
         [sys.executable, str(DRIVER), *args],
@@ -476,9 +485,13 @@ class PerfDriverLifecycleTests(unittest.TestCase):
         self.driver = perf_ab
         self.tmp = tempfile.TemporaryDirectory()
         self.work = Path(self.tmp.name)
+        self.retain_unproven_fixture = False
 
     def tearDown(self):
-        self.tmp.cleanup()
+        if self.retain_unproven_fixture:
+            self.tmp._finalizer.detach()
+        else:
+            self.tmp.cleanup()
 
     def clock_event(self, creation, execution):
         now, communications = [0.0], []
@@ -876,6 +889,26 @@ class PerfDriverLifecycleTests(unittest.TestCase):
     def test_real_timeout_with_inherited_output_is_reaped_before_home_cleanup(self):
         self.real_descendant(hold_stdout=True, parent_wait=True)
 
+    def test_real_descendant_wrapper_quotes_platform_paths(self):
+        self.assertEqual(fixture_python_command("C:\\a b\\py.exe", "C:\\o'ne\\parent.py", windows=True),
+                         "& 'C:\\a b\\py.exe' 'C:\\o''ne\\parent.py'")
+        self.assertEqual(fixture_python_command('/a b/python', "/o'ne/parent.py", windows=False),
+                         "exec '/a b/python' '/o'\"'\"'ne/parent.py'")
+
+    def test_real_descendant_setup_failure_still_reaps_owned_shell(self):
+        with patch(__name__ + '.fixture_python_command', return_value='exit 3'):
+            with self.assertRaisesRegex(AssertionError, 'fixture child never reached'):
+                self.real_descendant(hold_stdout=True, parent_wait=True)
+        self.assertFalse(self.retain_unproven_fixture)
+
+    def test_real_descendant_unknown_owner_preserves_fixture(self):
+        with patch.object(self.driver, 'run_event', side_effect=RuntimeError('fixture failure')):
+            with self.assertRaisesRegex(RuntimeError, 'fixture failure'):
+                self.real_descendant(hold_stdout=True, parent_wait=True)
+        self.assertTrue(self.retain_unproven_fixture)
+        # This negative control mocked run_event without creating a process.
+        self.retain_unproven_fixture = False
+
     @unittest.skipUnless(os.name == 'posix', 'real POSIX group fixture, not Windows proof')
     def test_real_exited_leader_with_live_descendant_cannot_pass_after_kill(self):
         self.real_descendant(hold_stdout=False, parent_wait=False)
@@ -884,25 +917,55 @@ class PerfDriverLifecycleTests(unittest.TestCase):
         child = self.work / 'child.py'
         parent = self.work / 'parent.py'
         marker = self.work / 'child-pid'
-        child.write_text('import time\ntime.sleep(20)\n')
+        child.write_text('import os,time\nfrom pathlib import Path\n'
+                         f'Path({str(marker)!r}).write_text(str(os.getpid()))\n'
+                         'time.sleep(60)\n', encoding='utf-8')
         stdout_arg = '' if hold_stdout else ', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL'
         parent.write_text('import subprocess,sys,time\nfrom pathlib import Path\n'
                           f'p=subprocess.Popen([sys.executable,{str(child)!r}]{stdout_arg})\n'
-                          f'Path({str(marker)!r}).write_text(str(p.pid))\n'
-                          "print('{}',flush=True)\n" + ('time.sleep(20)\n' if parent_wait else ''))
-        wrapper = 'exec ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(parent))
-        timing = self.driver.run_event(wrapper, REPO_ROOT, self.work, b'{}', 0.5)
-        self.assertTrue(marker.exists(), 'fixture child never reached')
-        self.assertNotEqual(self.driver.classify_outcome(timing['elapsed_raw'], timing['returncode'],
-                                                        timing['error'], 0.5), 'completed')
-        self.assertTrue(timing['process_lifetime']['cleanup']['owned_tree_no_running_members'])
-        if parent_wait:
-            self.assertTrue(timing['error'].startswith('TimeoutExpired'))
-            self.assertTrue(timing['process_lifetime']['drain_complete'])
-        else:
-            self.assertIn('natural_completion_unverified', timing['error'])
-            self.assertTrue(timing['retain_home'])
-            self.driver._RETAINED_EVENT_OWNERS.pop()
+                          f'while not Path({str(marker)!r}).exists():\n time.sleep(0.01)\n'
+                          "print('{}',flush=True)\n" + ('time.sleep(60)\n' if parent_wait else ''),
+                          encoding='utf-8')
+        wrapper = fixture_python_command(sys.executable, str(parent), windows=sys.platform == 'win32')
+        # This fixture deadline includes shell and interpreter startup; it is
+        # not the production performance budget tested by the clock controls.
+        timeout = 8.0
+        owners = []
+        spawn = self.driver.OwnedProcess.spawn
+        def capture_owner(*args, **kwargs):
+            owner = spawn(*args, **kwargs)
+            owners.append(owner)
+            return owner
+        try:
+            with patch.object(self.driver.OwnedProcess, 'spawn', side_effect=capture_owner):
+                timing = self.driver.run_event(wrapper, REPO_ROOT, self.work, b'{}', timeout)
+            self.assertTrue(marker.exists(), f'fixture child never reached: {timing}')
+            self.assertNotEqual(self.driver.classify_outcome(timing['elapsed_raw'], timing['returncode'],
+                                                            timing['error'], timeout), 'completed')
+            self.assertTrue(timing['process_lifetime']['cleanup']['owned_tree_no_running_members'])
+            if parent_wait:
+                self.assertTrue(timing['error'].startswith('TimeoutExpired'))
+                self.assertTrue(timing['process_lifetime']['drain_complete'])
+            else:
+                self.assertIn('natural_completion_unverified', timing['error'])
+                self.assertTrue(timing['retain_home'])
+                self.assertIn(owners[0], self.driver._RETAINED_EVENT_OWNERS)
+        finally:
+            # An assertion or interruption must not delete a fixture while its
+            # actual owned process tree may still use it. close() caches proof.
+            try:
+                cleanup = owners[0].close(5) if owners else {}
+            except BaseException:
+                cleanup = {}
+            stopped = (cleanup.get('owned_process_exited') is True
+                       and cleanup.get('owned_tree_no_running_members') is True
+                       and not cleanup.get('process_group_cleanup_error'))
+            if stopped:
+                for owner in owners:
+                    if owner in self.driver._RETAINED_EVENT_OWNERS:
+                        self.driver._RETAINED_EVENT_OWNERS.remove(owner)
+            else:
+                self.retain_unproven_fixture = True
 
     def test_main_interrupt_and_poll_failures_respect_owned_lifetime(self):
         from types import SimpleNamespace

@@ -3178,6 +3178,11 @@ class _TransitionHarness:
     def clock_sleep(self, seconds):
         self.now += max(float(seconds), 0.25)
 
+    def fixture_private_parent(self, path):
+        """Model a private directory only inside this synthetic fixture tree."""
+        candidate = Path(path).resolve()
+        return candidate.is_dir() and candidate.is_relative_to(self.base.resolve())
+
     def patches(self):
         manager = mock.Mock()
         manager.distribution_manifest.return_value = {"public": "b" * 64}
@@ -3188,6 +3193,10 @@ class _TransitionHarness:
                               side_effect=lambda plan, probe: (U.preflight(plan, probe), "c" * 40, "d" * 64)),
             mock.patch.object(U, "UpgradeClient", bound),
             mock.patch.object(U.scheduler, "_command", side_effect=self.command),
+            # The official-CLI fake must not intercept Windows Get-Acl. The
+            # transition fixture models privacy only within its own tree;
+            # separate scheduler controls exercise the real DACL consumer.
+            mock.patch.object(U.scheduler._Windows, "private_parent", side_effect=self.fixture_private_parent),
             mock.patch.object(U, "_state_at", side_effect=self.state_at),
             mock.patch.object(U, "_old_scope", return_value={"current": [], "ancestor": [], "waiting": 0}),
             mock.patch.object(U, "source_files", return_value={"public": "b" * 64}),
@@ -3376,6 +3385,19 @@ class ResumeRestoresPhase(unittest.TestCase):
 
 class WaitResumeControls(unittest.TestCase):
     """Fix 2: bounded waits record wait_pending plus a resumable receipt."""
+
+    def test_fixture_privacy_seam_is_scoped_and_official_commands_stay_strict(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            harness = _TransitionHarness(Path(directory).resolve(), "0.17.0")
+            driver = object.__new__(U.scheduler._Windows)
+            driver.native, driver.source, driver.powershell, driver.env = U.native, ROOT, "powershell.exe", {}
+            with harness.patched():
+                self.assertTrue(driver.private_parent(harness.base))
+                self.assertTrue(driver.private_parent(harness.workspace))
+                self.assertFalse(driver.private_parent(Path(outside).resolve()))
+                self.assertFalse(driver.private_parent(harness.base / "missing"))
+                with self.assertRaisesRegex(AssertionError, "unexpected official command"):
+                    U.scheduler._command(U.native, ROOT, [str(harness.codex), "plugin", "unexpected"])
 
     def _pending(self, root, *, disable_after_poll=None):
         """Run the 0.16.1 finish-old producer into a timed-out official wait."""
