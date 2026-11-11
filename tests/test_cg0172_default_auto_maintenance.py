@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -236,15 +237,16 @@ class TriggerDecisionTests(RetentionFixtureBase):
         # protocol the replacement attempt BLOCKS on the object lock, and
         # a token re-check against the replaced object is a mismatch.
         claim = locks_dir(self.data_dir) / CLAIM
+        owner_token = uuid.uuid4().hex
         write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
                            "pid": os.getpid(), "started_at": cg.utc_now(),
-                           "token": "late-worker"})
+                           "token": owner_token})
         old = time.time() - (cg._RETENTION_TRIGGER_CLAIM_TTL_SECONDS + 60)
         os.utime(claim, (old, old))
         # Another participant holds the object lock (mid-protocol).
         fd = self.hold_claim_lock(claim)
         try:
-            cg._retention_release_trigger_claim(self.data_dir, token="late-worker")
+            cg._retention_release_trigger_claim(self.data_dir, token=owner_token)
             self.assertTrue(claim.exists())  # busy: nothing deleted
         finally:
             self.release_claim_lock(fd)
@@ -257,7 +259,7 @@ class TriggerDecisionTests(RetentionFixtureBase):
         # The late worker retries: identity and token both verify against
         # the REPLACEMENT object and refuse.
         self.assertEqual(cg._retention_release_claim_object(
-            claim, token="late-worker"), "token_mismatch")
+            claim, token=owner_token), "token_mismatch")
         self.assertTrue(claim.exists())
         self.assertEqual(
             json.loads(claim.read_text(encoding="utf-8"))["token"],
@@ -416,9 +418,10 @@ class TriggerDecisionTests(RetentionFixtureBase):
         # internal errors. The stranded claim is left to TTL recovery.
         self.make_session("expired", ended_days_ago=45)
         claim = locks_dir(self.data_dir) / CLAIM
+        owner_token = uuid.uuid4().hex
         write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
                            "pid": os.getpid(), "started_at": cg.utc_now(),
-                           "token": "real-owner"})
+                           "token": owner_token})
         for token in ("", "foreign-token"):
             with self.subTest(token=token or "<absent>"):
                 self.assertEqual(cg._retention_trigger_child_pass(
@@ -427,11 +430,11 @@ class TriggerDecisionTests(RetentionFixtureBase):
                 self.assertTrue(claim.exists())
                 self.assertEqual(
                     json.loads(claim.read_text(encoding="utf-8"))["token"],
-                    "real-owner")
+                    owner_token)
         # The rightful owner still releases through the protocol.
         self.assertEqual(cg._retention_trigger_child_pass(
             self.data_dir, budget_seconds=5.0,
-            trigger_token="real-owner"), 0)
+            trigger_token=owner_token), 0)
         self.assertFalse(claim.exists())
 
     def test_throttle_reread_inside_mutex_prevents_double_dispatch(self):
@@ -563,7 +566,7 @@ class TriggerChildPassTests(RetentionFixtureBase):
     """The detached child: independent authorization, default materialize,
     bounded apply pass, outcome record, claim release."""
 
-    FIXTURE_TOKEN = "fixture-child-token"
+    FIXTURE_TOKEN = uuid.uuid4().hex
 
     def run_child(self, budget=5.0, token=FIXTURE_TOKEN):
         return cg._retention_trigger_child_pass(
@@ -865,7 +868,7 @@ class TailAdvancementTests(RetentionFixtureBase):
         for index in range(total):
             self.make_session(f"bulk-{index:03d}", ended_days_ago=45)
         self.make_session("keeper", ended_days_ago=1)
-        fixture_token = "tail-child-token"
+        fixture_token = uuid.uuid4().hex
         claim = locks_dir(self.data_dir) / CLAIM
         write_json(claim, {"schema": cg._RETENTION_TRIGGER_CLAIM_SCHEMA,
                            "pid": os.getpid(), "started_at": cg.utc_now(),
