@@ -4,6 +4,21 @@ The release entries begin with the newest version. Historical candidate
 sections preserve the status of their specific source revision at the time of
 review; a later release of the same version does not change that evidence.
 
+## 0.17.3 — Unreleased
+
+Source candidate. The daily-upgrade operator tool adds the private
+`cg-daily-upgrade-plan/v1`, `cg-daily-upgrade-result/v1`,
+`cg-daily-upgrade-journal/v1`, `cg-daily-loaded-probe/v1` and
+`cg-host-process-inventory/v1` contracts under `tools/validation/`.
+They do not alter schema 13, Stop protocol 5.0.0, the nine Hook commands,
+retention behavior or the default business-tool path. The new source tooling
+requires its own native checks.
+
+Version identifiers and packaged reader documentation change from 0.17.2,
+so this candidate has a new distribution manifest, runtime-tree digest and
+release artifact. Prior behavior results retain their original input identities;
+new artifact, installation and daily-loading evidence are separate.
+
 ## 0.17.2 — 2026-11-11
 
 Retention behavior changes: default-automatic maintenance with a durable

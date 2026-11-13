@@ -4,6 +4,19 @@ The newest section describes the current release. Older version sections retain
 their original compatibility and acceptance boundaries; a pending item in a
 historical section describes that point in time.
 
+## 0.17.3 — Unreleased
+
+This source candidate adds an operator tool for the existing stable entry,
+`context-guard@codex-context-guard`. It runs from the source checkout on
+Python 3.10 or newer, through POSIX sh or PowerShell 5.1/7. Native tool
+acceptance is pending. Existing 0.17.2 task-state and cleanup behavior is
+unchanged; no state migration is introduced.
+
+The tool requires the actual Desktop host to be stopped before replacing an
+existing installation. A fresh-client Hook inventory does not identify code
+already held by an existing Desktop process. Normal Hook trust remains a
+separate official review. See the [upgrade guide](UPGRADE_0_17_3.md).
+
 ## 0.17.2 — 2026-11-11
 
 0.17.2 changes retention behavior for every data root: with no retention

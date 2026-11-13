@@ -14,6 +14,8 @@ For example, if you ask Codex to edit one file and run a test, a successful file
 
 **Latest release: 0.17.2.** Finish tasks that still need the old plugin before switching. The upgrade guide explains how to update the stable entry and keep your cleanup settings. [release notes](docs/releases/v0.17.2.md) · [upgrade guide](docs/UPGRADE_0_17_2.md)
 
+**Source candidate: 0.17.3 (Unreleased).** Adds a maintained daily-upgrade operator tool. [Candidate upgrade guide](docs/UPGRADE_0_17_3.md)
+
 ## Install with Codex
 
 You need Python 3.10 or newer and a Codex client that can load plugins and their automatic scripts (Hooks). Run `codex plugin list --json` first. If any Context Guard entry is already installed, use the [0.17.2 upgrade guide](docs/UPGRADE_0_17_2.md) for that entry. The steps here are for a fresh installation.

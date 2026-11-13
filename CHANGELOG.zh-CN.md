@@ -4,6 +4,23 @@
 
 版本从新到旧排列。正式发布的版本见 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases)，测试结果和平台范围见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。[原始详细更新日志](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.zh-CN.md)保留了此前逐项记录的实现和验证过程。
 
+## 0.17.3 — Unreleased
+
+### 主要改进
+
+- macOS 和 Windows 的日用安装升级有了统一维护的工具，覆盖准备、安装与核验。批次中断后可读取已保存的阶段结果继续，不必重复已完成的卸载或安装。[日常升级工具](https://github.com/GreenLv/codex-context-guard/blob/v0.17.3/tools/validation/DAILY_UPGRADE.md)
+- 替换已有安装前，工具会按实际可执行文件识别 Desktop，并确认它已退出。先准备批次，确需退出时退出一次，再继续同一批次；升级仍保留正常的 Hook 审核。
+
+### 变更
+
+- 核验会比对所选发行包与已安装文件，并通过新客户端检查九个 Context Guard Hook 是否齐全、启用且可信。这不能证明已有 Desktop 进程内存中加载的版本。
+- 新增操作工具位于源码仓库，不放入插件缓存。已使用 0.17.2 的用户无需紧急更新运行时：九个 Hook、任务状态格式、默认自动清理与显式清理设置均沿用原有行为。
+
+### 验证
+
+- 源码、两端原生工具与精确制品结果将记录在发布验收附件中，日用 Desktop 采用情况单独记录。
+
+
 ## 0.17.2 — 2026-11-11
 
 ### 亮点

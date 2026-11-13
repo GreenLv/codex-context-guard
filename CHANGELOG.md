@@ -4,6 +4,23 @@
 
 Versions are listed newest first. See [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) for published versions and [local acceptance](docs/LOCAL_ACCEPTANCE.md) for test results and platform limits. The [original detailed changelog](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.md) preserves the earlier implementation and validation notes.
 
+## 0.17.3 — Unreleased
+
+### Highlights
+
+- Maintainers can prepare, apply and verify a daily installation upgrade through one maintained tool on macOS and Windows. Saved stage results let an interrupted batch continue without repeating a completed removal or installation. [Daily upgrade tool](https://github.com/GreenLv/codex-context-guard/blob/v0.17.3/tools/validation/DAILY_UPGRADE.md)
+- Before replacing an existing installation, the tool checks the actual Desktop executable and requires it to be stopped. Prepare the batch first, quit Desktop once when required, then continue with the same batch. Normal Hook review remains part of the upgrade.
+
+### Changes
+
+- Verification compares the installed files with the selected release and checks all nine enabled, trusted Context Guard Hooks through a fresh client. This observation does not identify the runtime already held in an existing Desktop process.
+- The new operator tools live in the source checkout, rather than the plugin cache. Existing 0.17.2 installations need no urgent runtime update: the nine Hooks, task-state format, automatic cleanup and explicit cleanup settings keep their existing behavior.
+
+### Validation
+
+- Source, native tool and exact-artifact results will be recorded in the release acceptance report. Daily Desktop adoption is recorded separately.
+
+
 ## 0.17.2 — 2026-11-11
 
 ### Highlights
