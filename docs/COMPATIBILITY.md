@@ -4,12 +4,12 @@ The newest section describes the current release. Older version sections retain
 their original compatibility and acceptance boundaries; a pending item in a
 historical section describes that point in time.
 
-## 0.17.3 — Unreleased
+## 0.17.3 — 2026-11-14
 
-This source candidate adds an operator tool for the existing stable entry,
+This release adds an operator tool for the existing stable entry,
 `context-guard@codex-context-guard`. It runs from the source checkout on
 Python 3.10 or newer, through POSIX sh or PowerShell 5.1/7. Native tool
-acceptance is pending. Existing 0.17.2 task-state and cleanup behavior is
+results are recorded in the [acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.3/context-guard-0.17.3-acceptance.json). Existing 0.17.2 task-state and cleanup behavior is
 unchanged; no state migration is introduced.
 
 The tool requires the actual Desktop host to be stopped before replacing an

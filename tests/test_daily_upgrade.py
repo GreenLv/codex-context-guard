@@ -324,7 +324,8 @@ class TestPrepare(DailyUpgradeCase):
         self.assertTrue(policy["policy"]["enabled"])
         cleanup_calls = [call for call in self.fake.calls if "cleanup" in call]
         self.assertTrue(cleanup_calls)
-        self.assertIn("/0.17.1/scripts/context_guard.py", cleanup_calls[-1][3])
+        self.assertEqual(Path(cleanup_calls[-1][3]),
+                         self.cache_root / OLD / "scripts" / "context_guard.py")
 
     def test_preflight_refuses_to_rerun_into_the_same_output(self):
         self.assertEqual(self.main("--preflight"), 0)
@@ -675,6 +676,7 @@ class TestProbeTransport(DailyUpgradeCase):
                                                     / "hooks" / "hooks.json"),
                                   "events": sorted(U.EVENTS)}, encoding="utf-8")
         self.fake_cli = str(self.tmp / "fake-codex")
+        self.spawned = []
         real_spawn = U.OwnedProcess.spawn
         fake_cli, server = self.fake_cli, str(self.server)
 
@@ -682,7 +684,9 @@ class TestProbeTransport(DailyUpgradeCase):
             command = list(command)
             if command and command[0] == fake_cli:
                 command = [sys.executable, "-B", server, *command[1:]]
-            return real_spawn(command, **kwargs)
+            owned = real_spawn(command, **kwargs)
+            self.spawned.append(owned)
+            return owned
 
         self.patch(U, "OwnedProcess",
                    type("SpawnShim", (), {"spawn": staticmethod(shim_spawn)}))
@@ -709,6 +713,10 @@ class TestProbeTransport(DailyUpgradeCase):
         self.assertTrue(cleanup.get("cleanup_complete") is True
                         or cleanup["owned_tree_no_running_members"] is True)
         self.assertIsNone(cleanup.get("process_group_cleanup_error"))
+        self.assertTrue(self.spawned)
+        for owned in self.spawned:
+            self.assertTrue(owned.process.stdin.closed)
+            self.assertTrue(owned.process.stdout.closed)
         journal = (attempt / "rpc.jsonl").read_text(encoding="utf-8")
         self.assertIn('"direction": "request"', journal)
         self.assertIn('"direction": "response"', journal)

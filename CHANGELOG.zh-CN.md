@@ -4,7 +4,7 @@
 
 版本从新到旧排列。正式发布的版本见 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases)，测试结果和平台范围见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。[原始详细更新日志](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.zh-CN.md)保留了此前逐项记录的实现和验证过程。
 
-## 0.17.3 — Unreleased
+## 0.17.3 — 2026-11-14
 
 ### 主要改进
 
@@ -18,7 +18,7 @@
 
 ### 验证
 
-- 源码、两端原生工具与精确制品结果将记录在发布验收附件中，日用 Desktop 采用情况单独记录。
+- [发布验收报告](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.3/context-guard-0.17.3-acceptance.json)分别列明源码、发行包与平台检查的对象和结果，日用 Desktop 采用情况单独记录。
 
 
 ## 0.17.2 — 2026-11-11

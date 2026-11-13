@@ -4,7 +4,7 @@
 
 Versions are listed newest first. See [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) for published versions and [local acceptance](docs/LOCAL_ACCEPTANCE.md) for test results and platform limits. The [original detailed changelog](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.md) preserves the earlier implementation and validation notes.
 
-## 0.17.3 — Unreleased
+## 0.17.3 — 2026-11-14
 
 ### Highlights
 
@@ -18,7 +18,7 @@ Versions are listed newest first. See [GitHub Releases](https://github.com/Green
 
 ### Validation
 
-- Source, native tool and exact-artifact results will be recorded in the release acceptance report. Daily Desktop adoption is recorded separately.
+- The [release acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.3/context-guard-0.17.3-acceptance.json) identifies the source, package and platform results. Daily Desktop adoption is recorded separately.
 
 
 ## 0.17.2 — 2026-11-11

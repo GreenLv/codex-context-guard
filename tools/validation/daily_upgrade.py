@@ -906,6 +906,7 @@ class _ProbeClient:
         self.log = (directory / "rpc.jsonl").open("x", encoding="utf-8")
         self.err = open(os.devnull, "wb")
         self.owned = None
+        self.reader = None
         try:
             launch = [str(cli)]
             if platform.system() == "Windows":
@@ -914,7 +915,8 @@ class _ProbeClient:
             self.owned = OwnedProcess.spawn([*launch, "app-server"], cwd=str(cwd), env=child_env,
                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                             stderr=self.err, text=True, encoding="utf-8")
-            threading.Thread(target=self._reader, daemon=True).start()
+            self.reader = threading.Thread(target=self._reader, daemon=True)
+            self.reader.start()
             self.rpc("initialize", {"clientInfo": {"name": "cg-daily-upgrade", "version": "1"},
                                     "capabilities": {"experimentalApi": True}})
             self.send({"method": "initialized", "params": {}})
@@ -966,6 +968,13 @@ class _ProbeClient:
     def close(self) -> dict[str, Any]:
         try:
             cleanup = self.owned.close(12) if self.owned else None
+            if self.reader is not None:
+                self.reader.join(timeout=2)
+                require(not self.reader.is_alive(), "probe reader cleanup incomplete")
+            if self.owned is not None:
+                for stream in (self.owned.process.stdin, self.owned.process.stdout):
+                    if stream is not None:
+                        stream.close()
         finally:
             self.log.close()
             self.err.close()

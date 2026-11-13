@@ -1,7 +1,5 @@
 # Upgrade to Context Guard 0.17.3
 
-Source candidate; publication and native acceptance are pending.
-
 [简体中文](UPGRADE_0_17_3.zh-CN.md) · [Release assets](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.3)
 
 Version 0.17.3 adds a maintained daily-upgrade tool for operators. The Hook behavior and cleanup settings remain those of 0.17.2. The tool is available from this version's source checkout; it is not installed into the plugin cache.

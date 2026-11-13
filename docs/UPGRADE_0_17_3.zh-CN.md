@@ -1,7 +1,5 @@
 # 升级到 Context Guard 0.17.3
 
-源码候选；发布与原生验收尚待完成。
-
 [English](UPGRADE_0_17_3.md) · [发布附件](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.3)
 
 0.17.3 为维护者提供统一维护的日常升级工具。Hook 行为与清理设置沿用 0.17.2。该工具位于本版源码仓库，不安装到插件缓存。

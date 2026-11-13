@@ -3,7 +3,7 @@
 ## Install, upgrade or manage task data
 
 - [Install and try Context Guard](../README.md) · [简体中文](../README.zh-CN.md)
-- [Upgrade to 0.17.2](UPGRADE_0_17_2.md) · [简体中文](UPGRADE_0_17_2.zh-CN.md). For older marketplace entries, see the [0.17.1 upgrade guide](UPGRADE_0_17_1.md) · [简体中文](UPGRADE_0_17_1.zh-CN.md).
+- [Upgrade to 0.17.3](UPGRADE_0_17_3.md) · [简体中文](UPGRADE_0_17_3.zh-CN.md). For versions before 0.17.2 or other marketplace entries, start with the [0.17.2 upgrade guide](UPGRADE_0_17_2.md) · [简体中文](UPGRADE_0_17_2.zh-CN.md).
 - [Session storage and cleanup](SESSION_STORAGE.md) explains where records live, how to preview cleanup, and how to keep an old task working.
 - [Privacy](PRIVACY.md) explains what stays on your machine and what a redacted export can contain.
 - [Compatibility](COMPATIBILITY.md) records which combinations of version, platform and installation have been checked.
