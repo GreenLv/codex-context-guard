@@ -10,6 +10,7 @@ import importlib.util
 import ntpath
 import sys
 import unittest
+from unittest import mock
 
 _SPEC = importlib.util.spec_from_file_location(
     "host_process_inventory_under_test",
@@ -212,6 +213,8 @@ class FakeKernel32:
         self.snapshot_handles = []
         self.opened_handles = []
         self.closed_handles = []
+        self.live_handles = set()
+        self.close_calls = []
         self.query_calls = []
 
     def get_last_error(self):
@@ -223,6 +226,7 @@ class FakeKernel32:
         handle = self._next_handle
         self._next_handle += 1
         self.snapshot_handles.append(handle)
+        self.live_handles.add(handle)
         index = min(self._snap_index, len(self.snapshots) - 1)
         self._current = list(self.snapshots[index])
         self._walk_index = 0
@@ -242,6 +246,9 @@ class FakeKernel32:
     def Process32FirstW(self, handle, ref):
         if self.walk_fail_at == 0:
             self._last_error = 87
+            return 0
+        if not self._current:
+            self._last_error = 18
             return 0
         self._fill(ref)
         self._walk_index += 1
@@ -264,6 +271,7 @@ class FakeKernel32:
         handle = self._next_handle
         self._next_handle += 1
         self.opened_handles.append(handle)
+        self.live_handles.add(handle)
         self._handle_pid[handle] = pid
         return handle
 
@@ -279,13 +287,16 @@ class FakeKernel32:
         return 1
 
     def CloseHandle(self, handle):
-        self.closed_handles.append(handle)
-        if handle in self.close_fail_handles:
+        self.close_calls.append(handle)
+        if handle in self.close_fail_handles or handle not in self.live_handles:
+            self._last_error = 6  # ERROR_INVALID_HANDLE, including a double close
             return 0
+        self.live_handles.remove(handle)
+        self.closed_handles.append(handle)
         return 1
 
     def all_handles_closed(self):
-        return set(self.snapshot_handles + self.opened_handles) <= set(self.closed_handles)
+        return not self.live_handles
 
 
 class TestWindowsToolhelp(unittest.TestCase):
@@ -311,9 +322,11 @@ class TestWindowsToolhelp(unittest.TestCase):
                          [{"pid": 200, "ppid": 1, "executable": PINNED_DESKTOP}])
         self.assertEqual(result["counts"]["unrelated"], 1)
         self.assertTrue(fake.all_handles_closed())
+        self.assertEqual(len(fake.close_calls), len(set(fake.close_calls)),
+                         "every snapshot and candidate handle has exactly one owner")
 
     def test_different_basename_is_negative_evidence_only(self):
-        # The r7 all-177 shape: unreadable rows whose snapshot basename
+        # Unreadable rows whose snapshot basename
         # differs from the pinned basename are excluded from candidacy for
         # that exact pinned image — and from nothing else.
         fake = FakeKernel32([[(300, 1, "notepad.exe"), (301, 1, "svchost.exe")]])
@@ -338,7 +351,8 @@ class TestWindowsToolhelp(unittest.TestCase):
 
     def test_truncated_and_shape_anomalous_names_keep_candidacy(self):
         long_name = "X" * 259 + ".exe"
-        fake = FakeKernel32([[(400, 1, long_name), (401, 1, "odd/path/weird.exe")]])
+        fake = FakeKernel32([[(400, 1, long_name), (401, 1, "odd/path/weird.exe"),
+                             (402, 1, r"odd\path\weird.exe"), (403, 1, "bad|name.exe")]])
         payload = self.run_windows(fake)
         self.assertTrue(all(row["exe_name"] is None and row["identity"] == "unreadable"
                             for row in payload["rows"]))
@@ -349,6 +363,40 @@ class TestWindowsToolhelp(unittest.TestCase):
         fake = FakeKernel32([[(300, 1, "notepad.exe")]], walk_fail_at=0)
         with self.assertRaises(INV.InventoryError):
             self.run_windows(fake)
+        self.assertTrue(fake.all_handles_closed())
+
+    def test_walk_exception_still_closes_snapshot(self):
+        fake = FakeKernel32([[(300, 1, "notepad.exe")]])
+        with mock.patch.object(fake, "Process32NextW", side_effect=OSError("read failed")):
+            with self.assertRaises(OSError):
+                self.run_windows(fake)
+        self.assertTrue(fake.all_handles_closed())
+
+    def test_snapshot_size_limit_closes_handle(self):
+        fake = FakeKernel32([[(300, 1, "one.exe"), (301, 1, "two.exe")]])
+        with mock.patch.object(INV, "MAX_PROCESSES", 1):
+            with self.assertRaises(INV.InventoryError):
+                self.run_windows(fake)
+        self.assertTrue(fake.all_handles_closed())
+
+    def test_empty_snapshot_never_proves_absence(self):
+        fake = FakeKernel32([[]])
+        with self.assertRaises(INV.InventoryError):
+            self.run_windows(fake)
+        self.assertTrue(fake.all_handles_closed())
+
+    def test_duplicate_pid_snapshot_is_refused_before_query(self):
+        fake = FakeKernel32([[(200, 1, "ChatGPT.exe"), (200, 1, "ChatGPT.exe")]])
+        with self.assertRaises(INV.InventoryError):
+            self.run_windows(fake)
+        self.assertEqual(fake.query_calls, [])
+        self.assertTrue(fake.all_handles_closed())
+
+    def test_case_only_confirmation_keeps_windows_path_semantics(self):
+        fake = FakeKernel32([[(200, 1, "ChatGPT.exe")], [(200, 1, "CHATGPT.EXE")]],
+                            {200: PINNED_DESKTOP})
+        payload = self.run_windows(fake)
+        self.assertEqual(INV.classify(payload, [PINNED_DESKTOP])["status"], "running")
         self.assertTrue(fake.all_handles_closed())
 
     def test_snapshot_unavailable_fails_the_enumeration(self):
@@ -375,9 +423,16 @@ class TestWindowsToolhelp(unittest.TestCase):
 
     def test_candidate_handle_close_failure_fails_the_enumeration(self):
         fake = FakeKernel32([[(200, 1, "ChatGPT.exe")]], {200: PINNED_DESKTOP})
-        fake.close_fail_handles = {5001}  # the candidate handle opened after the snapshot
+        fake.close_fail_handles = {5002}  # after the first and confirmation snapshots
         with self.assertRaises(INV.InventoryError):
             self.run_windows(fake)
+        self.assertEqual(fake.query_calls, [200], "exercise the candidate handle, not a snapshot")
+
+    def test_classification_rejects_unusable_negative_name(self):
+        payload = enum([{"pid": 200, "ppid": 1, "uid": None,
+                         "identity": "unreadable", "executable": None,
+                         "exe_name": r"bad\name.exe"}], source="windows-toolhelp")
+        self.assertEqual(INV.classify(payload, [PINNED_DESKTOP])["status"], "unknown")
 
     def test_generic_pinned_basename_is_refused(self):
         with self.assertRaises(INV.InventoryError):

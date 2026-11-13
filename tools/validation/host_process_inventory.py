@@ -2,15 +2,19 @@
 
 Distinguishes the pinned Desktop host executable, its descendant helpers,
 pinned sandbox-service executables and unrelated processes. Identification
-uses executable paths and parent-child links only — never process names,
-window titles, or any operator declaration such as ``--host-stopped``. An
+uses full executable paths and parent-child links for positive identity.
+On Windows, a complete OS image-name snapshot can exclude an image whose
+exact basename differs from the pinned executable; a matching basename
+never proves identity. No fuzzy names, window titles, or operator declaration
+such as ``--host-stopped`` can establish absence. An
 unreadable identity or an incomplete enumeration is reported as unknown and
 never as absence.
 
 Owner rules are structural, not name-based. A process whose identity cannot
 be read is still excluded from Desktop candidacy when it provably cannot be
 the invoking user's GUI host: on POSIX it is owned by another uid, and on
-Windows it is the kernel family (pid or parent pid <= 4, the System process).
+Windows it is the kernel family (pid 0 or 4, or parent pid 4) or a guarded
+snapshot proves a different executable basename.
 Every other unreadable row keeps Desktop candidacy and the inventory status
 becomes ``unknown``.
 
@@ -248,36 +252,37 @@ def _windows_snapshot_rows(api, label) -> list[tuple[int, int, str]]:
     if not handle or handle == ctypes.c_void_p(-1).value:
         raise InventoryError(label + "_unavailable")
     rows: list[tuple[int, int, str]] = []
-    clean = True
-    entry = _ProcessEntry32W()
-    entry.dwSize = ctypes.sizeof(entry)
-    if not api.Process32FirstW(handle, ctypes.byref(entry)):
-        if _last_error(api) != _WIN_ERROR_NO_MORE_FILES:
-            clean = False
-    else:
+    seen = set()
+    try:
+        entry = _ProcessEntry32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        if not api.Process32FirstW(handle, ctypes.byref(entry)):
+            raise InventoryError(label + "_unavailable_or_empty")
         while True:
-            rows.append((int(entry.th32ProcessID), int(entry.th32ParentProcessID),
+            _require(len(rows) < MAX_PROCESSES, "windows_process_snapshot_oversized")
+            pid = int(entry.th32ProcessID)
+            _require(pid not in seen, "windows_process_snapshot_duplicate_pid")
+            seen.add(pid)
+            rows.append((pid, int(entry.th32ParentProcessID),
                          str(entry.szExeFile)))
             if not api.Process32NextW(handle, ctypes.byref(entry)):
-                if _last_error(api) != _WIN_ERROR_NO_MORE_FILES:
-                    clean = False
+                _require(_last_error(api) == _WIN_ERROR_NO_MORE_FILES,
+                         label + "_walk_incomplete")
                 break
-    if not api.CloseHandle(handle):
-        raise InventoryError(label + "_handle_close_failed")
-    if not clean:
-        raise InventoryError(label + "_walk_incomplete")
+    finally:
+        if not api.CloseHandle(handle):
+            raise InventoryError(label + "_handle_close_failed")
     return rows
 
 
-def _windows_image_path(api, pid, opened: list) -> str | None:
+def _windows_image_path(api, pid) -> str | None:
     """Full image path for one bounded candidate; a failure keeps candidacy."""
     handle = api.OpenProcess(_WIN_QUERY_LIMITED, 0, pid)
     if not handle or handle == ctypes.c_void_p(-1).value:
         return None
-    opened.append(handle)
-    size = ctypes.c_ulong(_WIN_IMAGE_BUFFER)
-    buffer = ctypes.create_unicode_buffer(_WIN_IMAGE_BUFFER)
     try:
+        size = ctypes.c_ulong(_WIN_IMAGE_BUFFER)
+        buffer = ctypes.create_unicode_buffer(_WIN_IMAGE_BUFFER)
         if not api.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
             return None
         if size.value >= _WIN_IMAGE_BUFFER:
@@ -288,13 +293,19 @@ def _windows_image_path(api, pid, opened: list) -> str | None:
             raise InventoryError("image_path_handle_close_failed")
 
 
+def _usable_windows_basename(name) -> bool:
+    return (isinstance(name, str) and 0 < len(name) < _WIN_TRUNCATION_GUARD
+            and name not in (".", "..")
+            and not any(char in '\\/:<>"|?*' or ord(char) < 32 for char in name))
+
+
 def windows_candidate_basenames(desktop_executables, sandbox_markers=()) -> set:
     """Casefolded basenames of the pinned identities, under Toolhelp capacity."""
     names = set()
     for path in (*desktop_executables, *sandbox_markers):
         basename = ntpath.basename(str(path))
-        if len(basename) >= _WIN_TRUNCATION_GUARD:
-            raise InventoryError("pinned_identity_basename_exceeds_toolhelp_capacity")
+        _require(_usable_windows_basename(basename),
+                 "pinned_identity_basename_unavailable_or_exceeds_toolhelp_capacity")
         names.add(ntpath.normcase(basename))
     return names
 
@@ -321,8 +332,7 @@ def _enumerate_windows(candidate_basenames: set | None = None, api: Any = None) 
     for pid, ppid, name in first:
         row = {"pid": pid, "ppid": ppid, "executable": None, "exe_name": None,
                "uid": None, "identity": IDENTITY_UNREADABLE}
-        if name and os.sep not in name and (os.altsep is None or os.altsep not in name) \
-                and len(name) < _WIN_TRUNCATION_GUARD:
+        if _usable_windows_basename(name):
             row["exe_name"] = name
             if ntpath.normcase(name) in candidates:
                 candidate_pids[pid] = name
@@ -334,28 +344,21 @@ def _enumerate_windows(candidate_basenames: set | None = None, api: Any = None) 
         # PID-reuse guard: the pid must still report the same basename in a
         # second complete snapshot before any full-path read is trusted.
         second = _windows_snapshot_rows(api, "windows_candidate_snapshot")
-        second_names = {pid: name for pid, _ppid, name in second
-                        if name and os.sep not in name
-                        and (os.altsep is None or os.altsep not in name)
-                        and len(name) < _WIN_TRUNCATION_GUARD}
-        opened: list = []
-        try:
-            for pid, row in [(row["pid"], row) for row in rows if row["pid"] in candidate_pids]:
-                if second_names.get(pid) != candidate_pids[pid]:
-                    continue  # the pid changed identity between snapshots
-                path = _windows_image_path(api, pid, opened)
-                if path:
-                    row["executable"] = path
-                    row["identity"] = IDENTITY_OBSERVED
-                    reads["ok"] += 1
-                else:
-                    reads["failed"] += 1
-        finally:
-            # Every opened candidate handle is closed; an unclosable handle
-            # fails the whole enumeration.
-            for handle in opened:
-                if not api.CloseHandle(handle):
-                    raise InventoryError("image_path_handle_close_failed")
+        second_names = {pid: ntpath.normcase(name) for pid, _ppid, name in second
+                        if _usable_windows_basename(name)}
+        for row in rows:
+            pid = row["pid"]
+            if (pid not in candidate_pids
+                    or second_names.get(pid) != ntpath.normcase(candidate_pids[pid])):
+                continue  # the pid changed identity between snapshots
+            # This helper owns and closes its one handle, including failures.
+            path = _windows_image_path(api, pid)
+            if path:
+                row["executable"] = path
+                row["identity"] = IDENTITY_OBSERVED
+                reads["ok"] += 1
+            else:
+                reads["failed"] += 1
     return {"source": "windows-toolhelp",
             "snapshot": {"snapshots": 2 if candidate_pids else 1,
                          "processes": len(first),
@@ -418,7 +421,7 @@ def classify(enumeration: dict, desktop_executables, sandbox_markers=()) -> dict
 
     ``desktop_executables`` and ``sandbox_markers`` are exact absolute paths.
     Comparison uses the path semantics of the enumeration source (Windows
-    case-insensitive for ``windows-cim``, POSIX-sensitive otherwise). No
+    case-insensitive for ``windows-toolhelp``, POSIX-sensitive otherwise). No
     broad name matching is performed.
     """
     _require(isinstance(enumeration, dict), "enumeration shape invalid")
@@ -528,7 +531,7 @@ def classify(enumeration: dict, desktop_executables, sandbox_markers=()) -> dict
             counts[CLASS_SYSTEM] += 1
             continue
         name = row.get("exe_name")
-        if source == "windows-toolhelp" and name is not None \
+        if source == "windows-toolhelp" and _usable_windows_basename(name) \
                 and ntpath.normcase(name) not in candidate_basenames:
             counts[CLASS_UNRELATED] += 1
             continue

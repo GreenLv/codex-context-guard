@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -662,8 +663,17 @@ class TestProbeTransport(DailyUpgradeCase):
         self.patch(U, "OwnedProcess",
                    type("SpawnShim", (), {"spawn": staticmethod(shim_spawn)}))
 
+    def transport_env(self):
+        # Preserve native loader inputs on Windows; the fake server only
+        # consumes its synthetic RPC stream and never opens a real HOME.
+        env = {key: os.environ[key] for key in
+               ("PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP")
+               if key in os.environ}
+        env.update(HOME=str(self.tmp), USERPROFILE=str(self.tmp))
+        return env
+
     def test_probe_transport_and_exclusive_attempt_directory(self):
-        env = {"PATH": "/usr/bin:/bin", "HOME": str(self.tmp)}
+        env = self.transport_env()
         attempt = self.tmp / "attempt"
         probe = REAL_LOADED_PROBE(self.fake_cli, self.tmp / "cwd", attempt, env)
         self.assertIsNone(probe["reason"], probe["reason"])
@@ -701,7 +711,7 @@ class TestProbeTransport(DailyUpgradeCase):
         self.patch(U, "OwnedProcess",
                    type("SpawnShim", (), {"spawn": staticmethod(shim_spawn)}))
         probe = REAL_LOADED_PROBE(self.fake_cli, self.tmp / "cwd",
-                                  self.tmp / "attempt-flagged", {"PATH": "/usr/bin:/bin"})
+                                  self.tmp / "attempt-flagged", self.transport_env())
         self.assertIsNone(probe["reason"])
         self.assertTrue(probe["inventory_flagged"])
 
@@ -732,7 +742,9 @@ class TestPlanAndCommandLaw(DailyUpgradeCase):
             if argv[1:2] == ["-n"] or "--print-argv" in argv:
                 return subprocess.run(argv, capture_output=True, timeout=timeout)
             if argv[1:3] == ["-B", "-c"]:
-                return subprocess.run(argv, capture_output=True, timeout=timeout)
+                return subprocess.run(argv, capture_output=True, timeout=timeout, env=env)
+            if "-EncodedCommand" in argv and Path(argv[0]).is_absolute():
+                return subprocess.run(argv, capture_output=True, timeout=timeout, env=env)
             raise AssertionError("unexpected probe command: " + repr(argv))
 
         self.patch(U, "_probe_run", probe)
