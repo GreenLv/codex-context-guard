@@ -21,8 +21,9 @@ SANDBOX = "/Applications/Codex.app/Contents/Library/CodexSandboxService"
 OTHER = "/usr/sbin/unrelated-daemon"
 
 
-def enum(rows, source="darwin-ps-libproc"):
-    return {"status": "observed", "reason": None, "source": source, "rows": rows}
+def enum(rows, source="darwin-ps-libproc", observer_uid=501):
+    return {"status": "observed", "reason": None, "source": source,
+            "observer_uid": observer_uid, "rows": rows}
 
 
 def row(pid, ppid, executable=None, uid=501, source="posix"):
@@ -73,6 +74,23 @@ class TestClassification(unittest.TestCase):
         self.assertEqual(result["status"], "absent",
                          "another-owner unreadable processes cannot be the user's GUI host")
         self.assertEqual(result["counts"]["system_kernel"], 2)
+
+    def test_unknown_owner_keeps_desktop_candidacy(self):
+        # No owner evidence and no observed observer uid never resolves to
+        # kernel-family; the row stays a Desktop candidate (status unknown).
+        result = INV.classify(enum([row(710, 1, None, uid=None)]), [DESKTOP])
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["counts"]["system_kernel"], 0)
+
+    def test_other_owner_rule_does_not_call_platform_uid(self):
+        # The same-owner / other-owner decision consumes the enumeration's
+        # observer context only, so the synthetic family runs on every
+        # platform (Windows has no os.getuid).
+        same = INV.classify(enum([row(720, 1, None, uid=501)]), [DESKTOP])
+        self.assertEqual(same["status"], "unknown")
+        other = INV.classify(enum([row(721, 1, None, uid=501)],
+                                  observer_uid=999), [DESKTOP])
+        self.assertEqual(other["status"], "absent")
 
     def test_windows_kernel_family_is_structural(self):
         result = INV.classify(enum([row(4, 0, None, source="windows"),

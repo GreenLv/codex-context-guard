@@ -12,6 +12,7 @@ import importlib.util
 import json
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -25,6 +26,8 @@ TARGET = "0.17.2"
 OLD = "0.17.1"
 MARKET = U.MARKET
 ENTRY = U.ENTRY
+# The real transport, captured before DailyUpgradeCase.setUp patches the seam.
+REAL_LOADED_PROBE = U._loaded_probe
 
 
 def completed(argv, stdout=b"", rc=0, stderr=b""):
@@ -157,9 +160,11 @@ class DailyUpgradeCase(unittest.TestCase):
         self.host_status = inventory_result("absent")
         self.patch(U, "_run_command", self.fake.run)
         self.patch(U, "_daily_home", lambda: self.daily)
-        self.patch(U, "_host_inventory", lambda desktop, markers: self.host_status)
+        self.patch(U, "_host_inventory",
+                   lambda desktop, markers, host_tools=None: self.host_status)
         self.patch(U, "_loaded_probe", self._loaded_probe)
-        self.probe = {"hooks": self.trusted_hooks(), "reason": None,
+        self.probe = {"hooks": self.trusted_hooks(), "inventory_flagged": False,
+                      "reason": None,
                       "cleanup": {"cleanup_complete": True, "owned_process_exited": True}}
         (tmp / "cwd").mkdir()
         (tmp / "codex").write_bytes(b"#!/bin/sh\n")
@@ -183,6 +188,7 @@ class DailyUpgradeCase(unittest.TestCase):
 
     def _loaded_probe(self, cli, cwd, journal_dir, env):
         return {"schema": U.PROBE_SCHEMA, "hooks": self.probe["hooks"],
+                "inventory_flagged": self.probe["inventory_flagged"],
                 "cleanup": self.probe["cleanup"], "reason": self.probe["reason"]}
 
     def write_plan(self, **overrides) -> Path:
@@ -272,6 +278,22 @@ class TestPrepare(DailyUpgradeCase):
         self.assertTrue(policy["present"])
         self.assertTrue(policy["policy"]["enabled"])
         self.assertEqual(self.fake.calls[-1][4:6], ["cleanup", "--data-dir"])
+
+    def test_policy_readback_uses_observed_installed_version(self):
+        # A retained empty target slot must not shadow the installed version
+        # that actually owns the policy.
+        self.seed_old_cache()
+        (self.cache_root / TARGET).mkdir(parents=True)
+        data_dir = self.tmp / "plugin-data"
+        data_dir.mkdir()
+        self.plan_path = self.write_plan(data_dir=str(data_dir))
+        self.assertEqual(self.main("--prepare"), 0)
+        policy = self.read("prepare.json")["subject"]["data_policy"]
+        self.assertNotIn("policy_readback", policy)
+        self.assertTrue(policy["policy"]["enabled"])
+        cleanup_calls = [call for call in self.fake.calls if "cleanup" in call]
+        self.assertTrue(cleanup_calls)
+        self.assertIn("/0.17.1/scripts/context_guard.py", cleanup_calls[-1][3])
 
     def test_preflight_refuses_to_rerun_into_the_same_output(self):
         self.assertEqual(self.main("--preflight"), 0)
@@ -463,10 +485,174 @@ class TestVerify(DailyUpgradeCase):
         self.assertEqual(self.main("--verify"), 0)
         self.assertEqual(self.read("verify.json")["status"], "passed")
 
-    def test_verify_receipt_is_never_replaced(self):
+    def test_pending_verify_resumes_with_numbered_receipts(self):
+        self.prepare_and_apply()
+        self.probe["hooks"] = [{**row, "trustStatus": "untrusted"}
+                               for row in self.probe["hooks"]]
+        self.assertEqual(self.main("--verify"), 1)
+        first = (self.output / "verify.json").read_bytes()
+        self.probe["hooks"] = self.trusted_hooks()
+        self.assertEqual(self.main("--verify"), 0)
+        self.assertTrue((self.output / "verify-2.json").is_file())
+        self.assertEqual((self.output / "verify.json").read_bytes(), first)
+        self.assertEqual(self.read("verify-2.json")["status"], "passed")
+
+    def test_passed_verify_reread_refreshes_current_facts(self):
+        # A passed receipt is historical state: every verify re-measures and
+        # appends a numbered receipt without touching prior evidence.
         self.prepare_and_apply()
         self.assertEqual(self.main("--verify"), 0)
+        first = (self.output / "verify.json").read_bytes()
+        self.assertEqual(self.main("--verify"), 0)
+        self.assertTrue((self.output / "verify-2.json").is_file())
+        self.assertEqual((self.output / "verify.json").read_bytes(), first)
+        self.assertEqual(self.read("verify-2.json")["status"], "passed")
+
+    def test_passed_verify_detects_disabled_installation(self):
+        self.prepare_and_apply()
+        self.assertEqual(self.main("--verify"), 0)
+        self.fake.enabled = False
+        self.assertEqual(self.main("--verify"), 1)
+        self.assertEqual(self.read("verify-2.json")["status"], "hook_trust_pending")
+
+    def test_passed_verify_detects_trust_change(self):
+        self.prepare_and_apply()
+        self.assertEqual(self.main("--verify"), 0)
+        self.probe["hooks"] = [{**row, "trustStatus": "untrusted"}
+                               for row in self.probe["hooks"]]
+        self.assertEqual(self.main("--verify"), 1)
+        self.assertEqual(self.read("verify-2.json")["status"], "hook_trust_pending")
+
+    def test_passed_verify_detects_cache_drift(self):
+        self.prepare_and_apply()
+        self.assertEqual(self.main("--verify"), 0)
+        cache = self.cache_root / TARGET
+        (cache / "tampered.txt").write_text("cache drift", encoding="utf-8")
         self.assertEqual(self.main("--verify"), 2)
+        self.assertFalse((self.output / "verify-2.json").is_file())
+
+    def test_explicit_existing_verify_output_is_refused(self):
+        self.prepare_and_apply()
+        self.assertEqual(self.main("--verify"), 0)
+        self.assertEqual(self.main("--verify", "--verify-output",
+                                   str(self.output / "verify.json")), 2)
+
+    def test_single_hook_row_never_passes(self):
+        # Regression for the pre-repair verdict: one trusted row of nine
+        # yielded "passed" under prefix routing alone.
+        self.prepare_and_apply()
+        self.probe["hooks"] = self.trusted_hooks()[:1]
+        self.assertEqual(self.main("--verify"), 1)
+        verified = self.read("verify.json")
+        self.assertEqual(verified["status"], "hook_inventory_incomplete")
+
+    def test_duplicate_event_row_never_passes(self):
+        self.prepare_and_apply()
+        rows = self.trusted_hooks()
+        self.probe["hooks"] = rows + [dict(rows[0])]
+        self.assertEqual(self.main("--verify"), 1)
+        self.assertEqual(self.read("verify.json")["status"], "hook_inventory_incomplete")
+
+    def test_flagged_inventory_never_passes(self):
+        self.prepare_and_apply()
+        self.probe["inventory_flagged"] = True
+        self.assertEqual(self.main("--verify"), 1)
+        self.assertEqual(self.read("verify.json")["status"], "hook_inventory_incomplete")
+
+    def test_other_plugin_rows_are_not_old_context_guard(self):
+        self.prepare_and_apply()
+        other = self.daily / "plugins" / "cache" / "other-market" / "other" / "hooks" / "hooks.json"
+        self.probe["hooks"] = self.trusted_hooks() + [
+            {"eventName": "otherHook", "sourcePath": str(other), "source": "plugin",
+             "trustStatus": "trusted", "enabled": True}]
+        self.assertEqual(self.main("--verify"), 0)
+        verified = self.read("verify.json")
+        self.assertEqual(verified["status"], "passed")
+        self.assertEqual(verified["fresh_client_loaded"], "new")
+
+    def test_official_disabled_readback_is_trust_pending(self):
+        self.prepare_and_apply()
+        self.fake.enabled = False
+        self.assertEqual(self.main("--verify"), 1)
+        self.assertEqual(self.read("verify.json")["status"], "hook_trust_pending")
+
+
+FAKE_APP_SERVER_SOURCE = """\
+import json, sys
+hooks_json = %(hooks_json)r
+events = %(events)r
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\\n")
+    sys.stdout.flush()
+for line in sys.stdin:
+    try:
+        message = json.loads(line)
+    except ValueError:
+        continue
+    identifier = message.get("id")
+    if identifier is None:
+        continue  # notifications such as 'initialized' are accepted silently
+    method = message.get("method")
+    if method == "initialize":
+        send({"id": identifier, "result": {}})
+    elif method == "hooks/list":
+        rows = [{"eventName": event, "sourcePath": hooks_json, "source": "plugin",
+                 "trustStatus": "trusted", "enabled": True} for event in events]
+        send({"id": identifier, "result": {"data": [{"hooks": rows}]}})
+    else:
+        send({"id": identifier, "error": {"code": -32601, "message": "unimplemented"}})
+"""
+
+
+class TestProbeTransport(DailyUpgradeCase):
+    """The real OwnedProcess/RPC transport against a no-model fake app-server."""
+
+    def test_probe_transport_and_exclusive_attempt_directory(self):
+        hooks_json = str(self.cache_root / TARGET / "hooks" / "hooks.json")
+        server = self.tmp / "fake_app_server.py"
+        server.write_text(FAKE_APP_SERVER_SOURCE % {"hooks_json": hooks_json,
+                                                    "events": sorted(U.EVENTS)},
+                          encoding="utf-8")
+        launcher = self.tmp / "fake-codex"
+        launcher.write_text("#!/bin/sh\nexec \"%s\" \"%s\" \"$@\"\n"
+                            % (sys.executable, server), encoding="utf-8")
+        launcher.chmod(0o755)
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(self.tmp)}
+        attempt = self.tmp / "attempt"
+        probe = REAL_LOADED_PROBE(str(launcher), self.tmp / "cwd", attempt, env)
+        self.assertIsNone(probe["reason"], probe["reason"])
+        self.assertFalse(probe["inventory_flagged"])
+        self.assertEqual(sorted(row["eventName"] for row in probe["hooks"]),
+                         sorted(U.EVENTS))
+        cleanup = probe["cleanup"]
+        self.assertTrue(cleanup["owned_process_exited"])
+        self.assertTrue(cleanup.get("cleanup_complete") is True
+                        or cleanup["owned_tree_no_running_members"] is True)
+        self.assertIsNone(cleanup.get("process_group_cleanup_error"))
+        journal = (attempt / "rpc.jsonl").read_text(encoding="utf-8")
+        self.assertIn('"direction": "request"', journal)
+        self.assertIn('"direction": "response"', journal)
+        # A reused attempt directory fails exclusively and is never a pass.
+        second = REAL_LOADED_PROBE(str(launcher), self.tmp / "cwd", attempt, env)
+        self.assertIsNotNone(second["reason"])
+        self.assertEqual(second["hooks"], [])
+
+    def test_probe_transport_with_flagged_inventory(self):
+        hooks_json = str(self.cache_root / TARGET / "hooks" / "hooks.json")
+        server = self.tmp / "fake_app_server_flagged.py"
+        source = FAKE_APP_SERVER_SOURCE % {"hooks_json": hooks_json,
+                                           "events": sorted(U.EVENTS)}
+        source = source.replace('{"data": [{"hooks": rows}]}',
+                                '{"data": [{"hooks": rows, "errors": ["redacted"]}]}')
+        server.write_text(source, encoding="utf-8")
+        launcher = self.tmp / "fake-codex-flagged"
+        launcher.write_text("#!/bin/sh\nexec \"%s\" \"%s\" \"$@\"\n"
+                            % (sys.executable, server), encoding="utf-8")
+        launcher.chmod(0o755)
+        probe = REAL_LOADED_PROBE(str(launcher), self.tmp / "cwd",
+                                  self.tmp / "attempt-flagged", {"PATH": "/usr/bin:/bin"})
+        self.assertIsNone(probe["reason"])
+        self.assertTrue(probe["inventory_flagged"])
 
 
 class TestPlanAndCommandLaw(DailyUpgradeCase):
@@ -490,7 +676,9 @@ class TestPlanAndCommandLaw(DailyUpgradeCase):
 
         def probe(argv, env, timeout=30.0):
             argv = [str(item) for item in argv]
-            if argv[:2] == ["sh", "-n"] or "--print-argv" in argv:
+            # The parse probe and the real print-argv entry both consume the
+            # recorded absolute shell, never a PATH re-resolution.
+            if argv[1:2] == ["-n"] or "--print-argv" in argv:
                 return subprocess.run(argv, capture_output=True, timeout=timeout)
             if argv[1:3] == ["-B", "-c"]:
                 return subprocess.run(argv, capture_output=True, timeout=timeout)
@@ -499,7 +687,6 @@ class TestPlanAndCommandLaw(DailyUpgradeCase):
         self.patch(U, "_probe_run", probe)
         self.seed_old_cache()
         self.assertEqual(self.main("--preflight-commands"), 0)
-        self.seed_old_cache()  # idempotent seeding; no assertion drift
 
     def test_scrubbed_env_drops_inherited_codex_home(self):
         import os
@@ -536,6 +723,49 @@ class TestPlanAndCommandLaw(DailyUpgradeCase):
         assert self.main("--apply") == 0
         self.fake.registered = False
         self.assertEqual(self.main("--verify"), 2)
+
+    def test_subject_pins_helper_closure_and_host_tools(self):
+        self.assertEqual(self.main("--preflight"), 0)
+        subject = self.read("preflight.json")["subject"]
+        self.assertEqual(subject["tool_root"], str(REPO))
+        self.assertTrue(Path(subject["invocation_cwd"]).is_absolute())
+        self.assertIn("tool_root", U._binding_view(subject))
+        self.assertIn("invocation_cwd", U._binding_view(subject))
+        self.assertIn("tools/validation/host_process_inventory.py", subject["helpers"])
+        self.assertIn("tools/validation/daily_upgrade.py", subject["helpers"])
+        self.assertIn("tools/validation/run_daily_upgrade.sh", subject["helpers"])
+        self.assertIn("tools/validation/run_daily_upgrade.ps1", subject["helpers"])
+        if sys.platform == "darwin":
+            self.assertIn("ps", subject["host_tools"])
+        if sys.platform == "win32":
+            self.assertIn("powershell", subject["host_tools"])
+
+    def test_helper_closure_drift_is_refused(self):
+        # Mutate a pre-existing imported consumer (the scheduler command
+        # runner this tool executes), not only the new inventory helper.
+        self.seed_old_cache()
+        self.main("--prepare")
+        self.seed_installed_cache()
+        prepared = self.read("prepare.json")
+        self.assertIn("tools/validation/native_scheduler_batch.py", prepared["subject"]["helpers"])
+        prepared["subject"]["helpers"]["tools/validation/native_scheduler_batch.py"] = "0" * 64
+        (self.output / "prepare.json").write_text(json.dumps(prepared), encoding="utf-8")
+        self.assertEqual(self.main("--apply"), 2)
+
+    def test_helper_closure_covers_executed_imports(self):
+        self.main("--preflight")
+        helpers = self.read("preflight.json")["subject"]["helpers"]
+        for consumed in ("tools/validation/native_acceptance.py",
+                         "tools/validation/native_upgrade_acceptance.py",
+                         "tools/validation/native_scheduler_batch.py",
+                         "tools/validation/native_cli_adoption.py",
+                         "tools/validation/stop_host_acceptance.py",
+                         "tools/validation/host_process_inventory.py",
+                         "scripts/artifact_identity.py",
+                         "scripts/cg_process_tree.py",
+                         "scripts/context_guard.py",
+                         "tools/guard_state_migration.py"):
+            self.assertIn(consumed, helpers)
 
     def test_plan_file_law_refuses_relative_output(self):
         import os

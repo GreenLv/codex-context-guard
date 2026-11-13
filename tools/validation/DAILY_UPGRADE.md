@@ -103,10 +103,20 @@ into the same batch is refused once its receipt exists.
    plan artifact and the installed cache, and a read-only fresh-client Hook
    probe (initialize + `hooks/list` over the official app-server transport,
    no model turn) that records which Hook sources a brand-new client
-   actually loads. Statuses: `passed`, `hook_trust_pending` (open the
-   client, review `/hooks`, trust the nine Hooks), `restart_required` (a
-   fresh client still loads the old source), `loaded_unknown` (probe
-   failed; never reported as a pass).
+   actually loads. The verdict requires the exact nine events, one row each,
+   plugin source, no inventory errors or warnings, trusted and enabled rows
+   and an enabled official readback. Statuses: `passed`,
+   `hook_trust_pending` (open the client, review `/hooks`, trust the nine
+   Hooks), `hook_inventory_incomplete` (missing, duplicate, unknown-event,
+   wrong-source or flagged rows — never a pass), `restart_required` (a fresh
+   client still loads the old source), `loaded_unknown` (probe failed; never
+   reported as a pass). Every verify re-measures the live machine — a prior
+   receipt, passed or not, is a historical result and never substitutes for
+   current state; each run records its verdict in the next exclusive
+   numbered receipt (`verify.json`, `verify-2.json`, …) and prior receipts
+   are never replaced. Re-running the same verify command after an operator
+   step is therefore the intended resume; destructive apply stages are the
+   only resume-once work.
 
 Exit codes: `0` completed, `1` pending (an operator action or a failed but
 resumable stage), `2` refused inputs.
@@ -126,8 +136,13 @@ Only what the platform actually requires of a human:
 ## Records and limitations
 
 Each batch directory keeps `preflight.json`, `prepare.json`,
-`apply-events.jsonl`, `apply.json` and `verify.json`, plus the probe journal
-`probe/loaded-N/rpc.jsonl`. Results contain host-local paths and process
+`apply-events.jsonl`, `apply.json` and the numbered verify receipts
+(`verify.json`, `verify-2.json`, …), plus the probe journal
+`probe/loaded-N/rpc.jsonl`. Every subject binds the digests of the tool, its
+executed helper closure (`scripts/`, `tools/validation/`,
+`tools/guard_state_migration.py`), the platform launchers and the pinned
+process-enumeration executables, so any helper drift between phases is
+refused. Results contain host-local paths and process
 facts and are private to the operator; never commit them. The fresh-client
 probe observes only what a new client would load — it cannot prove what the
 already-running Desktop has in memory, which is precisely why the swap

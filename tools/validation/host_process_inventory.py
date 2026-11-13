@@ -109,9 +109,12 @@ def _darwin_executable(pid: int) -> str | None:
         return None
 
 
+_PS_ARGUMENTS = ["-axww", "-o", "pid=,ppid=,uid="]
+
+
 def _ps_rows(ps: str) -> list[dict]:
     """pid/ppid/uid rows from a read-only ps query (POSIX fallback source)."""
-    result = subprocess.run([ps, "-axww", "-o", "pid=,ppid=,uid="], capture_output=True,
+    result = subprocess.run([ps, *_PS_ARGUMENTS], capture_output=True,
                             timeout=COMMAND_TIMEOUT)
     if result.returncode != 0:
         raise InventoryError("process_list_unavailable")
@@ -126,10 +129,11 @@ def _ps_rows(ps: str) -> list[dict]:
     return rows
 
 
-def _enumerate_darwin() -> dict:
-    ps = shutil.which("ps")
-    if ps is None:
+def _enumerate_darwin(ps: str | None = None) -> dict:
+    resolved = ps or shutil.which("ps")
+    if resolved is None:
         raise InventoryError("ps_unavailable")
+    ps = resolved
     rows = _ps_rows(ps)
     pids = set(_darwin_pids())
     # The ps snapshot and the libproc snapshot are two bounded reads; a pid
@@ -147,7 +151,8 @@ def _enumerate_darwin() -> dict:
     for pid in sorted(missing):
         rows.append({"pid": pid, "ppid": None, "uid": None,
                      "executable": None, "identity": IDENTITY_UNREADABLE})
-    return {"source": "darwin-ps-libproc", "rows": rows}
+    return {"source": "darwin-ps-libproc", "ps_path": ps, "ps_arguments": _PS_ARGUMENTS,
+            "observer_uid": os.getuid(), "rows": rows}
 
 
 def _enumerate_linux() -> dict:
@@ -173,7 +178,7 @@ def _enumerate_linux() -> dict:
         rows.append(row)
     if not rows:
         raise InventoryError("process_list_unavailable")
-    return {"source": "linux-proc", "rows": rows}
+    return {"source": "linux-proc", "observer_uid": os.getuid(), "rows": rows}
 
 
 # -------------------------------------------------------------- Windows ----
@@ -216,21 +221,25 @@ def _enumerate_windows(powershell: str | None) -> dict:
         rows.append({"pid": pid, "ppid": ppid, "uid": None,
                      "executable": executable,
                      "identity": IDENTITY_OBSERVED if executable else IDENTITY_UNREADABLE})
-    return {"source": "windows-cim", "rows": rows, "powershell": shell}
+    return {"source": "windows-cim", "powershell": shell, "rows": rows}
 
 
 # ------------------------------------------------------------- classify ----
 
-def enumerate_processes(powershell: str | None = None) -> dict:
+def enumerate_processes(powershell: str | None = None,
+                        ps: str | None = None) -> dict:
     """One bounded read-only enumeration. Never raises for host conditions.
 
-    A failed enumeration returns status ``failed`` with a reason; it is the
-    caller's contract to treat that as unknown, never as absence.
+    The pinned ``ps``/``powershell`` executables from the subject identity are
+    consumed here instead of a fresh PATH re-resolution; the actually used
+    executable and arguments are reported in the payload. A failed
+    enumeration returns status ``failed`` with a reason; it is the caller's
+    contract to treat that as unknown, never as absence.
     """
     if os.name == "nt":
         route = lambda: _enumerate_windows(powershell)  # noqa: E731 - closed over the pinned shell
     elif sys.platform == "darwin":
-        route = _enumerate_darwin
+        route = lambda: _enumerate_darwin(ps)  # noqa: E731 - closed over the pinned ps
     elif os.name == "posix":
         route = _enumerate_linux
     else:
@@ -244,19 +253,21 @@ def enumerate_processes(powershell: str | None = None) -> dict:
     return {"status": "observed", "reason": None, **payload}
 
 
-def _kernel_family(row: dict, source: str) -> bool:
+def _kernel_family(row: dict, source: str, observer_uid: int | None) -> bool:
     """Structural rule: this unreadable row cannot be the invoking user's GUI host.
 
     Windows: the kernel family (pid or parent pid <= 4, the System process).
-    POSIX: any other owner — a process owned by another uid cannot be the
-    invoking user's Desktop host. A row with no owner evidence keeps
-    Desktop candidacy.
+    POSIX: any owner other than the enumeration's own ``observer_uid`` — a
+    process owned by another uid cannot be that observer's Desktop host. No
+    platform-specific call happens here, so synthetic classifications run on
+    every platform; a row without owner evidence or without an observed
+    observer uid keeps Desktop candidacy.
     """
     if source == "windows-cim":
         pid, ppid = row.get("pid"), row.get("ppid")
         return pid is not None and ppid is not None and (pid <= 4 or ppid <= 4)
     uid = row.get("uid")
-    return uid is not None and uid != os.getuid()
+    return uid is not None and observer_uid is not None and uid != observer_uid
 
 
 def classify(enumeration: dict, desktop_executables, sandbox_markers=()) -> dict:
@@ -323,6 +334,9 @@ def classify(enumeration: dict, desktop_executables, sandbox_markers=()) -> dict
             current = parent.get("ppid")
         return False
 
+    observer_uid = enumeration.get("observer_uid")
+    _require(observer_uid is None or _readable_int(observer_uid) == observer_uid,
+             "enumeration observer uid invalid")
     counts = {CLASS_DESKTOP: 0, CLASS_DESCENDANT: 0, CLASS_SANDBOX: 0,
               CLASS_SYSTEM: 0, CLASS_UNREADABLE: 0, CLASS_UNRELATED: 0}
     desktop_rows, sandbox_rows, descendant_rows, unreadable_rows = [], [], [], []
@@ -356,7 +370,7 @@ def classify(enumeration: dict, desktop_executables, sandbox_markers=()) -> dict
             descendant_rows.append({"pid": row["pid"], "ppid": row.get("ppid"),
                                     "executable": None})
             continue
-        if _kernel_family(row, source):
+        if _kernel_family(row, source, observer_uid):
             counts[CLASS_SYSTEM] += 1
             continue
         counts[CLASS_UNREADABLE] += 1
@@ -370,7 +384,9 @@ def classify(enumeration: dict, desktop_executables, sandbox_markers=()) -> dict
         status, reason = "absent", None
     return {"schema": SCHEMA, "status": status, "reason": reason,
             "enumeration": {"status": "observed", "source": source,
-                            "process_count": len(rows)},
+                            "process_count": len(rows),
+                            **{key: value for key, value in enumeration.items()
+                               if key in ("ps_path", "ps_arguments", "powershell")}},
             "pinned": {"desktop_executables": sorted(desktop),
                        "sandbox_markers": sorted(sandbox)},
             "counts": counts, "desktop_host_processes": desktop_rows,

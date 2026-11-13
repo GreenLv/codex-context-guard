@@ -123,9 +123,19 @@ def _probe_run(argv: list[str], env: dict[str, str] | None,
     return scheduler._command(native, ROOT, argv, env=env, timeout=timeout)
 
 
-def _host_inventory(desktop: str, markers: list[str]) -> dict[str, Any]:
-    """Read-only process classification; tests replace this seam."""
-    return inventory.classify(inventory.enumerate_processes(), [desktop], markers)
+def _host_inventory(desktop: str, markers: list[str],
+                    host_tools: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Read-only process classification; tests replace this seam.
+
+    The enumeration consumes the pinned ps/powershell identities from the
+    subject instead of re-resolving them from PATH.
+    """
+    tools = host_tools or {}
+    pinned_powershell = tools.get("powershell", {}).get("path")
+    pinned_ps = tools.get("ps", {}).get("path")
+    return inventory.classify(
+        inventory.enumerate_processes(powershell=pinned_powershell, ps=pinned_ps),
+        [desktop], markers)
 
 
 # ------------------------------------------------------------- helpers ----
@@ -162,7 +172,7 @@ def _daily_home() -> Path:
 
 def _fact(stage: str, argv: list[str], result: Any, observation: Any = None,
           **extra: Any) -> dict[str, Any]:
-    return {"stage": stage, "argv": [str(item) for item in argv],
+    return {"stage": stage, "argv": [str(item) for item in argv], "cwd": str(ROOT),
             "status": "completed", "exit_code": result.returncode,
             "stderr_nonempty": bool(result.stderr), "observation": observation, **extra}
 
@@ -170,6 +180,47 @@ def _fact(stage: str, argv: list[str], result: Any, observation: Any = None,
 def _interpreter_identity() -> dict[str, str]:
     return {"path": str(Path(sys.executable).resolve()), "version": platform.python_version(),
             "sha256": _sha_loose(Path(sys.executable).resolve())}
+
+
+def _ps_identity() -> dict[str, str] | None:
+    """The exact read-only ps executable the formal enumeration will consume."""
+    if sys.platform != "darwin":
+        return None
+    resolved = shutil.which("ps")
+    require(resolved is not None, "darwin process enumeration requires ps")
+    return {"path": str(Path(resolved).resolve()), "sha256": _sha_loose(Path(resolved).resolve())}
+
+
+HELPER_SOURCE_LIMIT = 256
+
+
+def _helper_identities() -> dict[str, str]:
+    """Digests of the executed helper closure, as a conservative source inventory.
+
+    Binding only this file's own bytes would let an imported consumer —
+    native_acceptance, the scheduler command runner, artifact_identity,
+    cg_process_tree, the Hook inventory or their shared helpers — drift
+    undetected between prepare and apply/verify. A maintained exact closure is
+    fragile, so the binding covers every Python module under ``scripts/`` and
+    ``tools/validation/`` plus ``tools/guard_state_migration.py`` (the
+    transitive import surface this tool executes), plus the platform
+    launchers. A module added to those trees is therefore pinned too.
+    """
+    helpers: dict[str, str] = {}
+    roots = [ROOT / "scripts", ROOT / "tools" / "validation"]
+    for root in roots:
+        for path in sorted(root.glob("*.py")):
+            require(len(helpers) < HELPER_SOURCE_LIMIT,
+                    "helper source inventory exceeded its bound")
+            helpers[path.relative_to(ROOT).as_posix()] = base.sha(path)
+    migration = ROOT / "tools" / "guard_state_migration.py"
+    if migration.is_file():
+        helpers[migration.relative_to(ROOT).as_posix()] = base.sha(migration)
+    for name in ("run_daily_upgrade.sh", "run_daily_upgrade.ps1"):
+        path = ROOT / "tools" / "validation" / name
+        if path.is_file():
+            helpers[path.relative_to(ROOT).as_posix()] = base.sha(path)
+    return helpers
 
 
 def _powershell_identity(env: dict[str, str]) -> dict[str, Any] | None:
@@ -339,19 +390,24 @@ def _daily_state(cli: Path, env: dict[str, str], stage: str) -> dict[str, Any]:
 
 
 def _data_policy(plan: dict[str, Any], env: dict[str, str],
-                 commands: list[dict[str, Any]]) -> dict[str, Any] | None:
+                 commands: list[dict[str, Any]],
+                 installed_version: str | None) -> dict[str, Any] | None:
     """Observe the existing retention policy without changing it.
 
-    The readback runs the currently installed copy of the product CLI; with
-    no or an ambiguous installation the policy is recorded as skipped and is
-    re-observed at verify time.
+    The readback runs the observed installed copy of the product CLI — never
+    a retained target-version slot that may not be the consuming version. With
+    no or an ambiguous observed installation the policy is recorded as
+    honestly skipped and is re-observed at verify time.
     """
     data_dir = plan.get("data_dir")
     if data_dir is None:
         return None
     data_dir = Path(data_dir)
     daily = _daily_home()
-    candidates = _cache_candidates(daily, plan["target_version"])
+    if installed_version is None:
+        return {"data_dir": str(data_dir), "present": data_dir.is_dir(),
+                "policy_readback": "skipped_no_installation_observed"}
+    candidates = _cache_candidates(daily, installed_version)
     caches = daily / "plugins" / "cache" / MARKET / PLUGIN_NAME
     installed_roots = ([path for path in caches.iterdir()
                         if path.is_dir() and not path.is_symlink()] if caches.is_dir() else [])
@@ -386,19 +442,29 @@ def _preflight_checks(plan: dict[str, Any]) -> dict[str, Any]:
         raise CapabilityPending("public CLI hard-link aliases require review") from None
     artifact = _verify_artifact(plan)
     desktop = plan["desktop_executable"]
-    host_state = _host_inventory(desktop, plan["sandbox_markers"])
+    host_tools: dict[str, Any] = {}
+    if os.name == "nt":
+        host_tools["powershell"] = _powershell_identity(env)
+    else:
+        ps_identity = _ps_identity()
+        if ps_identity is not None:
+            host_tools["ps"] = ps_identity
+    host_state = _host_inventory(desktop, plan["sandbox_markers"], host_tools)
     state = _daily_state(cli, env, "preflight")
     if plan.get("expected_cli_version") is not None:
         require(state["cli_version"] == plan["expected_cli_version"],
                 "CLI version differs from the plan pin")
-    data_policy = _data_policy(plan, env, state["commands"])
+    data_policy = _data_policy(plan, env, state["commands"], state["version"])
     subject: dict[str, Any] = {
         "schema": REPORT,
         "tool_sha256": base.sha(Path(__file__)),
+        "tool_root": str(ROOT),
+        "invocation_cwd": str(Path.cwd().resolve()),
+        "helpers": _helper_identities(),
         "plan_sha256": base.digest(plan),
         "cli": {"path": str(cli), "sha256": cli_sha, "version": state["cli_version"]},
         "python": _interpreter_identity(),
-        "powershell": _powershell_identity(env) if os.name == "nt" else None,
+        "host_tools": host_tools,
         "daily_home": str(daily),
         "artifact": artifact,
         "market_identity": {"entry": ENTRY, "marketplace": MARKET},
@@ -548,15 +614,24 @@ def preflight_commands(plan: dict[str, Any], plan_path: Path) -> dict[str, Any]:
     require(utf8.returncode == 0, "child environment probe failed")
     launcher: dict[str, Any]
     opposite: str
+    probe_shell: str
     if os.name == "posix":
+        shell = shutil.which("sh")
+        require(shell is not None, "POSIX sh unavailable for launcher probing")
+        probe_shell = str(Path(shell).resolve())
         launcher = _probe_sh_launcher(ROOT / "tools" / "validation" / "run_daily_upgrade.sh",
-                                      ["daily", "--plan", str(plan_path)])
+                                      ["daily", "--plan", str(plan_path)], probe_shell)
         opposite = "capability_skip: run_daily_upgrade.ps1 requires Windows"
     else:
+        pinned = (subject.get("host_tools") or {}).get("powershell", {}).get("path")
+        shell = pinned or shutil.which("pwsh") or shutil.which("powershell")
+        require(shell is not None, "PowerShell unavailable for launcher probing")
+        probe_shell = str(Path(shell).resolve())
         launcher = _probe_ps1_launcher(ROOT / "tools" / "validation" / "run_daily_upgrade.ps1",
-                                       ["daily", "--plan", str(plan_path)])
+                                       ["daily", "--plan", str(plan_path)], probe_shell)
         opposite = "capability_skip: run_daily_upgrade.sh requires POSIX sh"
-    return {"planned_official_families": planned,
+    return {"probe_shell": probe_shell,
+            "planned_official_families": planned,
             "probe_oracles": ["--version", "launcher print-argv", "read-only process enumeration"],
             "help_probes": "none",
             "entry_probe": {"argv": [str(cli), "--version"],
@@ -567,10 +642,12 @@ def preflight_commands(plan: dict[str, Any], plan_path: Path) -> dict[str, Any]:
             "enumeration": subject["host"]["enumeration"]}
 
 
-def _probe_sh_launcher(launcher: Path, passthrough: list[str]) -> dict[str, Any]:
-    parsed = _probe_run(["sh", "-n", str(launcher)], {})
-    require(parsed.returncode == 0, "sh launcher parse probe failed: sh -n " + str(launcher))
-    real_argv = ["/bin/sh", str(launcher), "--print-argv", *passthrough]
+def _probe_sh_launcher(launcher: Path, passthrough: list[str],
+                       shell: str) -> dict[str, Any]:
+    parsed = _probe_run([shell, "-n", str(launcher)], {})
+    require(parsed.returncode == 0, "sh launcher parse probe failed: " + shell
+            + " -n " + str(launcher))
+    real_argv = [shell, str(launcher), "--print-argv", *passthrough]
     replay = _probe_run(real_argv, {})
     lines = replay.stdout.decode("utf-8").splitlines()
     require(replay.returncode == 0 and lines == passthrough,
@@ -580,8 +657,8 @@ def _probe_sh_launcher(launcher: Path, passthrough: list[str]) -> dict[str, Any]
             "real_entry": {"argv": real_argv, "echoed": lines}}
 
 
-def _probe_ps1_launcher(launcher: Path, passthrough: list[str]) -> dict[str, Any]:
-    shell = shutil.which("pwsh") or shutil.which("powershell")
+def _probe_ps1_launcher(launcher: Path, passthrough: list[str],
+                        shell: str) -> dict[str, Any]:
     require(shell is not None, "PowerShell launcher probe requires pwsh or powershell")
     script = (
         '$ErrorActionPreference = "Stop"\n'
@@ -894,16 +971,24 @@ class _ProbeClient:
 
 def _loaded_probe(cli: Path, cwd: Path, journal_dir: Path,
                   env: dict[str, str]) -> dict[str, Any]:
-    """What Hook sources a brand-new client actually loads; never a turn."""
-    record: dict[str, Any] = {"schema": PROBE_SCHEMA, "hooks": [], "cleanup": None,
-                              "reason": None}
+    """What Hook sources a brand-new client actually loads; never a turn.
+
+    ``journal_dir`` is created here as an exclusive attempt directory; a
+    caller must pick the next unused index instead of reusing one.
+    Inventory-level errors/warnings are recorded as flags — their text is
+    never retained — and never allow a pass.
+    """
+    record: dict[str, Any] = {"schema": PROBE_SCHEMA, "hooks": [], "inventory_flagged": False,
+                              "cleanup": None, "reason": None}
     client = None
     try:
+        os.mkdir(journal_dir, 0o700)
         client = _ProbeClient(cli, cwd, journal_dir, env)
         data = client.hooks_raw.get("data") if isinstance(client.hooks_raw, dict) else None
         require(isinstance(data, list) and len(data) == 1
                 and isinstance(data[0], dict) and isinstance(data[0].get("hooks"), list),
                 "Hook inventory unavailable")
+        record["inventory_flagged"] = bool(data[0].get("errors")) or bool(data[0].get("warnings"))
         for row in data[0]["hooks"]:
             require(isinstance(row, dict), "Hook inventory row malformed")
             record["hooks"].append({key: row.get(key) for key in
@@ -917,50 +1002,80 @@ def _loaded_probe(cli: Path, cwd: Path, journal_dir: Path,
             except BaseException as exc:
                 record["cleanup"] = {"cleanup_complete": False,
                                      "error": type(exc).__name__}
-        if record["cleanup"] is not None and record["cleanup"].get("cleanup_complete") is not True:
+        cleanup = record["cleanup"]
+        if cleanup is not None and not (
+                cleanup.get("cleanup_complete") is True
+                or (cleanup.get("owned_process_exited") is True
+                    and cleanup.get("owned_tree_no_running_members") is True
+                    and not cleanup.get("process_group_cleanup_error"))):
             # An unknown probe cleanup is an honest observation gap, never a
-            # pass; verify reports it as loaded_unknown.
+            # pass; verify reports it as loaded_unknown. A group that already
+            # vanished naturally is the owned-tree verdict above, matching the
+            # acceptance toolkit's cleanup conventions.
             record["reason"] = record["reason"] or "probe_cleanup_unknown"
     return record
 
 
-def _route_loaded(hooks: list[dict[str, Any]], daily: Path,
-                  cache_path: Path) -> str:
-    """Old/new routing from observed Hook source paths only.
+def _route_ccg_hooks(rows: list[dict[str, Any]], daily: Path,
+                     cache_path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool | None]:
+    """Split Hook rows into fresh/stale Context Guard identity classes.
 
-    ``new`` means at least one Context Guard Hook source resolves under the
-    freshly installed cache; ``old`` means Context Guard Hooks still resolve
-    only elsewhere in the plugin cache; ``none`` means no Context Guard Hook
-    rows; ``unknown`` is never claimed here — the caller handles probe
-    failures separately.
+    A row carries Context Guard identity only when its ``sourcePath`` is the
+    exact ``hooks/hooks.json`` of a Context Guard cache slot (official path
+    semantics — Windows case-insensitive, POSIX sensitive), compared against
+    the slots that actually exist on disk. Rows of other installed plugins,
+    or rows with unreadable paths, are never counted as old Context Guard;
+    an unreadable path makes the whole inventory unroutable (``None``).
     """
-    cache_root_prefix = str(daily / "plugins" / "cache").casefold() + os.sep
-    fresh_prefix = str(cache_path).casefold() + os.sep
-    has_new = has_old = False
-    for row in hooks:
+    fresh_path = cache_path / "hooks" / "hooks.json"
+    cache_root = daily / "plugins" / "cache" / MARKET / PLUGIN_NAME
+    sibling_paths: list[Path] = []
+    if cache_root.is_dir():
+        for entry in cache_root.iterdir():
+            if entry.is_dir() and not entry.is_symlink():
+                sibling_paths.append(entry / "hooks" / "hooks.json")
+    fresh: list[dict[str, Any]] = []
+    stale: list[dict[str, Any]] = []
+    for row in rows:
         source_path = row.get("sourcePath")
         if not isinstance(source_path, str) or not source_path:
-            return "unknown"
-        folded = source_path.casefold()
-        if folded.startswith(fresh_prefix):
-            has_new = True
-        elif folded.startswith(cache_root_prefix):
-            has_old = True
-    if has_new and has_old:
-        # Positive evidence of both sources is never a clean new load.
-        return "old"
-    if has_new:
-        return "new"
-    if has_old:
-        return "old"
-    return "none"
+            return [], [], None
+        if _same_path(source_path, str(fresh_path)):
+            fresh.append(row)
+        elif any(_same_path(source_path, str(sibling)) for sibling in sibling_paths):
+            stale.append(row)
+    return fresh, stale, True
 
 
 # ----------------------------------------------------------------- verify ----
 
 
+def _next_verify_receipt(output: Path) -> Path:
+    """Same-command verification resume: the next exclusive numbered receipt.
+
+    Existing receipts are never replaced or re-read as evidence; the newest
+    numbered receipt keeps the latest verdict and every prior receipt stays.
+    """
+    candidate = output / VERIFY_NAME
+    if not candidate.exists():
+        return candidate
+    index = 2
+    while (output / f"verify-{index}.json").exists():
+        index += 1
+    return output / f"verify-{index}.json"
+
+
 def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
-           verify_output: Path) -> dict[str, Any]:
+           verify_output: Path | None) -> dict[str, Any]:
+    """Re-derive the current machine state; never reuse a historical receipt.
+
+    A prior verify receipt — passed or pending — is a historical result. Every
+    verify refreshes the live official readbacks, the installed-cache parity
+    and the fresh-client Hook facts, and records its verdict in the next
+    exclusive numbered receipt; prior receipts are never replaced. Only the
+    destructive apply stages are resume-once work; verification is a
+    measurement, and a passed receipt never substitutes for current state.
+    """
     prepared, prepared_sha = _read_bound_result(prepared_path, stage="prepare")
     require(output.is_dir() and not output.is_symlink(),
             "verify requires the existing batch output directory")
@@ -995,23 +1110,40 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
     require(len(candidates) == 1, "installed cache is missing or ambiguous")
     cache_path = candidates[0]
     compare_artifact(Path(plan["artifact_dir"]), cache_path)
-    # Fresh-client loaded-version probe, journaled under an unused index.
+    # Fresh-client loaded-version probe under an exclusive attempt index.
     probe_root = output / "probe" / "loaded"
     probe_root.mkdir(parents=True, mode=0o700, exist_ok=True)
     index = 1
     while (probe_root / f"loaded-{index}").exists():
         index += 1
     probe = _loaded_probe(cli, plan["cwd"], probe_root / f"loaded-{index}", env)
-    loaded = "unknown"
-    if probe["reason"] is None:
-        loaded = _route_loaded(probe["hooks"], daily, cache_path)
-    fresh_prefix = str(cache_path).casefold() + os.sep
-    trust_rows = [row for row in probe["hooks"]
-                  if isinstance(row.get("sourcePath"), str)
-                  and row["sourcePath"].casefold().startswith(fresh_prefix)]
-    trust_pending = (not trust_rows or any(row.get("trustStatus") != "trusted"
-                                           or row.get("enabled") is not True
-                                           for row in trust_rows))
+    if probe["reason"] is not None:
+        loaded = "unknown"
+        fresh_rows: list[dict[str, Any]] = []
+        structural = False
+    else:
+        fresh_rows, stale_rows, routable = _route_ccg_hooks(probe["hooks"], daily, cache_path)
+        if routable is None:
+            loaded = "unknown"
+        elif fresh_rows and stale_rows:
+            loaded = "old"
+        elif stale_rows:
+            loaded = "old"
+        elif fresh_rows:
+            loaded = "new"
+        else:
+            loaded = "none"
+        # The verdict family: the exact nine events, one row each, plugin
+        # source, no inventory errors/warnings. Missing, duplicate, unknown
+        # event, wrong-source and flagged inventories never pass.
+        structural = (loaded == "new" and not probe["inventory_flagged"]
+                      and len(fresh_rows) == len(EVENTS)
+                      and sorted(row["eventName"] for row in fresh_rows) == sorted(EVENTS)
+                      and all(row.get("source") == "plugin" for row in fresh_rows))
+    trust_pending = (structural and (current["enabled"] is not True
+                                     or any(row.get("trustStatus") != "trusted"
+                                            or row.get("enabled") is not True
+                                            for row in fresh_rows)))
     if loaded == "old":
         status = "restart_required"
         detail = ("a fresh client still loads the old Hook source; quit and reopen the "
@@ -1022,6 +1154,10 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
     elif loaded == "none":
         status = "loaded_none"
         detail = "the fresh-client Hook inventory shows no Context Guard Hooks"
+    elif not structural:
+        status = "hook_inventory_incomplete"
+        detail = ("the fresh-client Hook inventory is not exactly the nine trusted "
+                  "Context Guard plugin Hooks from " + str(cache_path))
     elif trust_pending:
         status = "hook_trust_pending"
         detail = ("open the Codex client, review /hooks and trust the nine Hooks from "
@@ -1029,7 +1165,7 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
     else:
         status = "passed"
         detail = None
-    data_policy = _data_policy(plan, env, current["commands"])
+    data_policy = _data_policy(plan, env, current["commands"], current["version"])
     result = {"schema": REPORT, "stage": "verify", "status": status, "detail": detail,
               "subject_sha256": base.digest(_binding_view(subject)),
               "prepared_sha256": prepared_sha,
@@ -1046,10 +1182,18 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
               "host": subject["host"],
               "data_policy": data_policy,
               "commands": current["commands"]}
-    if verify_output != output / VERIFY_NAME:
-        _claim_output(subject, verify_output)
-    base._write_new(verify_output, result)
-    print(json.dumps({"status": status, "stage": "verify", "fresh_client_loaded": loaded}))
+    if verify_output is None:
+        verify_output = _next_verify_receipt(output)
+    elif Path(verify_output).exists():
+        raise UpgradeError("explicit verify output already exists: " + str(verify_output))
+    elif Path(verify_output).parent == output:
+        pass
+    else:
+        _claim_output(subject, Path(verify_output))
+    base._write_new(Path(verify_output), result)
+    print(json.dumps({"status": status, "stage": "verify",
+                      "fresh_client_loaded": loaded,
+                      "receipt": str(verify_output)}))
     return result
 
 
@@ -1096,8 +1240,7 @@ def main(argv: list[str] | None = None) -> int:
             apply(plan, args.output, prepared)
         else:
             require(prepared is not None, "prepared result required")
-            verify_output = args.verify_output or (args.output / VERIFY_NAME)
-            result = verify(plan, args.output, prepared, verify_output)
+            result = verify(plan, args.output, prepared, args.verify_output)
             return 0 if result["status"] == "passed" else 1
     except (HostPending, CapabilityPending) as exc:
         print("daily_upgrade=pending; " + str(exc), file=sys.stderr)
