@@ -549,7 +549,9 @@ class TriggerDecisionTests(RetentionFixtureBase):
         # advisory and may be dropped when they lose the mutex.
         self.assertTrue(state.get("last_attempt_at"))
         skip = (state.get("last_skip") or {}).get("reason")
-        self.assertIn(skip, ("throttled", "claim_race", None))
+        # A loser can observe the winner's fresh claim before spawn releases
+        # it; that early, fail-closed observation is also a legal skip.
+        self.assertIn(skip, ("throttled", "claim_race", "claim_held", None))
 
     def test_trigger_failure_never_fails_session_end(self):
         def broken(argv):
