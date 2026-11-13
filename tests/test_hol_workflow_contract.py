@@ -11,7 +11,7 @@ class HolWorkflowContractTests(unittest.TestCase):
 
     def test_scan_gate_and_pinned_inputs_are_preserved(self):
         for expected in (
-            "hashgraph-online/ai-plugin-scanner-action@a18c14cfbf6b787db97e6aa4207d5d469a5672a0",
+            "hashgraph-online/ai-plugin-scanner-action@9b169fc65d09b24726b66d70b3563ab563158b58",
             'plugin_dir: "."', "mode: scan", "install_cisco: true",
             'cisco_skill_scan: "on"', "min_score: 80", "fail_on_severity: high",
             "format: sarif", "upload_sarif: true", "output: ai-plugin-scanner.sarif",
@@ -51,7 +51,7 @@ class HolWorkflowContractTests(unittest.TestCase):
         self.assertIn("SOURCE_REPOSITORY: ${{ github.repository }}", self.workflow)
         self.assertIn('--expected-source-sha "$SOURCE_SHA"', self.workflow)
         self.assertIn('--expected-repository "$SOURCE_REPOSITORY"', self.workflow)
-        self.assertIn('--expected-scanner-version "3.58.0"', self.workflow)
+        self.assertIn('--expected-scanner-version "3.59.0"', self.workflow)
         self.assertNotIn("gh ", self.workflow)
         self.assertNotIn("workflow run", self.workflow)
 

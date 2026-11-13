@@ -124,7 +124,7 @@ class HolEvidenceTests(unittest.TestCase):
     def test_action_scanner_version_is_independent_of_local_validation_lock(self):
         # The Action installs its own pinned scanner, separately from uv's
         # local validation environment. Both identities must remain explicit.
-        action_version = "3.58.0"
+        action_version = "3.59.0"
         self.payload["scannerVersion"] = action_version
         self.sarif["runs"][0]["tool"]["driver"]["version"] = action_version
         self.write_reports()
@@ -140,10 +140,24 @@ class HolEvidenceTests(unittest.TestCase):
     def test_local_scanner_reports_cannot_satisfy_the_new_action_identity(self):
         before = {name: (self.root / name).read_bytes()
                   for name in (HE.SARIF, HE.PAYLOAD)}
-        result = self.collect(version="3.58.0")
+        result = self.collect(version="3.59.0")
         self.assertEqual(result["status"], "failed")
         self.assertIn("payload:payload_scanner_mismatch", result["diagnostics"])
         self.assertIn("sarif:sarif_scanner_mismatch", result["diagnostics"])
+        self.assertEqual(result["upload_paths"], [HE.COMPANION])
+        for name, raw in before.items():
+            self.assertEqual((self.root / name).read_bytes(), raw)
+
+    def test_previous_action_reports_cannot_satisfy_359_identity(self):
+        self.payload["scannerVersion"] = "3.58.0"
+        self.sarif["runs"][0]["tool"]["driver"]["version"] = "3.58.0"
+        self.write_reports()
+        before = {name: (self.root / name).read_bytes()
+                  for name in (HE.SARIF, HE.PAYLOAD)}
+        result = self.collect(version="3.59.0")
+        self.assertEqual(result["status"], "failed")
+        for error in ("payload:payload_scanner_mismatch", "sarif:sarif_scanner_mismatch"):
+            self.assertIn(error, result["diagnostics"])
         self.assertEqual(result["upload_paths"], [HE.COMPANION])
         for name, raw in before.items():
             self.assertEqual((self.root / name).read_bytes(), raw)
