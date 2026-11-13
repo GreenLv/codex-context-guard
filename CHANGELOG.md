@@ -25,7 +25,7 @@ Versions are listed newest first. See [GitHub Releases](https://github.com/Green
 
 ### Highlights
 
-- Context Guard automatically maintains eligible session records. Without a retention policy, sessions ended more than 30 days can move to a recoverable quarantine. Later ordinary use can permanently delete them after at least seven days there.
+- Context Guard automatically maintains its own session records, leaving Codex chats and session history untouched. Without a retention policy, its records for sessions that ended more than 30 days ago can move to a recoverable quarantine. Later ordinary use can permanently delete those records after at least seven days there.
 - Explicit retention settings continue to apply. A disabled policy, custom period, quarantine-only setting, or durable opt-out takes precedence. A damaged or unreadable policy does not authorize deletion. A missing policy uses the automatic default, which permits permanent deletion after quarantine.
 - You can upgrade `context-guard@codex-context-guard` from 0.17.1 in place. Finish tasks that still need the old Hook first, or keep them in a separate Codex environment. A 0.17.1 scheduler disable alone did not record a durable opt-out. If you want cleanup to remain off, the upgrade guide explains how to disable it before and after upgrading. [Upgrade guide](docs/UPGRADE_0_17_2.md)
 
