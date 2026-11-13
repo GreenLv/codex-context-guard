@@ -14,11 +14,13 @@ Save the verified previous release ZIP and marketplace source. Download and veri
 
 Follow the [daily-upgrade tool instructions](https://github.com/GreenLv/codex-context-guard/blob/v0.17.3/tools/validation/DAILY_UPGRADE.md) to write a private plan naming the exact release directory, CLI and Desktop executable. Run its command preflight and prepare phase before closing Desktop. Keep all results outside the checkout and daily configuration directory.
 
+Use `--preflight-commands` then `--prepare` for the same future batch path. A standalone `--preflight` uses a separate output directory. If prepare reports `already_current`, skip apply and continue with `--verify`.
+
 ## Switch and verify
 
 Finish or safely hand off tasks that still need the old Hook. Official marketplace operations can remove its cache. Quit Desktop before replacing that installation, then run the prepared apply command from an external terminal. If interrupted, use the same plan and batch to continue; inspect saved results before retrying.
 
-Open your client and complete its normal `/hooks` review for the nine Hooks from the new installed path. Run verify with the same plan and batch. A pass means the official installation, release files and all nine Hooks agree for a fresh client. It does not prove what an already-running Desktop process has in memory; confirm the version in your next Desktop task.
+Open your client and review the nine Hooks from the new installed path through CLI `/hooks`, or Desktop's **Review hooks** / **Settings > Hooks**. Run verify with the same plan and batch. A pass means the official installation, release files and all nine Hooks agree for a fresh client. It does not prove what an already-running Desktop process has in memory; confirm the version in your next Desktop task.
 
 The upgrade keeps the stable identity and existing data root. A disabled cleanup policy, custom retention period, quarantine-only setting and durable opt-out remain effective. Missing-policy defaults remain 30-day eligibility followed by at least seven days in recoverable quarantine and later automatic purge. See [session storage](SESSION_STORAGE.md) for inspection, disabling and recovery commands.
 

@@ -454,13 +454,11 @@ def classify(enumeration: dict, desktop_executables, sandbox_markers=()) -> dict
     # basename that differs from every pinned candidate basename excludes the
     # row only from those exact pinned images. Same-name rows and rows
     # without usable name evidence keep Desktop candidacy (unknown).
-    candidate_basenames = set()
+    desktop_basenames = set()
+    sandbox_basenames = set()
     if source == "windows-toolhelp":
-        for path in (*desktop_executables, *sandbox_markers):
-            basename = ntpath.basename(str(path))
-            _require(len(basename) < _WIN_TRUNCATION_GUARD,
-                     "pinned identity basename exceeds toolhelp capacity")
-            candidate_basenames.add(ntpath.normcase(basename))
+        desktop_basenames = windows_candidate_basenames(desktop_executables)
+        sandbox_basenames = windows_candidate_basenames(sandbox_markers)
 
     by_pid = {row["pid"]: row for row in rows}
 
@@ -497,6 +495,7 @@ def classify(enumeration: dict, desktop_executables, sandbox_markers=()) -> dict
     counts = {CLASS_DESKTOP: 0, CLASS_DESCENDANT: 0, CLASS_SANDBOX: 0,
               CLASS_SYSTEM: 0, CLASS_UNREADABLE: 0, CLASS_UNRELATED: 0}
     desktop_rows, sandbox_rows, descendant_rows, unreadable_rows = [], [], [], []
+    unverified_sandbox = []
     for row in rows:
         executable = row.get("executable")
         observed = row.get("identity") == IDENTITY_OBSERVED and executable
@@ -532,7 +531,9 @@ def classify(enumeration: dict, desktop_executables, sandbox_markers=()) -> dict
             continue
         name = row.get("exe_name")
         if source == "windows-toolhelp" and _usable_windows_basename(name) \
-                and ntpath.normcase(name) not in candidate_basenames:
+                and ntpath.normcase(name) not in desktop_basenames:
+            if ntpath.normcase(name) in sandbox_basenames:
+                unverified_sandbox.append({"pid": row["pid"], "ppid": row.get("ppid")})
             counts[CLASS_UNRELATED] += 1
             continue
         counts[CLASS_UNREADABLE] += 1
@@ -553,5 +554,6 @@ def classify(enumeration: dict, desktop_executables, sandbox_markers=()) -> dict
                        "sandbox_markers": sorted(sandbox)},
             "counts": counts, "desktop_host_processes": desktop_rows,
             "sandbox_service_processes": sandbox_rows,
+            "unverified_sandbox_candidates": unverified_sandbox,
             "desktop_descendant_processes": descendant_rows,
             "unreadable_processes": unreadable_rows}

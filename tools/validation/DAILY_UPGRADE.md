@@ -3,7 +3,7 @@
 `tools/validation/daily_upgrade.py` is the maintained operator entry for
 routine upgrades of the daily HOME's `context-guard@codex-context-guard`
 installation. It replaces the per-round, hand-assembled upgrade scripts: one
-plan file drives prepare, apply and verify, every phase is resumable, and
+plan file drives prepare, resumable apply and repeatable verification, and
 every result is bound to the exact plan, CLI, interpreter and artifact
 identity that produced it.
 
@@ -37,13 +37,12 @@ state (never commit it):
   "schema": "cg-daily-upgrade-plan/v1",
   "entry": "context-guard@codex-context-guard",
   "marketplace": "codex-context-guard",
-  "target_version": "0.17.2",
+  "target_version": "0.17.3",
   "artifact_dir": "/absolute/path/to/extracted-release",
   "cwd": "/absolute/path/to/an/existing/directory",
   "desktop_executable": "/absolute/path/to/the/Codex/Desktop/binary",
-  "sandbox_markers": ["/absolute/path/to/a/pinned/sandbox/helper"],
+  "sandbox_markers": [],
   "cli": "/absolute/path/to/codex",
-  "expected_cli_version": "codex-cli 0.42.0",
   "data_dir": "/absolute/path/to/plugin-data"
 }
 ```
@@ -56,9 +55,12 @@ state (never commit it):
   links — never a process name and never a `--host-stopped` declaration.
 - `sandbox_markers` are exact executable paths of sandbox helpers. They are
   recorded and never treated as the Desktop host; they do not gate the swap.
+  Leave this list empty when no helper identity has been verified.
 - `cli`, `expected_cli_version` and `data_dir` are optional. `data_dir` is
   only observed (retention `--policy show`); the existing automatic cleanup
-  defaults are not changed by this tool.
+  defaults are not changed by this tool. If supplied, `expected_cli_version`
+  must equal the exact output of the selected CLI's `--version`; do not copy
+  a version from another machine.
 
 ## Phases
 
@@ -71,14 +73,42 @@ tools/validation/run_daily_upgrade.sh daily --plan PLAN --output OUTPUT ACTION
 tools/validation/run_daily_upgrade.ps1 -Target daily -Arguments @("--plan", "PLAN", "--output", "OUTPUT", ACTION)
 ```
 
-`OUTPUT` is a new exclusive batch directory outside the repository and
-outside the daily HOME. Existing result files are never replaced; a rerun
-into the same batch is refused once its receipt exists.
+Choose an existing owner-private results parent outside the repository,
+daily HOME and target artifact. `OUTPUT` names a new child directory there;
+prepare creates that child exclusively. Existing receipts are never
+replaced. Apply resumes in the prepared batch, and each verify writes a new
+numbered receipt. For example, after writing the private plan:
+
+```shell
+plan="/absolute/path/to/plan.json"
+batch="/absolute/path/to/private-results/batch-0173"
+tools/validation/run_daily_upgrade.sh daily --plan "$plan" --output "$batch" --preflight-commands
+tools/validation/run_daily_upgrade.sh daily --plan "$plan" --output "$batch" --prepare
+# Finish or hand off dependent tasks and quit Desktop before replacing its installation.
+tools/validation/run_daily_upgrade.sh daily --plan "$plan" --output "$batch" --apply
+tools/validation/run_daily_upgrade.sh daily --plan "$plan" --output "$batch" --verify
+```
+
+```powershell
+$plan = 'C:\Path\plan.json'
+$batch = 'C:\Path\PrivateResults\batch-0173'
+$entry = '.\tools\validation\run_daily_upgrade.ps1'
+& $entry -Target daily -Arguments @('--plan', $plan, '--output', $batch, '--preflight-commands')
+& $entry -Target daily -Arguments @('--plan', $plan, '--output', $batch, '--prepare')
+# Finish or hand off dependent tasks and quit Desktop before replacing its installation.
+& $entry -Target daily -Arguments @('--plan', $plan, '--output', $batch, '--apply')
+& $entry -Target daily -Arguments @('--plan', $plan, '--output', $batch, '--verify')
+```
+
+When prepare reports `already_current`, omit apply and run verify directly.
+Normal Hook review may be needed between apply and a successful verify.
 
 1. `--preflight` — read-only readiness: pinned executable identities with
    digests, the current official installation state via marketplace and
    scoped plugin readbacks, artifact manifest verification, an optional
-   retention-policy observation and a host process inventory.
+   retention-policy observation and a host process inventory. This standalone
+   action creates its own output directory; use a separate directory from the
+   later prepare/apply/verify batch.
 2. `--preflight-commands` — the same, plus side-effect-free probes of the
    exact command families a run can issue. Never reaches a trust step and
    never probes with `--help`.
@@ -106,11 +136,13 @@ into the same batch is refused once its receipt exists.
    actually loads. The verdict requires the exact nine events, one row each,
    plugin source, no inventory errors or warnings, trusted and enabled rows
    and an enabled official readback. Statuses: `passed`,
-   `hook_trust_pending` (open the client, review `/hooks`, trust the nine
-   Hooks), `hook_inventory_incomplete` (missing, duplicate, unknown-event,
+   `hook_trust_pending` (review the nine Hooks through CLI `/hooks`, or
+   Desktop's Review hooks / Settings > Hooks),
+   `hook_inventory_incomplete` (missing, duplicate, unknown-event,
    wrong-source or flagged rows — never a pass), `restart_required` (a fresh
-   client still loads the old source), `loaded_unknown` (probe failed; never
-   reported as a pass). Every verify re-measures the live machine — a prior
+   client still loads the old source), `loaded_none` (no Context Guard Hook
+   sources observed), `loaded_unknown` (probe failed; never reported as a
+   pass). Every verify re-measures the live machine — a prior
    receipt, passed or not, is a historical result and never substitutes for
    current state; each run records its verdict in the next exclusive
    numbered receipt (`verify.json`, `verify-2.json`, …) and prior receipts
@@ -118,10 +150,15 @@ into the same batch is refused once its receipt exists.
    step is therefore the intended resume; destructive apply stages are the
    only resume-once work.
 
-Exit codes: `0` completed, `1` pending on an operator decision, `2` refused
-inputs or a failed official execution. After any nonzero apply or verify
-exit, re-run the same command: the resume re-reads the journal and the
-official readbacks and never assumes that nothing changed.
+Exit codes: `0` completed; `1` pending, including an observation gap or
+non-passing verify; `2` refused inputs or an execution error. Inspect the
+reason and saved journal/readbacks before deciding what to do. Correct
+refused inputs or unavailable prerequisites first. Resume an interrupted
+apply with the same command only when its bound inputs still match; a
+nonzero exit does not mean that no stage changed. After completed apply or
+`already_current`, continue with verify rather than reinstalling. A failed
+or pending verify can be repeated after its cause is resolved; an explicitly
+selected `--verify-output` needs a new filename on the next attempt.
 
 ## What stays manual
 
@@ -131,14 +168,16 @@ Only what the platform actually requires of a human:
   cache — the stable-identity add replaces the cache and there is no
   supported way to preserve the old bytes for a running host. Apply refuses
   until the host is observed absent, then one command completes the batch.
-- Hook trust after the swap, through the normal `/hooks` review.
+- Hook trust after the swap, through CLI `/hooks` or Desktop's Review hooks /
+  Settings > Hooks.
 - Credential copies stay governed by existing permissions; the tool never
   outputs or transfers credentials and never creates a login in isolation.
 
 ## Records and limitations
 
-Each batch directory keeps `preflight.json`, `prepare.json`,
-`apply-events.jsonl`, `apply.json` and the numbered verify receipts
+The standalone preflight directory keeps `preflight.json`. An upgrade batch
+keeps `prepare.json`, any apply journal/receipt (`apply-events.jsonl`,
+`apply.json`) and the numbered verify receipts
 (`verify.json`, `verify-2.json`, …), plus the probe journal
 `probe/loaded-N/rpc.jsonl`. Every subject binds the digests of the tool, its
 executed helper closure (`scripts/`, `tools/validation/`,
@@ -158,4 +197,8 @@ is negative evidence only for those exact pinned images; same-name rows
 get a second-snapshot PID-reuse confirmation and then a bounded
 `QueryFullProcessImageName` full-path read, and unreadable, truncated,
 shape-anomalous or incomplete-walk observations keep Desktop candidacy
-and force status `unknown`. WMI names never participate.
+when they have not excluded the Desktop image, forcing status `unknown`.
+An unreadable sandbox
+candidate with a different image basename is recorded as unverified and
+does not become a Desktop candidate; a matching basename remains unknown.
+WMI names never participate.

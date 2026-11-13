@@ -489,6 +489,30 @@ class TestVerify(DailyUpgradeCase):
         self.assertEqual(verified["status"], "restart_required")
         self.assertEqual(verified["fresh_client_loaded"], "old")
 
+    def test_removed_old_slot_sources_still_require_restart(self):
+        self.prepare_and_apply()
+        shutil.rmtree(self.cache_root / OLD)
+        roots = [self.cache_root / OLD, self.cache_root / "local",
+                 self.daily / "plugins" / "cache" / U.base.OLD_0161_WRAPPER_MARKET
+                 / "context-guard" / "0.16.1"]
+        for index, root in enumerate(roots):
+            with self.subTest(source=root):
+                self.assertFalse(root.exists())
+                old = {"eventName": "stop", "sourcePath": str(root / "hooks" / "hooks.json"),
+                       "source": "plugin", "trustStatus": "trusted", "enabled": True}
+                self.probe["hooks"] = self.trusted_hooks() + [old]
+                self.assertEqual(self.main("--verify"), 1)
+                receipt = "verify.json" if index == 0 else f"verify-{index + 1}.json"
+                self.assertEqual(self.read(receipt)["status"], "restart_required")
+
+    def test_malformed_product_source_never_hides_beside_new_hooks(self):
+        self.prepare_and_apply()
+        self.probe["hooks"] = self.trusted_hooks() + [{
+            "eventName": "stop", "sourcePath": str(self.cache_root / OLD / "hooks" / "other.json"),
+            "source": "plugin", "trustStatus": "trusted", "enabled": True}]
+        self.assertEqual(self.main("--verify"), 1)
+        self.assertEqual(self.read("verify.json")["status"], "loaded_unknown")
+
     def test_trust_pending_is_one_precise_action(self):
         self.prepare_and_apply()
         self.probe["hooks"] = [{**row, "trustStatus": "untrusted"}

@@ -1025,28 +1025,39 @@ def _route_ccg_hooks(rows: list[dict[str, Any]], daily: Path,
 
     A row carries Context Guard identity only when its ``sourcePath`` is the
     exact ``hooks/hooks.json`` of a Context Guard cache slot (official path
-    semantics — Windows case-insensitive, POSIX sensitive), compared against
-    the slots that actually exist on disk. Rows of other installed plugins,
+    semantics — Windows case-insensitive, POSIX sensitive). Returned old
+    source paths remain stale evidence even after official removal deleted
+    that cache slot. Rows of other installed plugins,
     or rows with unreadable paths, are never counted as old Context Guard;
     an unreadable path makes the whole inventory unroutable (``None``).
     """
     fresh_path = cache_path / "hooks" / "hooks.json"
-    cache_root = daily / "plugins" / "cache" / MARKET / PLUGIN_NAME
-    sibling_paths: list[Path] = []
-    if cache_root.is_dir():
-        for entry in cache_root.iterdir():
-            if entry.is_dir() and not entry.is_symlink():
-                sibling_paths.append(entry / "hooks" / "hooks.json")
+    markets = {MARKET, *base.OLD_MARKETS.values(), base.OLD_0161_WRAPPER_MARKET}
+    cache_roots = [daily / "plugins" / "cache" / market / PLUGIN_NAME
+                   for market in sorted(markets)]
     fresh: list[dict[str, Any]] = []
     stale: list[dict[str, Any]] = []
     for row in rows:
         source_path = row.get("sourcePath")
         if not isinstance(source_path, str) or not source_path:
             return [], [], None
+        path = Path(source_path)
+        if not path.is_absolute():
+            return [], [], None
         if _same_path(source_path, str(fresh_path)):
             fresh.append(row)
-        elif any(_same_path(source_path, str(sibling)) for sibling in sibling_paths):
-            stale.append(row)
+            continue
+        if len(path.parents) >= 3:
+            slot = path.parents[1].name
+            if any(_same_path(source_path, str(root / slot / "hooks" / "hooks.json"))
+                   for root in cache_roots):
+                stale.append(row)
+                continue
+        if any(_same_path(str(parent), str(root))
+               for root in cache_roots for parent in path.parents):
+            # A malformed source inside this product's cache is not an
+            # unrelated plugin whose row can be discarded.
+            return [], [], None
     return fresh, stale, True
 
 
@@ -1163,7 +1174,8 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
                   "Context Guard plugin Hooks from " + str(cache_path))
     elif trust_pending:
         status = "hook_trust_pending"
-        detail = ("open the Codex client, review /hooks and trust the nine Hooks from "
+        detail = ("review the nine Hooks through CLI /hooks or Desktop Review hooks / "
+                  "Settings > Hooks, from "
                   + str(cache_path))
     else:
         status = "passed"

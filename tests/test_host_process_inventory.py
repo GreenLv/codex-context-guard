@@ -349,6 +349,27 @@ class TestWindowsToolhelp(unittest.TestCase):
                          "same name without a readable path is never absence")
         self.assertTrue(fake.all_handles_closed())
 
+    def test_unreadable_different_name_sandbox_does_not_gate_desktop(self):
+        sandbox = r"C:\Apps\SandboxService.exe"
+        fake = FakeKernel32([[(300, 1, "SandboxService.exe")]], query_fail_pids={300})
+        payload = INV._enumerate_windows(
+            candidate_basenames=INV.windows_candidate_basenames([PINNED_DESKTOP], [sandbox]),
+            api=fake)
+        result = INV.classify({"status": "observed", **payload}, [PINNED_DESKTOP], [sandbox])
+        self.assertEqual(result["status"], "absent")
+        self.assertEqual(result["sandbox_service_processes"], [])
+        self.assertEqual(result["unverified_sandbox_candidates"], [{"pid": 300, "ppid": 1}])
+        self.assertTrue(fake.all_handles_closed())
+
+    def test_unreadable_same_basename_sandbox_keeps_desktop_unknown(self):
+        sandbox = r"C:\Helpers\ChatGPT.exe"
+        fake = FakeKernel32([[(300, 1, "ChatGPT.exe")]], query_fail_pids={300})
+        payload = INV._enumerate_windows(
+            candidate_basenames=INV.windows_candidate_basenames([PINNED_DESKTOP], [sandbox]),
+            api=fake)
+        result = INV.classify({"status": "observed", **payload}, [PINNED_DESKTOP], [sandbox])
+        self.assertEqual(result["status"], "unknown")
+
     def test_truncated_and_shape_anomalous_names_keep_candidacy(self):
         long_name = "X" * 259 + ".exe"
         fake = FakeKernel32([[(400, 1, long_name), (401, 1, "odd/path/weird.exe"),
