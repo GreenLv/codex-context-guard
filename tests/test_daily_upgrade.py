@@ -748,6 +748,24 @@ class TestProbeTransport(DailyUpgradeCase):
         self.assertTrue(probe["inventory_flagged"])
 
 
+@unittest.skipUnless(os.name == "nt", "native Windows PowerShell argument transport")
+class TestNativePowerShellProbe(unittest.TestCase):
+    def test_real_powershells_preserve_array_elements(self):
+        launcher = REPO / "tools" / "validation" / "run_daily_upgrade.ps1"
+        shells = [Path(os.environ["SYSTEMROOT"]) / "System32" / "WindowsPowerShell"
+                  / "v1.0" / "powershell.exe"]
+        pwsh = shutil.which("pwsh")
+        if pwsh:
+            shells.append(Path(pwsh).resolve())
+        for shell in shells:
+            for passthrough in (["daily", "--plan", r"C:\Path With Spaces\计划's.json"],
+                                ["daily", "", 'a"b', "semi;colon", "$literal", "单引号'中文"]):
+                with self.subTest(shell=shell, argv=passthrough):
+                    result = U._probe_ps1_launcher(launcher, passthrough, str(shell))
+                    self.assertEqual(result["real_entry"]["echoed"],
+                                     ["print-argv", passthrough])
+
+
 class TestPlanAndCommandLaw(DailyUpgradeCase):
     def test_wrong_entry_is_refused(self):
         plan = self.tmp / "bad.json"

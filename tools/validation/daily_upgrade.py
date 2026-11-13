@@ -670,7 +670,9 @@ def _probe_ps1_launcher(launcher: Path, passthrough: list[str],
         '[void][System.Management.Automation.Language.Parser]::ParseFile($env:CG_LAUNCHER_PROBE, '
         '[ref]$tokens, [ref]$parseErrors)\n'
         'if ($parseErrors.Count -gt 0) { throw ($parseErrors -join "`n") }\n'
-        '[string[]]$rest = @(ConvertFrom-Json -InputObject $env:CG_PASSTHROUGH_PROBE)\n'
+        # PowerShell 5.1 emits the parsed array as one pipeline object; an
+        # outer @() nests it and casting that element to string merges argv.
+        '[string[]]$rest = ConvertFrom-Json -InputObject $env:CG_PASSTHROUGH_PROBE\n'
         '& $env:CG_LAUNCHER_PROBE -Target print-argv -Arguments $rest\n'
         'exit $LASTEXITCODE\n')
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
