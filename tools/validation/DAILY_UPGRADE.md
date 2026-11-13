@@ -1,0 +1,139 @@
+# Daily upgrade entry
+
+`tools/validation/daily_upgrade.py` is the maintained operator entry for
+routine upgrades of the daily HOME's `context-guard@codex-context-guard`
+installation. It replaces the per-round, hand-assembled upgrade scripts: one
+plan file drives prepare, apply and verify, every phase is resumable, and
+every result is bound to the exact plan, CLI, interpreter and artifact
+identity that produced it.
+
+It is deliberately different from `native_upgrade_acceptance.py`, which
+serves isolated release acceptance and refuses the daily HOME. This entry
+never impersonates that acceptance, never edits a consumed cache, never
+deletes or disables a Hook, never copies credentials, and never creates a
+login. Every host change goes through official Codex marketplace commands,
+and Hook trust stays with the normal official review interface.
+
+## Boundaries
+
+- Stable identity only: the plan must name the stable entry
+  `context-guard@codex-context-guard` in the stable marketplace. No
+  per-version entries are created.
+- No publication, no release artifact building, no cache repair. The tool
+  consumes a release ZIP you have already verified and extracted, or a
+  product checkout, as the marketplace source.
+- No model calls, no trust bypass, no `--help` probing of unknown CLIs.
+  Command readiness probes use `--version`-style oracles, parse-only
+  launcher checks, the launcher's real `print-argv` echo mode and read-only
+  process enumeration only.
+
+## Plan file
+
+Write a JSON plan outside the repository, for example as private local
+state (never commit it):
+
+```json
+{
+  "schema": "cg-daily-upgrade-plan/v1",
+  "entry": "context-guard@codex-context-guard",
+  "marketplace": "codex-context-guard",
+  "target_version": "0.17.2",
+  "artifact_dir": "/absolute/path/to/extracted-release",
+  "cwd": "/absolute/path/to/an/existing/directory",
+  "desktop_executable": "/absolute/path/to/the/Codex/Desktop/binary",
+  "sandbox_markers": ["/absolute/path/to/a/pinned/sandbox/helper"],
+  "cli": "/absolute/path/to/codex",
+  "expected_cli_version": "codex-cli 0.42.0",
+  "data_dir": "/absolute/path/to/plugin-data"
+}
+```
+
+- `artifact_dir` must be a complete release root whose reviewed distribution
+  manifest matches its bytes and whose `plugin.json` version equals
+  `target_version`.
+- `desktop_executable` is the exact Desktop host binary path. Host
+  identification matches this exact executable identity plus parent-child
+  links — never a process name and never a `--host-stopped` declaration.
+- `sandbox_markers` are exact executable paths of sandbox helpers. They are
+  recorded and never treated as the Desktop host; they do not gate the swap.
+- `cli`, `expected_cli_version` and `data_dir` are optional. `data_dir` is
+  only observed (retention `--policy show`); the existing automatic cleanup
+  defaults are not changed by this tool.
+
+## Phases
+
+All commands run the launcher (macOS/POSIX sh, Windows PowerShell), which
+selects a Python 3.10+ interpreter and starts exactly one Python process
+with `-B`:
+
+```shell
+tools/validation/run_daily_upgrade.sh daily --plan PLAN --output OUTPUT ACTION
+tools/validation/run_daily_upgrade.ps1 -Target daily -Arguments @("--plan", "PLAN", "--output", "OUTPUT", ACTION)
+```
+
+`OUTPUT` is a new exclusive batch directory outside the repository and
+outside the daily HOME. Existing result files are never replaced; a rerun
+into the same batch is refused once its receipt exists.
+
+1. `--preflight` — read-only readiness: pinned executable identities with
+   digests, the current official installation state via marketplace and
+   scoped plugin readbacks, artifact manifest verification, an optional
+   retention-policy observation and a host process inventory.
+2. `--preflight-commands` — the same, plus side-effect-free probes of the
+   exact command families a run can issue. Never reaches a trust step and
+   never probes with `--help`.
+3. `--prepare` — binds the subject and decides the swap requirement. If an
+   installation exists and the Desktop host is running (or its state is
+   unknown), the result explains exactly why the swap needs the host
+   stopped. When the installed version already equals the target, prepare
+   reports `already_current` and nothing is swapped.
+4. `--apply` — the swap. Requires the host observed absent (by exact
+   executable identity, with zero unreadable Desktop candidates) whenever an
+   existing installation is being replaced. Stages run through official
+   commands — marketplace remove, marketplace add of the verified artifact,
+   plugin add, closing readbacks — and each destructive stage writes a
+   durable intent event to `apply-events.jsonl` before it runs and a fact
+   event afterwards. If a run is interrupted, re-run the same apply command:
+   every stage is reconciled against official readbacks first, so completed
+   work is never repeated, a marketplace that already moved is skipped, and
+   a registration that changed outside the batch is refused. An official
+   add whose summary is unreadable is recorded (`summary_parse_failed`) and
+   judged by the scoped list readback, not retried.
+5. `--verify` — fresh official readbacks, exact artifact parity between the
+   plan artifact and the installed cache, and a read-only fresh-client Hook
+   probe (initialize + `hooks/list` over the official app-server transport,
+   no model turn) that records which Hook sources a brand-new client
+   actually loads. Statuses: `passed`, `hook_trust_pending` (open the
+   client, review `/hooks`, trust the nine Hooks), `restart_required` (a
+   fresh client still loads the old source), `loaded_unknown` (probe
+   failed; never reported as a pass).
+
+Exit codes: `0` completed, `1` pending (an operator action or a failed but
+resumable stage), `2` refused inputs.
+
+## What stays manual
+
+Only what the platform actually requires of a human:
+
+- Quitting the Codex Desktop host before a swap that replaces a consumed
+  cache — the stable-identity add replaces the cache and there is no
+  supported way to preserve the old bytes for a running host. Apply refuses
+  until the host is observed absent, then one command completes the batch.
+- Hook trust after the swap, through the normal `/hooks` review.
+- Credential copies stay governed by existing permissions; the tool never
+  outputs or transfers credentials and never creates a login in isolation.
+
+## Records and limitations
+
+Each batch directory keeps `preflight.json`, `prepare.json`,
+`apply-events.jsonl`, `apply.json` and `verify.json`, plus the probe journal
+`probe/loaded-N/rpc.jsonl`. Results contain host-local paths and process
+facts and are private to the operator; never commit them. The fresh-client
+probe observes only what a new client would load — it cannot prove what the
+already-running Desktop has in memory, which is precisely why the swap
+requires the host stopped. Sandbox services observed at swap time are
+recorded in the apply result. Process identification on macOS uses `ps` plus
+libproc executable paths and treats other-user unreadable processes as
+kernel-family; on Windows it uses a read-only `Get-CimInstance` query and
+treats the pid/parent-pid kernel family as non-candidates; any remaining
+unreadable identity keeps Desktop candidacy and forces status `unknown`.
