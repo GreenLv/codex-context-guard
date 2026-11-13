@@ -118,8 +118,10 @@ into the same batch is refused once its receipt exists.
    step is therefore the intended resume; destructive apply stages are the
    only resume-once work.
 
-Exit codes: `0` completed, `1` pending (an operator action or a failed but
-resumable stage), `2` refused inputs.
+Exit codes: `0` completed, `1` pending on an operator decision, `2` refused
+inputs or a failed official execution. After any nonzero apply or verify
+exit, re-run the same command: the resume re-reads the journal and the
+official readbacks and never assumes that nothing changed.
 
 ## What stays manual
 
@@ -149,6 +151,11 @@ already-running Desktop has in memory, which is precisely why the swap
 requires the host stopped. Sandbox services observed at swap time are
 recorded in the apply result. Process identification on macOS uses `ps` plus
 libproc executable paths and treats other-user unreadable processes as
-kernel-family; on Windows it uses a read-only `Get-CimInstance` query and
-treats the pid/parent-pid kernel family as non-candidates; any remaining
-unreadable identity keeps Desktop candidacy and forces status `unknown`.
+kernel-family; on Windows it walks one complete Toolhelp snapshot (`PROCESSENTRY32W`,
+no elevation, all sessions): a snapshot image basename that differs from
+every pinned candidate basename — after the truncation and shape guards —
+is negative evidence only for those exact pinned images; same-name rows
+get a second-snapshot PID-reuse confirmation and then a bounded
+`QueryFullProcessImageName` full-path read, and unreadable, truncated,
+shape-anomalous or incomplete-walk observations keep Desktop candidacy
+and force status `unknown`. WMI names never participate.

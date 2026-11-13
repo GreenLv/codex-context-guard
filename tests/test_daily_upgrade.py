@@ -163,6 +163,11 @@ class DailyUpgradeCase(unittest.TestCase):
         self.patch(U, "_host_inventory",
                    lambda desktop, markers, host_tools=None: self.host_status)
         self.patch(U, "_loaded_probe", self._loaded_probe)
+        self.patch(U, "_powershell_identity", self._fixture_powershell_identity)
+        # The official-CLI fake must not intercept Windows Get-Acl; privacy is
+        # modeled only inside this synthetic tree and the real DACL consumer
+        # keeps its own scheduler controls.
+        self.patch(U.scheduler._Windows, "private_parent", self._fixture_private_parent)
         self.probe = {"hooks": self.trusted_hooks(), "inventory_flagged": False,
                       "reason": None,
                       "cleanup": {"cleanup_complete": True, "owned_process_exited": True}}
@@ -175,11 +180,36 @@ class DailyUpgradeCase(unittest.TestCase):
     def tearDown(self):
         self._temp.cleanup()
 
+    def _fixture_powershell_identity(self, env):
+        """Windows fixture identity without the real version probe subprocess.
+
+        The real resolved shell path is pinned (launcher-specific tests still
+        run real parse/print-argv against it); only the version probe is
+        isolated from the no-model fixtures.
+        """
+        shell = shutil.which("pwsh") or shutil.which("powershell.exe") or shutil.which("powershell")
+        if shell is None:
+            raise U.CapabilityPending("PowerShell unavailable for fixture identity")
+        return {"path": str(Path(shell).resolve()), "version": "fixture-stubbed",
+                "sha256": U._sha_loose(Path(shell).resolve())}
+
+    def _fixture_private_parent(self, path):
+        """Model a private directory only inside this synthetic fixture tree.
+
+        Same shape as the acceptance fixture's private-parent stub: the real
+        DACL consumer stays exercised by its own scheduler controls and is
+        never loosened here.
+        """
+        candidate = Path(path).resolve()
+        return candidate.is_dir() and candidate.is_relative_to(self.tmp.resolve())
+
     def patch(self, target, name, value):
-        self._patches = getattr(self, "_patches", [])
+        # Every seam replacement restores immediately at teardown; the
+        # validation modules are shared, so a leaked patch would poison the
+        # whole-suite run order.
         original = getattr(target, name)
-        self._patches.append((target, name, original))
         setattr(target, name, value)
+        self.addCleanup(setattr, target, name, original)
 
     def trusted_hooks(self):
         cache = self.cache_root / TARGET / "hooks" / "hooks.json"
@@ -605,21 +635,37 @@ for line in sys.stdin:
 
 
 class TestProbeTransport(DailyUpgradeCase):
-    """The real OwnedProcess/RPC transport against a no-model fake app-server."""
+    """The real OwnedProcess/RPC transport against a no-model fake app-server.
+
+    Only the spawn argv is shimmed onto the fixture interpreter (a POSIX
+    shell script cannot spawn on Windows); the process tree, journaling,
+    RPC loop and cleanup run exactly as the real probe runs them.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.server = self.tmp / "fake_app_server.py"
+        self.server.write_text(FAKE_APP_SERVER_SOURCE
+                               % {"hooks_json": str(self.cache_root / TARGET
+                                                    / "hooks" / "hooks.json"),
+                                  "events": sorted(U.EVENTS)}, encoding="utf-8")
+        self.fake_cli = str(self.tmp / "fake-codex")
+        real_spawn = U.OwnedProcess.spawn
+        fake_cli, server = self.fake_cli, str(self.server)
+
+        def shim_spawn(command, **kwargs):
+            command = list(command)
+            if command and command[0] == fake_cli:
+                command = [sys.executable, "-B", server, *command[1:]]
+            return real_spawn(command, **kwargs)
+
+        self.patch(U, "OwnedProcess",
+                   type("SpawnShim", (), {"spawn": staticmethod(shim_spawn)}))
 
     def test_probe_transport_and_exclusive_attempt_directory(self):
-        hooks_json = str(self.cache_root / TARGET / "hooks" / "hooks.json")
-        server = self.tmp / "fake_app_server.py"
-        server.write_text(FAKE_APP_SERVER_SOURCE % {"hooks_json": hooks_json,
-                                                    "events": sorted(U.EVENTS)},
-                          encoding="utf-8")
-        launcher = self.tmp / "fake-codex"
-        launcher.write_text("#!/bin/sh\nexec \"%s\" \"%s\" \"$@\"\n"
-                            % (sys.executable, server), encoding="utf-8")
-        launcher.chmod(0o755)
         env = {"PATH": "/usr/bin:/bin", "HOME": str(self.tmp)}
         attempt = self.tmp / "attempt"
-        probe = REAL_LOADED_PROBE(str(launcher), self.tmp / "cwd", attempt, env)
+        probe = REAL_LOADED_PROBE(self.fake_cli, self.tmp / "cwd", attempt, env)
         self.assertIsNone(probe["reason"], probe["reason"])
         self.assertFalse(probe["inventory_flagged"])
         self.assertEqual(sorted(row["eventName"] for row in probe["hooks"]),
@@ -633,23 +679,28 @@ class TestProbeTransport(DailyUpgradeCase):
         self.assertIn('"direction": "request"', journal)
         self.assertIn('"direction": "response"', journal)
         # A reused attempt directory fails exclusively and is never a pass.
-        second = REAL_LOADED_PROBE(str(launcher), self.tmp / "cwd", attempt, env)
+        second = REAL_LOADED_PROBE(self.fake_cli, self.tmp / "cwd", attempt, env)
         self.assertIsNotNone(second["reason"])
         self.assertEqual(second["hooks"], [])
 
     def test_probe_transport_with_flagged_inventory(self):
-        hooks_json = str(self.cache_root / TARGET / "hooks" / "hooks.json")
-        server = self.tmp / "fake_app_server_flagged.py"
-        source = FAKE_APP_SERVER_SOURCE % {"hooks_json": hooks_json,
-                                           "events": sorted(U.EVENTS)}
-        source = source.replace('{"data": [{"hooks": rows}]}',
-                                '{"data": [{"hooks": rows, "errors": ["redacted"]}]}')
-        server.write_text(source, encoding="utf-8")
-        launcher = self.tmp / "fake-codex-flagged"
-        launcher.write_text("#!/bin/sh\nexec \"%s\" \"%s\" \"$@\"\n"
-                            % (sys.executable, server), encoding="utf-8")
-        launcher.chmod(0o755)
-        probe = REAL_LOADED_PROBE(str(launcher), self.tmp / "cwd",
+        source = (self.server.read_text(encoding="utf-8")
+                  .replace('{"data": [{"hooks": rows}]}',
+                           '{"data": [{"hooks": rows, "errors": ["redacted"]}]}'))
+        flagged = self.tmp / "fake_app_server_flagged.py"
+        flagged.write_text(source, encoding="utf-8")
+        real_spawn = U.OwnedProcess.spawn
+        fake_cli, server = self.fake_cli, str(flagged)
+
+        def shim_spawn(command, **kwargs):
+            command = list(command)
+            if command and command[0] == fake_cli:
+                command = [sys.executable, "-B", server, *command[1:]]
+            return real_spawn(command, **kwargs)
+
+        self.patch(U, "OwnedProcess",
+                   type("SpawnShim", (), {"spawn": staticmethod(shim_spawn)}))
+        probe = REAL_LOADED_PROBE(self.fake_cli, self.tmp / "cwd",
                                   self.tmp / "attempt-flagged", {"PATH": "/usr/bin:/bin"})
         self.assertIsNone(probe["reason"])
         self.assertTrue(probe["inventory_flagged"])

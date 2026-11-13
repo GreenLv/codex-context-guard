@@ -42,8 +42,10 @@ not gate the swap.
 
 Results live in the exclusive ``--output`` directory outside the repository;
 existing result files are never replaced. Exit codes: ``0`` completed,
-``1`` pending (an operator action or a failed-but-resumable stage),
-``2`` refused inputs. No login, no credential copy, no model call.
+``1`` pending on an operator decision, ``2`` refused inputs or a failed
+official execution. After any nonzero apply or verify exit, re-run the same
+command: the resume re-reads the journal and the official readbacks and
+never assumes that nothing changed. No login, no credential copy, no model call.
 """
 from __future__ import annotations
 
@@ -127,14 +129,15 @@ def _host_inventory(desktop: str, markers: list[str],
                     host_tools: dict[str, Any] | None = None) -> dict[str, Any]:
     """Read-only process classification; tests replace this seam.
 
-    The enumeration consumes the pinned ps/powershell identities from the
-    subject instead of re-resolving them from PATH.
+    The enumeration consumes the pinned ps identity on darwin instead of a
+    fresh PATH re-resolution, and the Windows Toolhelp route receives the
+    pinned candidate basenames for its guarded negative/positive rules.
     """
     tools = host_tools or {}
-    pinned_powershell = tools.get("powershell", {}).get("path")
-    pinned_ps = tools.get("ps", {}).get("path")
+    candidates = inventory.windows_candidate_basenames([desktop], markers)
     return inventory.classify(
-        inventory.enumerate_processes(powershell=pinned_powershell, ps=pinned_ps),
+        inventory.enumerate_processes(ps=tools.get("ps", {}).get("path"),
+                                      candidate_basenames=candidates),
         [desktop], markers)
 
 

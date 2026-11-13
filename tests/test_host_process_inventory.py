@@ -7,6 +7,8 @@ asserts the result shape only, never a specific host state.
 from __future__ import annotations
 
 import importlib.util
+import ntpath
+import sys
 import unittest
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -26,9 +28,19 @@ def enum(rows, source="darwin-ps-libproc", observer_uid=501):
             "observer_uid": observer_uid, "rows": rows}
 
 
-def row(pid, ppid, executable=None, uid=501, source="posix"):
+def win_enum(rows):
+    """Windows Toolhelp payload shape: no observer uid, snapshot summary."""
+    return {"status": "observed", "reason": None, "source": "windows-toolhelp",
+            "snapshot": {"snapshots": 1, "processes": len(rows),
+                         "candidates": 0,
+                         "image_path_reads": {"ok": 0, "failed": 0}},
+            "rows": rows}
+
+
+def row(pid, ppid, executable=None, uid=501, source="posix", exe_name=None):
     if source == "windows":
         return {"pid": pid, "ppid": ppid, "uid": None, "executable": executable,
+                "exe_name": exe_name,
                 "identity": "observed" if executable else "unreadable"}
     return {"pid": pid, "ppid": ppid, "uid": uid,
             "executable": executable,
@@ -93,18 +105,16 @@ class TestClassification(unittest.TestCase):
         self.assertEqual(other["status"], "absent")
 
     def test_windows_kernel_family_is_structural(self):
-        result = INV.classify(enum([row(4, 0, None, source="windows"),
-                                  row(1200, 4, None, source="windows")],
-                                 source="windows-cim"),
-                            [r"C:\Apps\Codex.exe"])
+        result = INV.classify(win_enum([row(4, 0, None, source="windows"),
+                                        row(1200, 4, None, source="windows")]),
+                              [r"C:\Apps\Codex.exe"])
         self.assertEqual(result["status"], "absent")
         self.assertEqual(result["counts"]["system_kernel"], 2)
 
     def test_windows_identity_matches_case_insensitively(self):
-        result = INV.classify(enum([{"pid": 900, "ppid": 100, "uid": None,
-                                   "executable": r"c:\apps\codex.EXE",
-                                   "identity": "observed"}], source="windows-cim"),
-                            [r"C:\Apps\Codex.exe"])
+        result = INV.classify(win_enum([row(900, 100, r"c:\apps\codex.EXE",
+                                            source="windows")]),
+                              [r"C:\Apps\Codex.exe"])
         self.assertEqual(result["status"], "running")
 
     def test_descendant_of_desktop_by_parent_chain(self):
@@ -153,6 +163,235 @@ class TestClassification(unittest.TestCase):
         result = INV.classify(enumeration, ["/nonexistent/desktop/path"], [])
         self.assertIn(result["schema"], (INV.SCHEMA,))
         self.assertIn(result["status"], ("running", "absent", "unknown"))
+
+
+@unittest.skipUnless(sys.platform == "darwin", "darwin ps pinning")
+class TestDarwinPsPinning(unittest.TestCase):
+    def test_enumeration_consumes_the_pinned_ps_and_reports_it(self):
+        seen = []
+
+        def fake_ps_rows(ps):
+            seen.append(ps)
+            return [{"pid": 1, "ppid": 0, "uid": 0}]
+
+        original = INV._ps_rows
+        INV._ps_rows = fake_ps_rows
+        try:
+            payload = INV.enumerate_processes(ps="/usr/bin/ps-under-test")
+        finally:
+            INV._ps_rows = original
+        self.assertEqual(seen, ["/usr/bin/ps-under-test"])
+        self.assertEqual(payload["ps_path"], "/usr/bin/ps-under-test")
+        result = INV.classify(payload, ["/nonexistent/desktop"], [])
+        self.assertEqual(result["enumeration"]["ps_path"], "/usr/bin/ps-under-test")
+        self.assertEqual(result["enumeration"]["ps_arguments"], INV._PS_ARGUMENTS)
+
+
+PINNED_DESKTOP = r"C:\Apps\ChatGPT.exe"
+
+
+class FakeKernel32:
+    """No-model kernel32 for the Toolhelp pipeline; no real Windows calls."""
+
+    def __init__(self, snapshots, image_paths=None, *, snapshot_fail=False,
+                 walk_fail_at=None, close_fail_handles=(), open_fail_pids=(),
+                 query_fail_pids=()):
+        self.snapshots = snapshots
+        self._last_error = 0
+        self.image_paths = image_paths or {}
+        self.snapshot_fail = snapshot_fail
+        self.walk_fail_at = walk_fail_at
+        self.close_fail_handles = set(close_fail_handles)
+        self.open_fail_pids = set(open_fail_pids)
+        self.query_fail_pids = set(query_fail_pids)
+        self._snap_index = 0
+        self._walk_index = 0
+        self._current = []
+        self._next_handle = 5000
+        self._handle_pid = {}
+        self.snapshot_handles = []
+        self.opened_handles = []
+        self.closed_handles = []
+        self.query_calls = []
+
+    def get_last_error(self):
+        return self._last_error
+
+    def CreateToolhelp32Snapshot(self, flags, process_id):
+        if self.snapshot_fail:
+            return 0
+        handle = self._next_handle
+        self._next_handle += 1
+        self.snapshot_handles.append(handle)
+        index = min(self._snap_index, len(self.snapshots) - 1)
+        self._current = list(self.snapshots[index])
+        self._walk_index = 0
+        self._snap_index += 1
+        return handle
+
+    def _fill(self, ref):
+        pid, ppid, name = self._current[self._walk_index]
+        entry = ref._obj
+        entry.th32ProcessID = pid
+        entry.th32ParentProcessID = ppid
+        # The kernel fills the MAX_PATH buffer; a longer image name arrives
+        # truncated, which the pipeline's truncation guard must treat as
+        # unusable evidence.
+        entry.szExeFile = name[:259]
+
+    def Process32FirstW(self, handle, ref):
+        if self.walk_fail_at == 0:
+            self._last_error = 87
+            return 0
+        self._fill(ref)
+        self._walk_index += 1
+        return 1
+
+    def Process32NextW(self, handle, ref):
+        if self.walk_fail_at == self._walk_index:
+            self._last_error = 87
+            return 0
+        if self._walk_index >= len(self._current):
+            self._last_error = 18  # ERROR_NO_MORE_FILES: clean end
+            return 0
+        self._fill(ref)
+        self._walk_index += 1
+        return 1
+
+    def OpenProcess(self, access, inherit, pid):
+        if pid in self.open_fail_pids:
+            return 0
+        handle = self._next_handle
+        self._next_handle += 1
+        self.opened_handles.append(handle)
+        self._handle_pid[handle] = pid
+        return handle
+
+    def QueryFullProcessImageNameW(self, handle, flags, buffer_ref, size_ref):
+        pid = self._handle_pid[handle]
+        self.query_calls.append(pid)
+        path = self.image_paths.get(pid)
+        if pid in self.query_fail_pids or path is None:
+            self._last_error = 5
+            return 0
+        buffer_ref.value = path  # the real call passes the mutable wchar array
+        size_ref._obj.value = len(path)
+        return 1
+
+    def CloseHandle(self, handle):
+        self.closed_handles.append(handle)
+        if handle in self.close_fail_handles:
+            return 0
+        return 1
+
+    def all_handles_closed(self):
+        return set(self.snapshot_handles + self.opened_handles) <= set(self.closed_handles)
+
+
+class TestWindowsToolhelp(unittest.TestCase):
+    """The Toolhelp Windows pipeline against a no-model fake kernel32."""
+
+    CANDIDATES = {ntpath.normcase("ChatGPT.exe")}
+
+    def run_windows(self, fake):
+        payload = INV._enumerate_windows(candidate_basenames=self.CANDIDATES, api=fake)
+        return {"status": "observed", "reason": None, **payload}
+
+    def test_positive_identity_via_full_path(self):
+        fake = FakeKernel32(
+            [[(200, 1, "ChatGPT.exe"), (300, 1, "notepad.exe")]],
+            {200: PINNED_DESKTOP})
+        payload = self.run_windows(fake)
+        self.assertEqual(payload["source"], "windows-toolhelp")
+        self.assertEqual(payload["snapshot"]["candidates"], 1)
+        self.assertEqual(payload["snapshot"]["image_path_reads"], {"ok": 1, "failed": 0})
+        result = INV.classify(payload, [PINNED_DESKTOP])
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["desktop_host_processes"],
+                         [{"pid": 200, "ppid": 1, "executable": PINNED_DESKTOP}])
+        self.assertEqual(result["counts"]["unrelated"], 1)
+        self.assertTrue(fake.all_handles_closed())
+
+    def test_different_basename_is_negative_evidence_only(self):
+        # The r7 all-177 shape: unreadable rows whose snapshot basename
+        # differs from the pinned basename are excluded from candidacy for
+        # that exact pinned image — and from nothing else.
+        fake = FakeKernel32([[(300, 1, "notepad.exe"), (301, 1, "svchost.exe")]])
+        payload = self.run_windows(fake)
+        self.assertEqual(payload["snapshot"]["candidates"], 0)
+        self.assertEqual(fake.query_calls, [])
+        result = INV.classify(payload, [PINNED_DESKTOP])
+        self.assertEqual(result["status"], "absent")
+        self.assertEqual(result["counts"]["unrelated"], 2)
+        self.assertEqual(result["counts"]["unreadable"], 0)
+
+    def test_same_name_unreadable_keeps_candidacy(self):
+        fake = FakeKernel32([[(200, 1, "ChatGPT.exe")]], {}, query_fail_pids={200})
+        payload = self.run_windows(fake)
+        row = payload["rows"][0]
+        self.assertEqual(row["identity"], "unreadable")
+        self.assertEqual(row["exe_name"], "ChatGPT.exe")
+        result = INV.classify(payload, [PINNED_DESKTOP])
+        self.assertEqual(result["status"], "unknown",
+                         "same name without a readable path is never absence")
+        self.assertTrue(fake.all_handles_closed())
+
+    def test_truncated_and_shape_anomalous_names_keep_candidacy(self):
+        long_name = "X" * 259 + ".exe"
+        fake = FakeKernel32([[(400, 1, long_name), (401, 1, "odd/path/weird.exe")]])
+        payload = self.run_windows(fake)
+        self.assertTrue(all(row["exe_name"] is None and row["identity"] == "unreadable"
+                            for row in payload["rows"]))
+        result = INV.classify(payload, [PINNED_DESKTOP])
+        self.assertEqual(result["status"], "unknown")
+
+    def test_incomplete_walk_fails_the_enumeration(self):
+        fake = FakeKernel32([[(300, 1, "notepad.exe")]], walk_fail_at=0)
+        with self.assertRaises(INV.InventoryError):
+            self.run_windows(fake)
+        self.assertTrue(fake.all_handles_closed())
+
+    def test_snapshot_unavailable_fails_the_enumeration(self):
+        fake = FakeKernel32([[]], snapshot_fail=True)
+        with self.assertRaises(INV.InventoryError):
+            self.run_windows(fake)
+
+    def test_pid_name_change_between_snapshots_blocks_positive_read(self):
+        fake = FakeKernel32(
+            [[(200, 1, "ChatGPT.exe")], [(200, 1, "notepad.exe")]],
+            {200: PINNED_DESKTOP})
+        payload = self.run_windows(fake)
+        self.assertEqual(fake.query_calls, [],
+                         "a pid that changed basename between snapshots is never read")
+        self.assertEqual(payload["rows"][0]["identity"], "unreadable")
+        result = INV.classify(payload, [PINNED_DESKTOP])
+        self.assertEqual(result["status"], "unknown")
+        self.assertTrue(fake.all_handles_closed())
+
+    def test_snapshot_handle_close_failure_fails_the_enumeration(self):
+        fake = FakeKernel32([[(300, 1, "notepad.exe")]], close_fail_handles={5000})
+        with self.assertRaises(INV.InventoryError):
+            self.run_windows(fake)
+
+    def test_candidate_handle_close_failure_fails_the_enumeration(self):
+        fake = FakeKernel32([[(200, 1, "ChatGPT.exe")]], {200: PINNED_DESKTOP})
+        fake.close_fail_handles = {5001}  # the candidate handle opened after the snapshot
+        with self.assertRaises(INV.InventoryError):
+            self.run_windows(fake)
+
+    def test_generic_pinned_basename_is_refused(self):
+        with self.assertRaises(INV.InventoryError):
+            INV.windows_candidate_basenames(["x" * 259 + ".exe"])
+
+    def test_classification_reports_snapshot_facts(self):
+        fake = FakeKernel32(
+            [[(200, 1, "ChatGPT.exe")]],
+            {200: PINNED_DESKTOP})
+        payload = self.run_windows(fake)
+        result = INV.classify(payload, [PINNED_DESKTOP])
+        self.assertEqual(result["enumeration"]["snapshot"]["candidates"], 1)
+        self.assertEqual(result["enumeration"]["snapshot"]["image_path_reads"],
+                         {"ok": 1, "failed": 0})
 
 
 if __name__ == "__main__":
