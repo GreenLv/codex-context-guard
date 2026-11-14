@@ -4,6 +4,19 @@
 
 Versions are listed newest first. See [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) for published versions and [local acceptance](docs/LOCAL_ACCEPTANCE.md) for test results and platform limits. The [original detailed changelog](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.md) preserves the earlier implementation and validation notes.
 
+## Unreleased
+
+### Highlights
+
+- A daily upgrade batch now continues with one same command. The maintained tool derives the next pending stage from the batch's saved receipts, so prepare → apply → verify no longer needs per-stage retyping; each operator pause (quit the Desktop host, review the Hooks) resumes with the same command. [Daily upgrade tool](tools/validation/DAILY_UPGRADE.md)
+- When a host auto-update changes the Desktop executable bytes after preparation, a controlled rebind re-identifies that same-path executable, keeps every prior receipt untouched, and writes the next numbered prepare receipt bound to the new host identity. Any other input change (CLI, artifact, plan, helper closure) still refuses with its own category and needs a fresh reviewed batch.
+
+### Changes
+
+- Candidate CI consumes an already passed full run on the exact commit. A new reuse job re-derives the prior run's full-coverage job evidence through the official Actions API, verifies the escrow artifact receipt against this checkout when it exists, and uploads a `cg-ci-reuse-evidence/v1` receipt; the required summary still demands classification, the static gate and the reuse evidence, and any failed job anywhere still fails the summary. Missing or mismatched evidence falls back to the ordinary lanes. [CI policy](docs/CI_POLICY.md)
+- These are source-checkout operator and CI changes. The nine Hooks, state schema, public protocols, runtime bytes and installed behavior are unchanged, and existing 0.17.3 installations need no action.
+
+
 ## 0.17.3 — 2026-11-14
 
 ### Highlights

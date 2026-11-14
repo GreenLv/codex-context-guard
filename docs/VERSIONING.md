@@ -4,6 +4,25 @@ The release entries begin with the newest version. Historical candidate
 sections preserve the status of their specific source revision at the time of
 review; a later release of the same version does not change that evidence.
 
+## Unreleased — daily-upgrade continuation and exact-commit CI reuse (source)
+
+Repository-owned operator and CI tooling only; schema 13, Stop protocol
+5.0.0, the nine Hook commands, retention behavior, the default business-tool
+path and the packaged runtime bytes are unchanged, so the runtime-tree digest
+and any published artifact identity are unchanged and no consumed cache is
+affected. The daily-upgrade tool (outside the runtime-tree roots) adds the
+thin `--resume` continuation and the controlled `--rebind` host
+re-identification under the existing private `cg-daily-upgrade-plan/v1`,
+`cg-daily-upgrade-result/v1` and `cg-daily-upgrade-journal/v1` contracts;
+`--rebind` writes numbered `prepare-N.json` receipts plus exclusive
+`rebind.json` audit records and accepts only a same-path desktop-executable
+byte change for an unstarted batch. Candidate CI adds the
+`cg-ci-reuse-evidence/v1` receipt and consumes a passed full run on the
+exact commit per `docs/CI_POLICY.md`; the required summary stays fail-closed
+and denies fall back to the ordinary lanes. These tool changes require their
+own affected checks; prior installed, native and daily receipts retain their
+original identities.
+
 ## 0.17.3 — 2026-11-14
 
 The daily-upgrade operator tool adds the private

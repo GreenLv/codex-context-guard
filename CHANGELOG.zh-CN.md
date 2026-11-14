@@ -4,6 +4,19 @@
 
 版本从新到旧排列。正式发布的版本见 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases)，测试结果和平台范围见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。[原始详细更新日志](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.zh-CN.md)保留了此前逐项记录的实现和验证过程。
 
+## 未发布
+
+### 主要改进
+
+- 日常升级批次现在可以用同一条命令接续。工具从批次已保存的回执推导下一个待办阶段，准备 → 安装 → 核验不再需要逐阶段拼命令；每次操作员暂停（退出 Desktop、审核 Hook）后重跑同一条命令即可继续。[日常升级工具](tools/validation/DAILY_UPGRADE.md)
+- 准备之后若宿主自动更新改变了 Desktop 可执行文件字节，受控重绑定会重新核验同一路径的可执行文件，保留全部原有回执，并写入绑定新宿主身份的下一个编号准备回执。其他任何输入变化（CLI、制品、计划、辅助工具闭包）仍会按类别拒绝，需要重新评审的新批次。
+
+### 变更
+
+- 候选 CI 现在会消费同精确提交上已通过的完整运行。新增复用作业通过官方 Actions API 重新推导此前完整运行的全覆盖作业证据，存在托管制品时核对其回执与当前检出，并上传 `cg-ci-reuse-evidence/v1` 回执；required 汇总仍要求分类、静态门与复用证据作业，任何作业失败仍使汇总失败。证据缺失或不匹配时回退为照常运行普通 lane。[CI 策略](docs/CI_POLICY.md)
+- 以上均为源码检出的操作员工具与 CI 变更。九个 Hook、状态模式、公开协议、运行时字节与已安装行为不变，现有 0.17.3 安装无需任何操作。
+
+
 ## 0.17.3 — 2026-11-14
 
 ### 主要改进
