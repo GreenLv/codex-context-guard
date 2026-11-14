@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   classify:
@@ -90,9 +91,45 @@ jobs:
       - name: Check candidate commit whitespace
         run: git diff-tree --check --root -r HEAD
 
+  ci_reuse:
+    name: Exact-commit candidate run reuse
+    needs: classify
+    if: needs.classify.outputs.profile == 'full'
+    outputs:
+      reuse: ${{ steps.reuse.outputs.reuse }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      - name: Evaluate reuse of a passed full run on this exact commit
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CG_REPO: ${{ github.repository }}
+          CG_COMMIT: ${{ github.sha }}
+          CG_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          verdict="run"
+          if python tools/validation/ci_reuse.py --repo "$CG_REPO" --commit "$CG_COMMIT" --current-run "$CG_RUN_ID" --output "$RUNNER_TEMP/ci-reuse-evidence.json"; then
+            verdict="confirmed"
+          fi
+          echo "reuse=$verdict" >> "$GITHUB_OUTPUT"
+      - name: Upload exact-commit reuse evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-reuse-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-reuse-evidence.json
+          if-no-files-found: warn
+          retention-days: 30
+
   ubuntu_py310:
     name: Ubuntu / Python 3.10
-    needs: classify
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -100,8 +137,8 @@ jobs:
 
   ubuntu_py311:
     name: Ubuntu / Python 3.11
-    needs: classify
-    if: needs.classify.outputs.profile == 'full'
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -109,8 +146,8 @@ jobs:
 
   ubuntu_py312:
     name: Ubuntu / Python 3.12
-    needs: classify
-    if: needs.classify.outputs.profile == 'full'
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -118,8 +155,8 @@ jobs:
 
   ubuntu_py313:
     name: Ubuntu / Python 3.13
-    needs: classify
-    if: needs.classify.outputs.profile == 'full'
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -127,7 +164,8 @@ jobs:
 
   ubuntu_py314:
     name: Ubuntu / Python 3.14
-    needs: classify
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -135,8 +173,8 @@ jobs:
 
   macos_py310:
     name: macOS / Python 3.10
-    needs: classify
-    if: needs.classify.outputs.profile == 'full'
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -144,8 +182,8 @@ jobs:
 
   macos_py311:
     name: macOS / Python 3.11
-    needs: classify
-    if: needs.classify.outputs.profile == 'full'
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -153,7 +191,8 @@ jobs:
 
   macos_py312:
     name: macOS / Python 3.12
-    needs: classify
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -161,8 +200,8 @@ jobs:
 
   macos_py313:
     name: macOS / Python 3.13
-    needs: classify
-    if: needs.classify.outputs.profile == 'full'
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -170,8 +209,8 @@ jobs:
 
   macos_py314:
     name: macOS / Python 3.14
-    needs: classify
-    if: needs.classify.outputs.profile == 'full'
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -179,8 +218,8 @@ jobs:
 
   windows_py310:
     name: Windows / Python 3.10
-    needs: classify
-    if: needs.classify.outputs.profile == 'full'
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
@@ -188,8 +227,8 @@ jobs:
 
   windows_py311:
     name: Windows / Python 3.11
-    needs: classify
-    if: needs.classify.outputs.profile == 'full'
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
@@ -197,7 +236,8 @@ jobs:
 
   windows_py312:
     name: Windows / Python 3.12
-    needs: classify
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
@@ -205,8 +245,8 @@ jobs:
 
   windows_py313:
     name: Windows / Python 3.13
-    needs: classify
-    if: needs.classify.outputs.profile == 'full'
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
@@ -214,8 +254,8 @@ jobs:
 
   windows_py314:
     name: Windows / Python 3.14
-    needs: classify
-    if: needs.classify.outputs.profile == 'full'
+    needs: [classify, ci_reuse]
+    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
@@ -243,8 +283,8 @@ jobs:
 
   portable_windows:
     name: Windows portable installed-runtime acceptance
-    needs: [classify, static]
-    if: needs.classify.outputs.profile == 'full' || contains(needs.classify.outputs.invalidates, 'native_artifact') || contains(needs.classify.outputs.invalidates, 'native_runtime')
+    needs: [classify, static, ci_reuse]
+    if: needs.ci_reuse.outputs.reuse != 'confirmed' && (needs.classify.outputs.profile == 'full' || contains(needs.classify.outputs.invalidates, 'native_artifact') || contains(needs.classify.outputs.invalidates, 'native_runtime'))
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -290,6 +330,7 @@ jobs:
     needs:
       - classify
       - static
+      - ci_reuse
       - ubuntu_py310
       - ubuntu_py311
       - ubuntu_py312
@@ -315,8 +356,9 @@ jobs:
         env:
           CI_PROFILE: ${{ needs.classify.outputs.profile }}
           ALL_NEEDS: ${{ toJSON(needs) }}
-          PORTABLE_REQUIRED: ${{ needs.classify.outputs.profile == 'full' || contains(needs.classify.outputs.invalidates, 'native_artifact') || contains(needs.classify.outputs.invalidates, 'native_runtime') }}
-        run: python -m tools.validation.ci_policy verify --profile "$CI_PROFILE" --portable "$PORTABLE_REQUIRED" --needs-json "$ALL_NEEDS"
+          REUSE_CONFIRMED: ${{ needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse == 'confirmed' }}
+          PORTABLE_REQUIRED: ${{ needs.ci_reuse.outputs.reuse != 'confirmed' && (needs.classify.outputs.profile == 'full' || contains(needs.classify.outputs.invalidates, 'native_artifact') || contains(needs.classify.outputs.invalidates, 'native_runtime')) }}
+        run: python -m tools.validation.ci_policy verify --profile "$CI_PROFILE" --portable "$PORTABLE_REQUIRED" --reuse "$REUSE_CONFIRMED" --needs-json "$ALL_NEEDS"
 
   release_artifact:
     name: Manifest-exact candidate artifact

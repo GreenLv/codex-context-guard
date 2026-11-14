@@ -62,6 +62,36 @@ commit, reuse it; tag creation does not require another run. Manual full remains
 available for compatibility campaigns. CI evidence does not establish live
 host behavior, trust or installation.
 
+## Exact-commit run reuse
+
+The `ci_reuse` job is that rule's real result consumer, and it runs only in
+the full profile. It queries the official Actions API for completed runs of
+this workflow on the exact head commit, re-derives the prior run's
+full-coverage facts from its job list, and emits the
+`cg-ci-reuse-evidence/v1` receipt (uploaded as
+`ci-reuse-evidence-<sha>-<attempt>`) that records the consumed run, its job
+conclusions and every check that ran.
+
+Reuse is confirmed only when a prior run on this exact commit, under this
+same workflow, completed successfully with every full-profile job passed:
+classification, the static gate, all fifteen lanes, the Windows portable
+acceptance and the `Candidate CI required` summary. Skipped or missing lanes
+mean the run is not a genuine full run — most often a run that itself reused
+an even earlier one — and such candidates are skipped, never cited, so reuse
+never chains. When the prior run's manifest-exact candidate artifact exists,
+its receipt is downloaded and must bind this exact source commit and the
+runtime digest of this checkout; the artifact is additional escrow, so its
+absence does not block reuse, but any mismatch refuses the verdict.
+
+A confirmed reuse skips the fifteen lanes and the portable acceptance of the
+current run and reduces the required summary to `classify`, `static` and
+`ci_reuse` — all three still demanded, and any failed or cancelled job
+anywhere in the run still fails the summary. Everything else answers denied:
+missing evidence, a failed lane on the exact commit, identity drift or any
+API or local failure falls back to running the ordinary lanes, which is the
+safer direction. Reuse consumes job and artifact evidence only; it does not
+establish live host behavior, trust or installation.
+
 Formal performance comparison is required when performance-sensitive behavior
 changes or a task explicitly requires it; it is not a universal per-release
 campaign. Full legacy formal results retain their original semantics. A scoped

@@ -12,7 +12,7 @@ from pathlib import Path
 FULL_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 EXTERNAL_USE = re.compile(r"^\s*(?:-\s*)?uses:\s+([^\s#]+)@([^\s#]+)", re.MULTILINE)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools.validation.ci_policy import CI_LANES, DAILY_FOCUSED, DAILY_FULL  # noqa: E402
+from tools.validation.ci_policy import CI_LANES, DAILY_FOCUSED  # noqa: E402
 
 
 def validate_action_pins(workflows: Path) -> list[str]:
@@ -73,12 +73,14 @@ def validate(root: Path) -> list[str]:
     reusable_call = "uses: ./.github/workflows/ci-lane.yml"
     if candidate.count(reusable_call) != len(CI_LANES) + len(DAILY_FOCUSED):
         errors.append("candidate CI must declare all full and focused lanes")
+    lane_condition = ("    needs: [classify, ci_reuse]\n"
+                      "    if: needs.classify.outputs.profile != 'full' "
+                      "|| needs.ci_reuse.outputs.reuse != 'confirmed'\n")
     for job_id, display_name, runner, python_version in CI_LANES:
         expected = (
             f"  {job_id}:\n"
             f"    name: {display_name}\n"
-            "    needs: classify\n"
-            + ("" if job_id in DAILY_FULL else "    if: needs.classify.outputs.profile == 'full'\n")
+            + lane_condition
             + f"    {reusable_call}\n"
             "    with:\n"
             f"      runner: {runner}\n"
@@ -87,9 +89,33 @@ def validate(root: Path) -> list[str]:
         if expected not in candidate:
             errors.append(f"candidate lane is missing or malformed: {job_id}")
     required_section = candidate.split("  required:\n", 1)[-1]
-    for job_id in ["classify", "static", *[row[0] for row in CI_LANES], *DAILY_FOCUSED, "portable_windows"]:
+    for job_id in ["classify", "static", "ci_reuse", *[row[0] for row in CI_LANES],
+                   *DAILY_FOCUSED, "portable_windows"]:
         if f"      - {job_id}\n" not in required_section:
             errors.append(f"required summary does not depend on {job_id}")
+    portable_condition = ("    if: needs.ci_reuse.outputs.reuse != 'confirmed' && "
+                          "(needs.classify.outputs.profile == 'full' || "
+                          "contains(needs.classify.outputs.invalidates, 'native_artifact') || "
+                          "contains(needs.classify.outputs.invalidates, 'native_runtime'))\n")
+    if portable_condition not in candidate:
+        errors.append("portable_windows gate is missing or malformed")
+    expected_reuse = (
+        "  ci_reuse:\n"
+        "    name: Exact-commit candidate run reuse\n"
+        "    needs: classify\n"
+        "    if: needs.classify.outputs.profile == 'full'\n"
+        "    outputs:\n"
+        "      reuse: ${{ steps.reuse.outputs.reuse }}\n"
+    )
+    if expected_reuse not in candidate:
+        errors.append("exact-commit reuse job is missing or malformed")
+    for fragment in ("permissions:\n  contents: read\n  actions: read",
+                     "python tools/validation/ci_reuse.py",
+                     "--reuse \"$REUSE_CONFIRMED\"",
+                     "REUSE_CONFIRMED: ${{ needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse == 'confirmed' }}",
+                     "ci-reuse-evidence-${{ github.sha }}"):
+        if fragment not in candidate:
+            errors.append(f"exact-commit reuse contract is missing: {fragment}")
     for job_id, version in zip(DAILY_FOCUSED, ("3.10", "3.14")):
         expected = (
             f"  {job_id}:\n"

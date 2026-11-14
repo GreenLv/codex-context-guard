@@ -94,6 +94,34 @@ class CIPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             policy.verify('', False, {})
 
+    def test_reuse_requires_the_full_profile_and_the_evidence_job(self):
+        with self.assertRaises(ValueError):
+            policy.required_jobs('daily', False, reuse=True)
+        with self.assertRaises(ValueError):
+            policy.verify('daily', False, {}, reuse=True)
+        required = policy.required_jobs('full', False, reuse=True)
+        self.assertEqual(required, ['classify', 'static', 'ci_reuse'])
+        needs = {'classify': {'result': 'success'}, 'static': {'result': 'success'},
+                 'ci_reuse': {'result': 'success'}}
+        self.assertEqual(policy.verify('full', False, needs, reuse=True)['passed'],
+                         ['ci_reuse', 'classify', 'static'])
+        # The reuse evidence job itself is never exempt.
+        needs['ci_reuse'] = {'result': 'skipped'}
+        with self.assertRaises(SummaryError):
+            policy.verify('full', False, needs, reuse=True)
+
+    def test_reuse_never_lets_any_other_job_fail_or_cancel(self):
+        all_jobs = set(policy.required_jobs('full', True)) | set(policy.DAILY_FOCUSED)
+        base = {'classify': {'result': 'success'}, 'static': {'result': 'success'},
+                'ci_reuse': {'result': 'success'}}
+        for job in sorted(all_jobs - set(base)):
+            for status in ('failure', 'cancelled'):
+                with self.subTest(job=job, status=status):
+                    needs = dict(base)
+                    needs[job] = {'result': status}
+                    with self.assertRaises(SummaryError):
+                        policy.verify('full', True, needs, reuse=True)
+
     def test_platform_runner_rejects_missing_empty_skipped_or_failed_modules(self):
         with self.assertRaises(ValueError):
             platform.run(())

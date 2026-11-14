@@ -120,17 +120,37 @@ def select_profile(request: str, paths: list[str], version_only_paths=()) -> str
     return "full" if request == "full" else "daily"
 
 
-def required_jobs(profile: str, portable: bool) -> list[str]:
+def required_jobs(profile: str, portable: bool, reuse: bool = False) -> list[str]:
     if profile not in {"daily", "full"}:
         raise ValueError("resolved CI profile must be daily or full")
+    if reuse and profile != "full":
+        raise ValueError("exact-commit reuse applies only to the full profile")
+    if reuse:
+        # A confirmed reuse consumes a prior full run on the exact commit;
+        # the lanes it already passed stay exempt, and the summary still
+        # demands the classification, the static gate and the reuse evidence
+        # job of this run.
+        return ["classify", "static", "ci_reuse"]
     lanes = [row[0] for row in CI_LANES if profile == "full" or row[0] in DAILY_FULL]
     if profile == "daily":
         lanes.extend(DAILY_FOCUSED)
     return ["classify", "static", *lanes, *(["portable_windows"] if portable else [])]
 
 
-def verify(profile: str, portable: bool, needs: dict) -> dict:
-    return evaluate(required_jobs(profile, portable), {k: v["result"] for k, v in needs.items()})
+def verify(profile: str, portable: bool, needs: dict, reuse: bool = False) -> dict:
+    required = required_jobs(profile, portable, reuse)
+    observed = {k: v["result"] for k, v in needs.items()}
+    if reuse:
+        # Reuse never widens what may fail: every other job of this run must
+        # be a success or an unselected skip — a failed or cancelled job
+        # anywhere still fails the summary.
+        broken = sorted(job for job, result in observed.items()
+                        if job not in required
+                        and result in ("failure", "cancelled"))
+        if broken:
+            from tools.validation.verify_required_jobs import SummaryError
+            raise SummaryError("required jobs did not pass: non_success=" + ",".join(broken))
+    return evaluate(required, observed)
 
 
 def main() -> int:
@@ -145,6 +165,8 @@ def main() -> int:
     summary.add_argument("--profile", required=True)
     summary.add_argument("--portable", choices=("true", "false"), required=True)
     summary.add_argument("--needs-json", required=True)
+    summary.add_argument("--reuse", choices=("true", "false"), default="false",
+                         help="a ci_reuse receipt confirmed a prior full run on this exact commit")
     args = parser.parse_args()
     if args.command == "select":
         # Include both sides of a rename/deletion; NUL-delimit unusual paths.
@@ -177,7 +199,9 @@ def main() -> int:
             stream.write(f"profile={profile}\n")
         print(json.dumps({"profile": profile, "required": required_jobs(profile, False)}))
     else:
-        print(json.dumps(verify(args.profile, args.portable == "true", json.loads(args.needs_json))))
+        print(json.dumps(verify(args.profile, args.portable == "true",
+                                json.loads(args.needs_json),
+                                reuse=args.reuse == "true")))
     return 0
 
 
