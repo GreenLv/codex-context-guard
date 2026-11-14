@@ -19,7 +19,15 @@ from tools.validation.ci_policy import CI_LANES
 COMMIT = "a" * 40
 CURRENT_RUN = "9001"
 FIXTURE_DIGEST = "b" * 64
-FULL_JOB_NAMES = sorted(R.REQUIRED_JOB_NAMES)
+# The Actions jobs API renders reusable-lane caller jobs with a
+# " / <runner> / <python version>" suffix after the display name; the
+# fixtures use that real shape.
+_LANE_DISPLAY = {row[1]: row for row in CI_LANES}
+_LANE_API_NAMES = {display: f"{display} / {runner} / Python {version}"
+                   for display, (_, _, runner, version) in _LANE_DISPLAY.items()}
+FULL_JOB_NAMES = sorted([*(_LANE_API_NAMES[row[1]] for row in CI_LANES),
+                         R.CLASSIFY_JOB_NAME, R.STATIC_JOB_NAME,
+                         R.PORTABLE_JOB_NAME, R.REQUIRED_JOB_NAME])
 assert len(FULL_JOB_NAMES) == len(CI_LANES) + 4
 
 
@@ -183,15 +191,25 @@ class TestDeny(ReuseCase):
         self.assertEqual(result["verdict"], "denied")
         self.assertIn("no completed full-profile", result["reason"])
 
+    def test_plain_display_lane_names_still_match(self):
+        # A job listing that reports bare display names (without the
+        # reusable-call suffix) still maps onto every required slot.
+        plain = {name: "success" for name in sorted(R.REQUIRED_JOB_NAMES)}
+        api = FakeAPI([run_entry("42")], {"42": jobs_page(plain)})
+        result = self.evaluate(api)
+        self.assertEqual(result["verdict"], "confirmed")
+
     def test_failed_lane_on_this_exact_commit_denies_without_shopping(self):
         jobs = successful_full_jobs()
-        jobs["macOS / Python 3.11"] = "failure"
+        failed_name = _LANE_API_NAMES["macOS / Python 3.11"]
+        jobs[failed_name] = "failure"
         api = FakeAPI([run_entry("31"), run_entry("32")],
                       {"31": jobs_page(jobs),
                        "32": jobs_page(successful_full_jobs())})
         result = self.evaluate(api)
         self.assertEqual(result["verdict"], "denied")
         self.assertIn("prior_full_run_has_failed_jobs", result["reason"])
+        self.assertIn("macOS / Python 3.11", result["reason"])
         self.assertEqual(result["prior_run"]["id"], "31")
 
     def test_mismatched_artifact_receipt_denies(self):

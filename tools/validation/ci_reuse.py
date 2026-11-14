@@ -66,6 +66,21 @@ API_TIMEOUT = 60.0
 REQUIRED_JOB_NAMES = frozenset(
     [CLASSIFY_JOB_NAME, STATIC_JOB_NAME, PORTABLE_JOB_NAME, REQUIRED_JOB_NAME,
      *(row[1] for row in CI_LANES)])
+_LANE_NAMES = frozenset(row[1] for row in CI_LANES)
+
+# The Actions jobs API renders reusable-lane caller jobs as
+# "<display name> / <runner> / <python version>"; exact names still match.
+_EXACT_REQUIRED = REQUIRED_JOB_NAMES - _LANE_NAMES
+
+
+def _required_slot(name: str) -> str | None:
+    """Map a prior-run job name to its required full-profile slot."""
+    if name in _EXACT_REQUIRED:
+        return name
+    for lane_name in _LANE_NAMES:
+        if name == lane_name or name.startswith(lane_name + " / "):
+            return lane_name
+    return None
 
 
 class ReuseError(Exception):
@@ -164,25 +179,31 @@ def _prior_run_jobs(repo: str, run_id: str) -> dict[str, str]:
 def _verify_prior_jobs(conclusions: dict[str, str]) -> str | None:
     """``None`` when every full-profile job passed; else a short refusal.
 
-    Missing or skipped names refuse this candidate without poisoning the
+    Missing or skipped slots refuse this candidate without poisoning the
     search (an older genuine full run may still exist); any failed or
     cancelled full-profile job on this exact commit is evidence against
     reuse and refuses the whole evaluation.
     """
     if len(conclusions) > MAX_JOB_NAMES * 4:
         return "job listing oversized"
-    missing = sorted(REQUIRED_JOB_NAMES - set(conclusions))
-    skipped = sorted(name for name in REQUIRED_JOB_NAMES
-                     if conclusions.get(name) == "skipped")
+    mapped: dict[str, str] = {}
+    for name, result in conclusions.items():
+        slot = _required_slot(name)
+        if slot is None:
+            continue
+        if slot in mapped:
+            return "duplicate jobs for required slot: " + slot
+        mapped[slot] = result
+    missing = sorted(REQUIRED_JOB_NAMES - set(mapped))
+    skipped = sorted(slot for slot, result in mapped.items() if result == "skipped")
     if missing or skipped:
         return "not_a_genuine_full_run"
-    failed = sorted(name for name in REQUIRED_JOB_NAMES
-                    if conclusions.get(name) != "success")
+    failed = sorted(slot for slot, result in mapped.items() if result != "success")
     if failed:
         return "prior_full_run_has_failed_jobs: " + ", ".join(failed[:8])
     broken = sorted(name for name, result in conclusions.items()
-                    if result not in ("success", "skipped", None)
-                    and name not in REQUIRED_JOB_NAMES)
+                    if result in ("failure", "cancelled")
+                    and _required_slot(name) is None)
     if broken:
         return "prior_run_has_unexpected_job_results: " + ", ".join(broken[:8])
     return None
