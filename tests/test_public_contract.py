@@ -206,16 +206,18 @@ class PublicContractTests(unittest.TestCase):
         """A skipped ci_reuse would skip every lane that needs it (GitHub
         skips dependents of a skipped job), which failed the daily summary
         once; the reuse job must therefore run in every profile."""
-        import yaml
-        caller = yaml.safe_load(
-            (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
-        reuse = caller["jobs"]["ci_reuse"]
-        self.assertNotIn("if", reuse)
-        self.assertEqual(reuse["needs"], "classify")
-        self.assertIn("reuse", reuse["outputs"])
+        caller = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8")
+        reuse_block = caller.split("  ci_reuse:\n", 1)[1].split(
+            "  ubuntu_py310:\n", 1)[0]
+        self.assertNotIn("\n    if:", reuse_block)
+        self.assertIn("    needs: classify\n", reuse_block)
+        self.assertIn("reuse: ${{ steps.reuse.outputs.reuse }}", reuse_block)
         for job_id in ("ubuntu_py310", "macos_py312", "windows_py312"):
-            self.assertIn("ci_reuse", caller["jobs"][job_id]["needs"])
-        self.assertIn("ci_reuse", caller["jobs"]["required"]["needs"])
+            block = caller.split(f"  {job_id}:\n", 1)[1]
+            self.assertIn("needs: [classify, ci_reuse]", block.split("uses:", 1)[0])
+        required = caller.split("  required:\n", 1)[1].split("runs-on:", 1)[0]
+        self.assertIn("      - ci_reuse\n", required)
 
     def test_pr_gate_is_blocking_and_portable_windows_is_conditional(self) -> None:
         pr = (ROOT / ".github" / "workflows" / "validation-shadow.yml").read_text(
