@@ -25,6 +25,18 @@ manifest digest it actually consumed:
 - ``--verify`` — fresh official readbacks, exact artifact parity against the
   installed cache, a read-only fresh-client Hook probe that records which
   source a new client actually loads, and the trust state.
+- ``--resume`` — the thin same-command continuation: it derives the next
+  pending stage from the batch's exclusive receipts and dispatches to the
+  existing prepare/apply/verify implementations. It adds no identity rule of
+  its own; every stage still re-derives its subject and refuses drift exactly
+  like a directly typed command, and the apply host gate stays the one
+  precise operator instruction.
+- ``--rebind`` — the controlled host re-identification for an unstarted
+  batch: when the only binding drift is the same-path desktop executable's
+  bytes (a host auto-update after preparation), it records the judgment,
+  keeps every prior receipt, and writes the next numbered prepare receipt
+  bound to the new host identity. Any other input change (CLI, artifact,
+  plan, helpers, interpreter, sandbox markers) refuses with its own category.
 
 Command probing is side-effect-free by construction: only ``--version``-style
 oracles, parse-only launcher checks and read-only process enumeration are
@@ -92,6 +104,7 @@ VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+")
 
 PREFLIGHT_NAME = "preflight.json"
 PREPARE_NAME = "prepare.json"
+REBIND_NAME = "rebind.json"
 APPLY_NAME = "apply.json"
 VERIFY_NAME = "verify.json"
 JOURNAL_NAME = "apply-events.jsonl"
@@ -695,10 +708,10 @@ def _probe_ps1_launcher(launcher: Path, passthrough: list[str],
 # --------------------------------------------------------------- prepare ----
 
 
-def prepare(plan: dict[str, Any], output: Path) -> dict[str, Any]:
-    subject = _preflight_checks(plan)
-    _claim_output(subject, output)
-    output.mkdir(mode=0o700)
+def _prepare_result(plan: dict[str, Any], subject: dict[str, Any]) -> dict[str, Any]:
+    """The stage decision for one fresh preflight subject; shared by prepare
+    and the controlled rebind, so a rebound batch re-derives the swap gate
+    exactly as a first preparation would."""
     installed = subject["installed_before"]
     host_status = subject["host"]["status"]
     if installed["installed"] and installed["version"] == plan["target_version"]:
@@ -721,14 +734,154 @@ def prepare(plan: dict[str, Any], output: Path) -> dict[str, Any]:
                   "host state is unknown (" + str(subject["host"]["reason"]) + "); a swap must "
                   "not start while a Desktop host may be running")
         swap = {"required": True, "reason": reason, "observed_host_status": host_status}
-    result = {"schema": REPORT, "stage": "prepare", "status": status, "subject": subject,
-              "subject_sha256": base.digest(subject), "swap": swap,
-              "commands": subject["commands"],
-              "pending": ["apply", "verify"]}
+    return {"schema": REPORT, "stage": "prepare", "status": status, "subject": subject,
+            "subject_sha256": base.digest(subject), "swap": swap,
+            "commands": subject["commands"],
+            "pending": ["apply", "verify"]}
+
+
+def prepare(plan: dict[str, Any], output: Path) -> dict[str, Any]:
+    subject = _preflight_checks(plan)
+    _claim_output(subject, output)
+    output.mkdir(mode=0o700)
+    result = _prepare_result(plan, subject)
     base._write_new(output / PREPARE_NAME, result)
-    print(json.dumps({"status": status, "stage": "prepare",
-                      "host": host_status, "swap_required": swap["required"]}))
+    print(json.dumps({"status": result["status"], "stage": "prepare",
+                      "host": subject["host"]["status"],
+                      "swap_required": result["swap"]["required"]}))
     return result
+
+
+# ------------------------------------------------------ resume / rebind ----
+
+
+def _numbered_receipt(output: Path, base_name: str) -> Path:
+    """The next exclusive numbered receipt for one stage family.
+
+    Like the verify receipts, existing files are never replaced; the newest
+    numbered receipt keeps the latest state and every prior receipt stays.
+    """
+    candidate = output / base_name
+    if not candidate.exists():
+        return candidate
+    stem = base_name.removesuffix(".json")
+    index = 2
+    while (output / f"{stem}-{index}.json").exists():
+        index += 1
+    return output / f"{stem}-{index}.json"
+
+
+def _newest_prepare_receipt(output: Path) -> Path:
+    """The newest prepare receipt in the batch, numbered or initial."""
+    newest = output / PREPARE_NAME
+    if not newest.exists():
+        return newest
+    index = 2
+    while (output / f"prepare-{index}.json").exists():
+        newest = output / f"prepare-{index}.json"
+        index += 1
+    return newest
+
+
+DRIFT_ADVICE = {
+    "cli": "the CLI identity changed; re-review it in a new plan and start a new batch",
+    "tool_sha256": "the operator tool changed since preparation; start a new batch",
+    "helpers": "the executed helper closure changed since preparation; start a new batch",
+    "python": "the interpreter changed; start a new batch",
+    "host_tools": "the process-enumeration tool identity changed; start a new batch",
+    "plan_sha256": "the plan changed; a rebind never accepts plan changes",
+    "artifact": "the target artifact changed; re-run a reviewed preflight in a new batch",
+    "market_identity": "the stable marketplace identity changed; start a new batch",
+    "daily_home": "the daily HOME changed; start a new batch",
+    "invocation_cwd": "re-run from the preparation working directory",
+    "sandbox_markers": "a sandbox marker identity changed; start a new batch",
+    "desktop_executable": "the desktop executable path changed; write a new plan and start a new batch",
+}
+
+
+def rebind(plan: dict[str, Any], output: Path,
+           prepared_path: Path | None) -> dict[str, Any]:
+    """Controlled host re-identification for an unstarted batch.
+
+    After a preparation, only one input may legitimately change by itself:
+    the Desktop host auto-updates in place, so the pinned desktop executable
+    keeps its path but its bytes move. A rebind re-derives the full preflight
+    subject (trusted source, actual file identities, host state and every
+    other pinned input), accepts exactly that one drift, keeps every prior
+    receipt untouched, and writes the next numbered prepare receipt bound to
+    the new host identity. Any other change refuses with its own category,
+    and a batch whose apply already began is never rebound — it recovers by
+    its original journal instead.
+    """
+    require(output.is_absolute(), "output must be an absolute path")
+    require(output.is_dir() and not output.is_symlink(),
+            "rebind requires the existing batch output directory")
+    if prepared_path is None:
+        # A rebind always rebinds the newest prepare receipt, so a second
+        # host update rebinds the already rebound batch.
+        prepared_path = _newest_prepare_receipt(output)
+    require(prepared_path.parent == output,
+            "the prepare receipt must live in this batch's output directory")
+    require(not (output / JOURNAL_NAME).is_file(),
+            "apply already began in this batch; recover by its original journal, "
+            "not a rebind")
+    require(not (output / APPLY_NAME).is_file(),
+            "apply already completed in this batch; a rebind is not available")
+    prepared, prepared_sha = _read_bound_result(prepared_path, stage="prepare")
+    subject = _preflight_checks(plan)
+    old_view, new_view = _binding_view(prepared["subject"]), _binding_view(subject)
+    drift = sorted(key for key in set(old_view) | set(new_view)
+                   if old_view.get(key) != new_view.get(key))
+    if drift != ["desktop_executable"]:
+        detail = "; ".join(key + ": " + DRIFT_ADVICE.get(key, "start a new batch")
+                           for key in drift) or "no drift; the batch can continue as-is"
+        raise UpgradeError("rebind accepts only a same-path desktop executable byte "
+                           "change (a host auto-update after preparation); refused: "
+                           + detail)
+    old_host, new_host = old_view["desktop_executable"], new_view["desktop_executable"]
+    require(_same_path(old_host.get("path"), new_host.get("path")),
+            DRIFT_ADVICE["desktop_executable"])
+    new_prepare = _numbered_receipt(output, PREPARE_NAME)
+    result = _prepare_result(plan, subject)
+    result["rebound_from"] = {"receipt": prepared_path.name,
+                              "subject_sha256": prepared["subject_sha256"],
+                              "prepared_sha256": prepared_sha,
+                              "drift": drift}
+    base._write_new(new_prepare, result)
+    audit = {"schema": REPORT, "stage": "rebind", "status": "rebound",
+             "previous": {"receipt": prepared_path.name,
+                          "subject_sha256": prepared["subject_sha256"]},
+             "rebound_to": {"receipt": new_prepare.name,
+                            "subject_sha256": result["subject_sha256"]},
+             "drift": drift,
+             "desktop_executable": {"path": new_host["path"],
+                                    "previous_sha256": old_host["sha256"],
+                                    "current_sha256": new_host["sha256"]}}
+    base._write_new(_numbered_receipt(output, REBIND_NAME), audit)
+    print(json.dumps({"status": "rebound", "stage": "rebind",
+                      "receipt": str(new_prepare),
+                      "resume": "re-run the same command with --resume to continue"}))
+    return audit
+
+
+def resume(plan: dict[str, Any], output: Path) -> int:
+    """The thin same-command continuation across the batch's pending stages.
+
+    This dispatches to the existing stage implementations and adds no rule
+    of its own: a missing prepare receipt is prepared, an unapplied prepared
+    batch is applied (the host-absent gate still answers with its one precise
+    instruction), and every arrival verifies. All identity, drift and journal
+    reconciliation checks run exactly as in a directly typed command.
+    """
+    require(output.is_absolute(), "output must be an absolute path")
+    if not (output / PREPARE_NAME).exists():
+        prepare(plan, output)
+    prepared_path = _newest_prepare_receipt(output)
+    prepared, _sha = _read_bound_result(prepared_path, stage="prepare")
+    if prepared.get("status") == "prepared" and not (output / APPLY_NAME).is_file():
+        apply(plan, output, prepared_path)
+    result = verify(plan, output, prepared_path, None)
+    return 0 if result["status"] == "passed" else 1
 
 
 # ----------------------------------------------------------------- apply ----
@@ -1237,6 +1390,10 @@ def main(argv: list[str] | None = None) -> int:
     action.add_argument("--prepare", action="store_true")
     action.add_argument("--apply", action="store_true")
     action.add_argument("--verify", action="store_true")
+    action.add_argument("--resume", action="store_true",
+                        help="thin same-command continuation over the batch's receipts")
+    action.add_argument("--rebind", action="store_true",
+                        help="controlled host re-identification for an unstarted batch")
     parser.add_argument("--prepared-result", type=Path)
     parser.add_argument("--verify-output", type=Path)
     args = parser.parse_args(argv)
@@ -1244,8 +1401,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--verify-output requires --verify")
     if args.apply or args.verify:
         prepared = args.prepared_result or (args.output / PREPARE_NAME)
+    elif args.rebind:
+        # Default: the newest numbered prepare receipt in the batch.
+        prepared = args.prepared_result
     elif args.prepared_result is not None:
-        parser.error("--prepared-result requires --apply or --verify")
+        parser.error("--prepared-result requires --apply, --verify or --rebind")
     else:
         prepared = None
     try:
@@ -1264,6 +1424,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.apply:
             require(prepared is not None, "prepared result required")
             apply(plan, args.output, prepared)
+        elif args.rebind:
+            rebind(plan, args.output, prepared)
+        elif args.resume:
+            return resume(plan, args.output)
         else:
             require(prepared is not None, "prepared result required")
             result = verify(plan, args.output, prepared, args.verify_output)

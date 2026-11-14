@@ -892,5 +892,166 @@ class TestPlanAndCommandLaw(DailyUpgradeCase):
         self.assertEqual(rc, 2)
 
 
+class TestResume(DailyUpgradeCase):
+    """The thin dispatcher: same receipts, same gates, one command."""
+
+    def test_fresh_batch_completes_in_one_invocation(self):
+        self.seed_target_cache()
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.read("prepare.json")["status"], "prepared")
+        self.assertEqual(self.read("apply.json")["installed_after"]["version"], TARGET)
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_running_host_pauses_once_then_completes_on_rerun(self):
+        self.seed_target_cache()
+        self.host_status = inventory_result("running", desktop_pids=(4242,))
+        self.assertEqual(self.main("--resume"), 1)
+        self.assertTrue((self.output / "prepare.json").is_file())
+        self.assertFalse((self.output / "apply.json").exists())
+        self.assertFalse((self.output / U.JOURNAL_NAME).exists())
+        # The operator quits the host and re-runs the same command.
+        self.host_status = inventory_result("absent")
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_interrupted_apply_resumes_to_completion(self):
+        self.seed_target_cache()
+        self.fake.crash_argv = [str(self.tmp / "codex"), "plugin", "marketplace",
+                                "add", str(self.artifact)]
+        self.assertEqual(self.main("--resume"), 2)
+        self.fake.crash_argv = None
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.fake.calls.count(
+            [str(self.tmp / "codex"), "plugin", "marketplace", "remove", MARKET]), 1)
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_already_current_batch_skips_apply(self):
+        self.seed_target_cache()
+        self.fake.installed_version = TARGET
+        self.fake.registered = True
+        self.fake.market_root = str(self.artifact)
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.read("prepare.json")["status"], "already_current")
+        self.assertFalse((self.output / "apply.json").exists())
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_trust_pending_pause_then_pass_after_review(self):
+        self.seed_target_cache()
+        self.probe["hooks"] = [{**row, "trustStatus": "untrusted"}
+                               for row in self.probe["hooks"]]
+        self.assertEqual(self.main("--resume"), 1)
+        self.assertEqual(self.read("verify.json")["status"], "hook_trust_pending")
+        self.probe["hooks"] = self.trusted_hooks()
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertTrue((self.output / "verify-2.json").is_file())
+        self.assertEqual((self.output / "verify.json").read_bytes(),
+                         (self.output / "verify.json").read_bytes())
+
+    def test_drift_after_prepare_is_refused_like_a_typed_command(self):
+        self.seed_target_cache()
+        self.main("--prepare")
+        self.fake.cli_version = "codex-cli 0.43.0"
+        self.assertEqual(self.main("--resume"), 2)
+        self.assertFalse((self.output / "apply.json").exists())
+
+
+class TestRebind(DailyUpgradeCase):
+    """Controlled re-identification: same-path host bytes are the only drift."""
+
+    def setUp(self):
+        super().setUp()
+        # A case-insensitive default volume would alias "Codex" onto the
+        # "codex" CLI fixture; these cases mutate the host bytes, so they pin
+        # a distinct desktop fixture name.
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ")
+        self.plan_path = self.write_plan(
+            desktop_executable=str(self.tmp / "CodexDesktop"))
+
+    def rebind(self):
+        return self.main("--rebind")
+
+    def test_host_byte_change_is_the_only_accepted_drift(self):
+        self.seed_target_cache()
+        self.main("--prepare")
+        original = (self.output / "prepare.json").read_bytes()
+        old_sha = U._sha_loose(self.tmp / "CodexDesktop")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-updated-host")
+        self.assertEqual(self.rebind(), 0)
+        audit = self.read("rebind.json")
+        self.assertEqual(audit["stage"], "rebind")
+        self.assertEqual(audit["drift"], ["desktop_executable"])
+        self.assertEqual(audit["desktop_executable"]["previous_sha256"], old_sha)
+        self.assertNotEqual(audit["desktop_executable"]["current_sha256"], old_sha)
+        # Prior receipts stay byte-identical; the new prepare receipt is bound
+        # to the new host identity and records where it came from.
+        self.assertEqual((self.output / "prepare.json").read_bytes(), original)
+        rebound = self.read("prepare-2.json")
+        self.assertEqual(rebound["stage"], "prepare")
+        self.assertEqual(rebound["rebound_from"]["receipt"], "prepare.json")
+        self.assertEqual(rebound["rebound_from"]["drift"], ["desktop_executable"])
+        self.assertNotEqual(rebound["subject"]["desktop_executable"]["sha256"],
+                            old_sha)
+        # The rebound batch continues through resume, bound to prepare-2.
+        self.assertEqual(self.main("--resume"), 0)
+        applied = self.read("apply.json")
+        self.assertEqual(applied["prepared_sha256"],
+                         U.base.sha(self.output / "prepare-2.json"))
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_cli_drift_is_refused_with_its_own_category(self):
+        self.main("--prepare")
+        self.fake.cli_version = "codex-cli 0.43.0"
+        self.assertEqual(self.rebind(), 2)
+        self.assertFalse((self.output / "rebind.json").exists())
+
+    def test_artifact_and_plan_drift_are_refused_together(self):
+        self.main("--prepare")
+        other = make_artifact(self.tmp / "artifact-2")
+        self.plan_path = self.write_plan(artifact_dir=str(other))
+        self.assertEqual(self.rebind(), 2)
+        self.assertFalse((self.output / "prepare-2.json").exists())
+
+    def test_sandbox_marker_change_is_refused(self):
+        self.main("--prepare")
+        (self.tmp / "CodexSandboxService").write_bytes(b"helper-v2")
+        self.assertEqual(self.rebind(), 2)
+
+    def test_desktop_path_change_is_refused(self):
+        self.main("--prepare")
+        (self.tmp / "CodexDesktop2").write_bytes(b"MZ")
+        self.plan_path = self.write_plan(desktop_executable=str(self.tmp / "CodexDesktop2"))
+        self.assertEqual(self.rebind(), 2)
+
+    def test_started_batch_is_never_rebound(self):
+        self.seed_target_cache()
+        self.main("--prepare")
+        self.fake.crash_argv = [str(self.tmp / "codex"), "plugin", "marketplace",
+                                "add", str(self.artifact)]
+        self.assertEqual(self.main("--apply"), 2)
+        self.assertTrue((self.output / U.JOURNAL_NAME).is_file())
+        self.assertEqual(self.rebind(), 2)
+        self.fake.crash_argv = None
+        self.assertEqual(self.main("--apply"), 0)
+        self.assertEqual(self.rebind(), 2)
+
+    def test_repeated_host_updates_rebind_with_exclusive_receipts(self):
+        self.seed_target_cache()
+        self.main("--prepare")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-host-v2")
+        self.assertEqual(self.rebind(), 0)
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-host-v3")
+        self.assertEqual(self.rebind(), 0)
+        self.assertTrue((self.output / "prepare-2.json").is_file())
+        self.assertTrue((self.output / "prepare-3.json").is_file())
+        self.assertTrue((self.output / "rebind.json").is_file())
+        self.assertTrue((self.output / "rebind-2.json").is_file())
+        self.assertEqual(self.read("prepare-3.json")["rebound_from"]["receipt"],
+                         "prepare-2.json")
+        self.assertEqual(self.main("--resume"), 0)
+
+    def test_rebind_without_a_batch_is_refused(self):
+        self.assertEqual(self.rebind(), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

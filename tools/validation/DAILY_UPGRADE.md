@@ -160,6 +160,49 @@ nonzero exit does not mean that no stage changed. After completed apply or
 or pending verify can be repeated after its cause is resolved; an explicitly
 selected `--verify-output` needs a new filename on the next attempt.
 
+## Thin continuation and controlled rebinding
+
+Two dispatcher actions remove the remaining hand-assembly between stages.
+Neither adds its own identity rule: every stage still re-derives its subject
+and refuses drift exactly like the directly typed command.
+
+- `--resume` — one same-command continuation over the batch's receipts. With
+  no prepare receipt it prepares; an unapplied prepared batch is applied
+  (the host-absent gate still answers with its one precise instruction when
+  the Desktop host is running); and every arrival verifies. Re-running the
+  same `--resume` command after each operator step therefore completes the
+  whole batch — prepare, apply, verify — without re-typing per-stage
+  commands or re-deriving arguments. Exit `1` means one precise operator
+  step is pending (quit the host, review the Hooks); exit `2` means a
+  refusal that the typed commands would have produced identically.
+- `--rebind` — controlled host re-identification for an unstarted batch. When
+  the only change after preparation is the pinned desktop executable's bytes
+  (the host auto-updated in place at the same path), rebind re-derives the
+  full preflight subject, records the judgment in an exclusive `rebind.json`
+  audit receipt, keeps every prior receipt untouched, and writes the next
+  numbered prepare receipt (`prepare-2.json`, …) bound to the new host
+  identity. Continue with the same `--resume` command — it picks the newest
+  prepare receipt automatically, and the apply receipt records which prepare
+  receipt it consumed. Any other input change refuses with its own category
+  (CLI, artifact, plan, helper closure, interpreter, sandbox markers),
+  because those require a re-reviewed plan and a fresh batch. A batch whose
+  apply already began is never rebound: recover it by its original journal.
+
+```shell
+tools/validation/run_daily_upgrade.sh daily --plan "$plan" --output "$batch" --resume
+tools/validation/run_daily_upgrade.sh daily --plan "$plan" --output "$batch" --rebind
+```
+
+```powershell
+& $entry -Target daily -Arguments @('--plan', $plan, '--output', $batch, '--resume')
+& $entry -Target daily -Arguments @('--plan', $plan, '--output', $batch, '--rebind')
+```
+
+A tool update between preparation and continuation (this file's own commit
+changing `daily_upgrade.py`) is helper-closure drift: both `--resume` and
+`--rebind` refuse it, and the fallback is a new batch directory with a fresh
+read-only prepare reusing still-valid test and acceptance evidence.
+
 ## What stays manual
 
 Only what the platform actually requires of a human:
@@ -173,10 +216,44 @@ Only what the platform actually requires of a human:
 - Credential copies stay governed by existing permissions; the tool never
   outputs or transfers credentials and never creates a login in isolation.
 
+## Official same-entry refresh semantics (observed, macOS fixture 2026-11-14)
+
+A controlled isolated-HOME fixture ran the real installed CLI (0.169.0) and
+recorded what each official route does to the version cache slot and the
+fresh-client Hook inventory (`cg-daily-loaded-probe/v1` receipts, private):
+
+- `codex plugin marketplace upgrade <name>` exists but refuses non-Git
+  marketplaces ("not configured as a Git marketplace"). The verified local
+  artifact route this tool drives therefore has no official `upgrade`
+  subcommand; refresh for a local source is add/remove based only.
+- A bare official re-add of the same stable identity (`plugin add` again,
+  no remove) succeeds and **replaces** the version slot directory (new
+  inode, fresh install). The old bytes do not survive for a running host, so
+  a bare re-add is swap-equivalent and offers no safe hot refresh.
+- `plugin marketplace remove` retires the registration; the slot directory
+  remained on disk in the fixture, and the following re-add created a fresh
+  slot — consistent with the resumable apply's readback-driven staging.
+- In an isolated home, every install and refresh route loads exactly the
+  nine plugin Hooks (enabled) with `trustStatus: untrusted`: Hook trust
+  never auto-migrates; it stays with the official review interface.
+- The macOS Desktop host observed in daily use lives inside
+  `ChatGPT.app`'s versioned `Codex Framework.framework` tree, so a host
+  auto-update can change the pinned executable's **path**, not only its
+  bytes. `--rebind` deliberately refuses a path change (the plan pin moved);
+  the operator writes a new plan and starts a new batch, reusing still-valid
+  test and acceptance evidence.
+
+Conclusion: no observed official route refreshes a local-source stable
+identity in place while preserving the old cache for running tasks. The
+host-absent apply gate and the historical managed remove/add route remain
+required; this tool makes no no-restart promise.
+
 ## Records and limitations
 
 The standalone preflight directory keeps `preflight.json`. An upgrade batch
-keeps `prepare.json`, any apply journal/receipt (`apply-events.jsonl`,
+keeps `prepare.json`, any controlled rebind records (`rebind.json`,
+`rebind-2.json`, …, and their numbered `prepare-2.json`, … receipts), any
+apply journal/receipt (`apply-events.jsonl`,
 `apply.json`) and the numbered verify receipts
 (`verify.json`, `verify-2.json`, …), plus the probe journal
 `probe/loaded-N/rpc.jsonl`. Every subject binds the digests of the tool, its
