@@ -216,6 +216,15 @@ class PublicContractTests(unittest.TestCase):
         for job_id in ("ubuntu_py310", "macos_py312", "windows_py312"):
             block = caller.split(f"  {job_id}:\n", 1)[1]
             self.assertIn("needs: [classify, ci_reuse]", block.split("uses:", 1)[0])
+        # Daily-profile lanes keep running when the profile is daily; the
+        # full-only lanes stay profile-gated. Both skip only on a confirmed
+        # reuse.
+        daily_lane = caller.split("  ubuntu_py310:\n", 1)[1].split("uses:", 1)[0]
+        self.assertIn("profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'",
+                      daily_lane)
+        full_only = caller.split("  macos_py311:\n", 1)[1].split("uses:", 1)[0]
+        self.assertIn("profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'",
+                      full_only)
         required = caller.split("  required:\n", 1)[1].split("runs-on:", 1)[0]
         self.assertIn("      - ci_reuse\n", required)
 

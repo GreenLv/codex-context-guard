@@ -12,7 +12,7 @@ from pathlib import Path
 FULL_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 EXTERNAL_USE = re.compile(r"^\s*(?:-\s*)?uses:\s+([^\s#]+)@([^\s#]+)", re.MULTILINE)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools.validation.ci_policy import CI_LANES, DAILY_FOCUSED  # noqa: E402
+from tools.validation.ci_policy import CI_LANES, DAILY_FOCUSED, DAILY_FULL  # noqa: E402
 
 
 def validate_action_pins(workflows: Path) -> list[str]:
@@ -73,14 +73,21 @@ def validate(root: Path) -> list[str]:
     reusable_call = "uses: ./.github/workflows/ci-lane.yml"
     if candidate.count(reusable_call) != len(CI_LANES) + len(DAILY_FOCUSED):
         errors.append("candidate CI must declare all full and focused lanes")
-    lane_condition = ("    needs: [classify, ci_reuse]\n"
-                      "    if: needs.classify.outputs.profile != 'full' "
-                      "|| needs.ci_reuse.outputs.reuse != 'confirmed'\n")
+    reuse_skip = "needs.ci_reuse.outputs.reuse != 'confirmed'"
     for job_id, display_name, runner, python_version in CI_LANES:
+        # Daily-profile lanes must still run when the profile is daily, and
+        # full-only lanes must stay gated on the profile; both are skipped
+        # only by a confirmed reuse.
+        if job_id in DAILY_FULL:
+            condition = (f"    needs: [classify, ci_reuse]\n"
+                         f"    if: needs.classify.outputs.profile != 'full' || {reuse_skip}\n")
+        else:
+            condition = (f"    needs: [classify, ci_reuse]\n"
+                         f"    if: needs.classify.outputs.profile == 'full' && {reuse_skip}\n")
         expected = (
             f"  {job_id}:\n"
             f"    name: {display_name}\n"
-            + lane_condition
+            + condition
             + f"    {reusable_call}\n"
             "    with:\n"
             f"      runner: {runner}\n"

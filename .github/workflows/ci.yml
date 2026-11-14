@@ -137,7 +137,7 @@ jobs:
   ubuntu_py311:
     name: Ubuntu / Python 3.11
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -146,7 +146,7 @@ jobs:
   ubuntu_py312:
     name: Ubuntu / Python 3.12
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -155,7 +155,7 @@ jobs:
   ubuntu_py313:
     name: Ubuntu / Python 3.13
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -173,7 +173,7 @@ jobs:
   macos_py310:
     name: macOS / Python 3.10
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -182,7 +182,7 @@ jobs:
   macos_py311:
     name: macOS / Python 3.11
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -200,7 +200,7 @@ jobs:
   macos_py313:
     name: macOS / Python 3.13
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -209,7 +209,7 @@ jobs:
   macos_py314:
     name: macOS / Python 3.14
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -218,7 +218,7 @@ jobs:
   windows_py310:
     name: Windows / Python 3.10
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
@@ -227,7 +227,7 @@ jobs:
   windows_py311:
     name: Windows / Python 3.11
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
@@ -245,7 +245,7 @@ jobs:
   windows_py313:
     name: Windows / Python 3.13
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
@@ -254,7 +254,7 @@ jobs:
   windows_py314:
     name: Windows / Python 3.14
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
