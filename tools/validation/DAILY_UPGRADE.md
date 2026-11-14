@@ -175,18 +175,49 @@ and refuses drift exactly like the directly typed command.
   commands or re-deriving arguments. Exit `1` means one precise operator
   step is pending (quit the host, review the Hooks); exit `2` means a
   refusal that the typed commands would have produced identically.
-- `--rebind` — controlled host re-identification for an unstarted batch. When
-  the only change after preparation is the pinned desktop executable's bytes
-  (the host auto-updated in place at the same path), rebind re-derives the
-  full preflight subject, records the judgment in an exclusive `rebind.json`
-  audit receipt, keeps every prior receipt untouched, and writes the next
-  numbered prepare receipt (`prepare-2.json`, …) bound to the new host
-  identity. Continue with the same `--resume` command — it picks the newest
-  prepare receipt automatically, and the apply receipt records which prepare
-  receipt it consumed. Any other input change refuses with its own category
-  (CLI, artifact, plan, helper closure, interpreter, sandbox markers),
-  because those require a re-reviewed plan and a fresh batch. A batch whose
-  apply already began is never rebound: recover it by its original journal.
+- `--resume --wait [--wait-minutes N]` — the same continuation with a
+  bounded in-process wait: when apply answers that the Desktop host must be
+  observed absent, the process polls the read-only pinned-executable
+  inventory until the host has actually exited (default ceiling 60 minutes,
+  maximum 720, poll every 15 seconds) and then retries apply itself, whose
+  fresh apply-time inventory remains the deciding gate. Nothing is ever
+  closed or signalled and unrelated processes never gate the wait; Hook
+  trust still goes through the official review interface afterwards. The
+  batch receipts are the persistence layer — killing the wait loses
+  nothing, and the same command resumes.
+- `--rebind` — controlled host re-identification for an unstarted
+  batch. When the only change after preparation is the pinned desktop
+  executable's bytes (the host auto-updated in place at the same path),
+  rebind re-derives the full preflight subject, records the judgment in an
+  exclusive `rebind.json` audit receipt, keeps every prior receipt
+  untouched, and writes the next numbered prepare receipt (`prepare-2.json`,
+  …) bound to the new host identity. Continue with the same `--resume`
+  command — it picks the newest prepare receipt automatically, and the
+  apply receipt records which prepare receipt it consumed.
+
+  A numbered prepare receipt is adoptable only when its rebind audit binds
+  both the receipt name and the subject digest; the audit is written after
+  its receipt, so an interrupted rebind leaves an orphan that resume, apply
+  and verify refuse to adopt, and re-running `--rebind` writes the next
+  exclusive pair from the last audited receipt. An audit whose target
+  receipt has been removed refuses everywhere.
+
+  Rebinding also re-audits provenance: both the prepared host and the
+  changed host bytes must carry a verified platform publisher signature.
+  On macOS the identity must pass an explicit trust-anchor requirement
+  (`codesign --verify --strict --test-requirement '=anchor apple generic
+  and anchor trusted and certificate leaf[subject.OU] = "TEAM"'`, with the
+  team identifier strictly format-validated) — `--verify` alone or a
+  self-reported `TeamIdentifier` string is not accepted, and the rebind
+  evaluates the requirement against the prepared publisher identity. On
+  Windows the boundary is a Valid Authenticode status with the same
+  certificate thumbprint; certificate rotation changes the thumbprint and
+  is refused, never auto-allowed. Any unverifiable signature refuses.
+
+  Any other input change (CLI, artifact, plan, helper closure, interpreter,
+  sandbox markers) refuses with its own category, because those require a
+  re-reviewed plan and a fresh batch. A batch whose apply already began is
+  never rebound: recover it by its original journal.
 
 ```shell
 tools/validation/run_daily_upgrade.sh daily --plan "$plan" --output "$batch" --resume

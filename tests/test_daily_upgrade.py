@@ -165,6 +165,12 @@ class DailyUpgradeCase(unittest.TestCase):
                    lambda desktop, markers, host_tools=None: self.host_status)
         self.patch(U, "_loaded_probe", self._loaded_probe)
         self.patch(U, "_powershell_identity", self._fixture_powershell_identity)
+        self.publisher = {"method": "fixture", "verified": True,
+                          "identity": "FIXTURETEAM"}
+        self._real_host_publisher = U._host_publisher
+        self.patch(U, "_host_publisher",
+                   lambda path, env, host_tools=None, expected_team=None:
+                   dict(self.publisher))
         # The official-CLI fake must not intercept Windows Get-Acl; privacy is
         # modeled only inside this synthetic tree and the real DACL consumer
         # keeps its own scheduler controls.
@@ -247,8 +253,34 @@ class DailyUpgradeCase(unittest.TestCase):
         """An exact target cache, as artifact parity requires."""
         shutil.copytree(self.artifact, self.cache_root / TARGET, dirs_exist_ok=True)
 
+    def failing_audit_writer(self, failing_name):
+        real_write = U.base._write_new
+
+        def guarded(path, payload):
+            if Path(path).name == failing_name:
+                raise OSError("simulated audit-write failure")
+            return real_write(path, payload)
+
+        original = U.base._write_new
+        self.patch(U.base, "_write_new", guarded)
+
+        def restore():
+            U.base._write_new = original
+
+        return restore
+
     def main(self, *args):
-        return U.main(["--plan", str(self.plan_path), "--output", str(self.output), *args])
+        import contextlib
+        import io
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            code = U.main(["--plan", str(self.plan_path),
+                           "--output", str(self.output), *args])
+        self._stderr = buffer.getvalue()
+        return code
+
+    def last_stderr(self):
+        return getattr(self, "_stderr", "")
 
     def read(self, name):
         return json.loads((self.output / name).read_text(encoding="utf-8"))
@@ -788,8 +820,12 @@ class TestPlanAndCommandLaw(DailyUpgradeCase):
         def probe(argv, env, timeout=30.0):
             argv = [str(item) for item in argv]
             # The parse probe and the real print-argv entry both consume the
-            # recorded absolute shell, never a PATH re-resolution.
+            # recorded absolute shell, never a PATH re-resolution; codesign
+            # verification of the pinned host fixture is the read-only
+            # publisher oracle.
             if argv[1:2] == ["-n"] or "--print-argv" in argv:
+                return subprocess.run(argv, capture_output=True, timeout=timeout)
+            if argv[0] == "codesign" and Path(argv[-1]).is_absolute():
                 return subprocess.run(argv, capture_output=True, timeout=timeout)
             if argv[1:3] == ["-B", "-c"]:
                 return subprocess.run(argv, capture_output=True, timeout=timeout, env=env)
@@ -941,11 +977,14 @@ class TestResume(DailyUpgradeCase):
                                for row in self.probe["hooks"]]
         self.assertEqual(self.main("--resume"), 1)
         self.assertEqual(self.read("verify.json")["status"], "hook_trust_pending")
+        first_receipt = (self.output / "verify.json").read_bytes()
         self.probe["hooks"] = self.trusted_hooks()
         self.assertEqual(self.main("--resume"), 0)
         self.assertTrue((self.output / "verify-2.json").is_file())
-        self.assertEqual((self.output / "verify.json").read_bytes(),
-                         (self.output / "verify.json").read_bytes())
+        # The prior receipt stays byte-identical; the fresh verdict lands in
+        # the next numbered receipt.
+        self.assertEqual((self.output / "verify.json").read_bytes(), first_receipt)
+        self.assertEqual(self.read("verify-2.json")["status"], "passed")
 
     def test_drift_after_prepare_is_refused_like_a_typed_command(self):
         self.seed_target_cache()
@@ -1051,6 +1090,436 @@ class TestRebind(DailyUpgradeCase):
 
     def test_rebind_without_a_batch_is_refused(self):
         self.assertEqual(self.rebind(), 2)
+
+    # ---- trusted-publisher boundary -------------------------------------
+
+    def test_signed_host_update_with_same_publisher_rebinds(self):
+        self.seed_target_cache()
+        self.main("--prepare")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-updated-host")
+        self.assertEqual(self.rebind(), 0)
+        audit = self.read("rebind.json")
+        self.assertEqual(audit["drift"], ["desktop_executable"])
+
+    def test_unverified_new_host_bytes_are_refused(self):
+        self.main("--prepare")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-updated-host")
+        self.publisher = {"method": "fixture", "verified": False,
+                          "identity": None, "reason": "unsigned"}
+        self.assertEqual(self.rebind(), 2)
+        refused = ("do not satisfy the prepared publisher requirement"
+                   if sys.platform == "darwin"
+                   else "not a verified publisher-signed update")
+        self.assertIn(refused, self.last_stderr())
+
+    def test_publisher_change_is_refused(self):
+        self.main("--prepare")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-other-publisher")
+        self.publisher = {"method": "fixture", "verified": True,
+                          "identity": "OTHERTEAM"}
+        self.assertEqual(self.rebind(), 2)
+        self.assertIn("different publisher", self.last_stderr())
+
+    def test_publisher_verification_unavailable_is_refused(self):
+        self.main("--prepare")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-updated-host")
+        self.publisher = {"method": None, "verified": False, "identity": None,
+                          "reason": "codesign missing"}
+        self.assertEqual(self.rebind(), 2)
+
+    def test_preparation_without_publisher_record_is_refused(self):
+        # Receipts written before the publisher field existed (or with it
+        # stripped, re-digested so the receipt itself stays internally
+        # consistent) are never upgraded in place.
+        self.main("--prepare")
+        prepared = self.read("prepare.json")
+        del prepared["subject"]["desktop_executable"]["publisher"]
+        prepared["subject_sha256"] = U.base.digest(prepared["subject"])
+        (self.output / "prepare.json").write_text(json.dumps(prepared),
+                                                  encoding="utf-8")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-updated-host")
+        self.assertEqual(self.rebind(), 2)
+        self.assertIn("did not record a verified publisher identity",
+                      self.last_stderr())
+
+    def test_subject_records_the_publisher_observation(self):
+        self.main("--preflight")
+        subject = self.read("preflight.json")["subject"]
+        self.assertEqual(subject["desktop_executable"]["publisher"],
+                         self.publisher)
+
+    @unittest.skipUnless(sys.platform == "darwin", "native codesign oracle")
+    def test_real_codesign_refuses_unsigned_fixture(self):
+        # An unsigned fixture has no team identity at all: the publisher
+        # observation refuses before any requirement probe, and the real
+        # (unpatched) seam wrapper records it as unverified.
+        with self.assertRaises(U.UpgradeError):
+            U._codesign_publisher(self.tmp / "CodexDesktop", {})
+        publisher = self._real_host_publisher(self.tmp / "CodexDesktop", {}, {})
+        self.assertFalse(publisher["verified"])
+        self.assertIsNone(publisher["identity"])
+
+    # ---- interrupted-rebind adoption family ------------------------------
+
+    def test_orphan_prepare_is_never_adopted_and_rebind_recovers(self):
+        self.seed_target_cache()
+        self.main("--prepare")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-updated-host")
+        restore = self.failing_audit_writer("rebind.json")
+        self.assertEqual(self.rebind(), 2)
+        restore()
+        self.assertTrue((self.output / "prepare-2.json").is_file())
+        self.assertFalse((self.output / "rebind.json").is_file())
+        orphan_bytes = (self.output / "prepare-2.json").read_bytes()
+        # resume refuses to adopt the unaudited receipt.
+        self.assertEqual(self.main("--resume"), 2)
+        self.assertIn("interrupted rebind", self.last_stderr())
+        # recovery: a fresh rebind writes the next exclusive pair from the
+        # last audited receipt, and the orphan stays as retained evidence.
+        self.assertEqual(self.rebind(), 0)
+        self.assertTrue((self.output / "rebind.json").is_file())
+        self.assertTrue((self.output / "prepare-3.json").is_file())
+        self.assertEqual((self.output / "prepare-2.json").read_bytes(),
+                         orphan_bytes)
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.read("apply.json")["prepared_sha256"],
+                         U.base.sha(self.output / "prepare-3.json"))
+
+    def test_dangling_audit_is_refused_everywhere(self):
+        self.seed_target_cache()
+        self.main("--prepare")
+        audit = {"schema": U.REPORT, "stage": "rebind", "status": "rebound",
+                 "rebound_to": {"receipt": "prepare-9.json",
+                                "subject_sha256": "0" * 64}}
+        (self.output / "rebind.json").write_text(json.dumps(audit),
+                                                 encoding="utf-8")
+        self.assertEqual(self.main("--resume"), 2)
+        self.assertIn("references missing prepare receipt", self.last_stderr())
+        self.assertEqual(self.rebind(), 2)
+
+    def test_tampered_newest_prepare_is_never_adopted(self):
+        self.seed_target_cache()
+        self.main("--prepare")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-updated-host")
+        self.assertEqual(self.rebind(), 0)
+        rebound = self.read("prepare-2.json")
+        rebound["subject_sha256"] = "1" * 64
+        (self.output / "prepare-2.json").write_text(json.dumps(rebound),
+                                                    encoding="utf-8")
+        self.assertEqual(self.main("--resume"), 2)
+        self.assertIn("content does not match its subject digest",
+                      self.last_stderr())
+
+    def test_apply_refuses_stale_or_orphan_explicit_targets(self):
+        self.seed_target_cache()
+        self.main("--prepare")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-updated-host")
+        self.assertEqual(self.rebind(), 0)
+        stale = self.main("--apply", "--prepared-result",
+                          str(self.output / "prepare.json"))
+        self.assertEqual(stale, 2)
+        self.assertIn("current adoptable prepare receipt", self.last_stderr())
+        # The adoptable receipt is accepted and completes the batch.
+        self.assertEqual(self.main("--apply", "--prepared-result",
+                                   str(self.output / "prepare-2.json")), 0)
+
+    def test_forged_audit_digest_does_not_adopt(self):
+        self.seed_target_cache()
+        self.main("--prepare")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-updated-host")
+        self.failing_audit_writer("rebind.json")
+        self.assertEqual(self.rebind(), 2)
+        # An audit binding the right receipt name but the wrong subject
+        # digest must not adopt the orphan.
+        forged = {"schema": U.REPORT, "stage": "rebind", "status": "rebound",
+                  "rebound_to": {"receipt": "prepare-2.json",
+                                 "subject_sha256": "2" * 64}}
+        (self.output / "rebind.json").write_text(json.dumps(forged),
+                                                 encoding="utf-8")
+        self.assertEqual(self.main("--resume"), 2)
+        self.assertIn("interrupted rebind", self.last_stderr())
+
+
+class TestCodesignProvenance(DailyUpgradeCase):
+    """The real codesign requirement path: anchor + trusted + OU binding.
+
+    The fixture fakes the codesign oracles but the code under test must
+    still construct and pass the actual ``--test-requirement`` argument; a
+    mocked ``verified=True`` alone would prove nothing.
+    """
+
+    TEAM = "2DC432GLL2"
+    DETAIL = (f"Authority=Developer ID Application: OpenAI (application) ({TEAM})\n"
+              f"TeamIdentifier={TEAM}\n").encode()
+
+    def recorder(self, *, verify_rc=0, anchor_rc=0):
+        calls = []
+
+        def probe(argv, env, timeout=30.0):
+            argv = [str(item) for item in argv]
+            calls.append(argv)
+            rc = anchor_rc if "--test-requirement" in argv else verify_rc
+            return completed(argv, rc=rc, stderr=self.DETAIL)
+
+        self.patch(U, "_probe_run", probe)
+        return calls
+
+    def requirement_arg(self, calls):
+        requirements = [argv[argv.index("--test-requirement") + 1]
+                        for argv in calls if "--test-requirement" in argv]
+        self.assertEqual(len(requirements), 1)
+        return requirements[0]
+
+    def test_trusted_requirement_is_actually_passed(self):
+        calls = self.recorder()
+        publisher = U._codesign_publisher(self.tmp / "CodexDesktop", {})
+        self.assertTrue(publisher["verified"])
+        self.assertEqual(publisher["identity"], self.TEAM)
+        self.assertIn("codesign --verify --strict", " ".join(calls[0]))
+        requirement = self.requirement_arg(calls)
+        self.assertEqual(
+            requirement,
+            '=anchor apple generic and anchor trusted and '
+            'certificate leaf[subject.OU] = "2DC432GLL2"')
+        self.assertIn("anchor apple generic", requirement)
+        self.assertIn("anchor trusted", requirement)
+        self.assertIn('certificate leaf[subject.OU] = "%s"' % self.TEAM,
+                      requirement)
+
+    def test_unanchored_or_untrusted_requirement_is_refused(self):
+        self.recorder(anchor_rc=3)
+        publisher = U._codesign_publisher(self.tmp / "CodexDesktop", {})
+        self.assertFalse(publisher["verified"])
+        self.assertIsNone(publisher["identity"])
+        self.assertIn("trust-anchor requirement failed", publisher["reason"])
+        self.assertEqual(publisher["anchor_requirement_rc"], 3)
+
+    def test_team_format_is_validated_before_any_requirement_probe(self):
+        for team in ("2dc432gll2", "2DC432GLL", "2DC432GLL20", "2DC432G!L2", "adhoc"):
+            with self.subTest(team=team):
+                calls = self.recorder()
+                detail = ("TeamIdentifier=%s\n" % team).encode()
+                self.patch(U, "_probe_run",
+                           lambda argv, env, timeout=30.0, detail=detail: completed(
+                               argv, rc=0, stderr=detail))
+                with self.assertRaises(U.UpgradeError):
+                    U._codesign_publisher(self.tmp / "CodexDesktop", {})
+                # No requirement probe may run with an invalid identity.
+                self.assertFalse(any("--test-requirement" in [str(a) for a in argv]
+                                     for argv in calls[2:]))  # after verify/-dv pair
+
+    def test_rebind_audits_against_the_prepared_team(self):
+        calls = self.recorder()
+        publisher = U._codesign_publisher(self.tmp / "CodexDesktop", {},
+                                          expected_team=self.TEAM)
+        self.assertTrue(publisher["verified"])
+        self.assertEqual(self.requirement_arg(calls),
+                         '=anchor apple generic and anchor trusted and '
+                         'certificate leaf[subject.OU] = "%s"' % self.TEAM)
+
+    def test_self_reported_team_is_never_the_binding(self):
+        # A host whose -dv self-reports a different team fails the prepared
+        # requirement even if its own signature is internally valid.
+        self.recorder()
+        detail = "TeamIdentifier=AAAAABBBBB\n".encode()
+        self.patch(U, "_probe_run",
+                   lambda argv, env, timeout=30.0: completed(argv, rc=0, stderr=detail))
+        publisher = U._codesign_publisher(self.tmp / "CodexDesktop", {},
+                                          expected_team=self.TEAM)
+        self.assertFalse(publisher["verified"])
+        self.assertIn("differs from the audited publisher", publisher["reason"])
+
+class TestReceiptIntegrityFamily(DailyUpgradeCase):
+    """The four reviewed bypass counterexamples, covered per entry point.
+
+    A stale, removed, orphaned or content-modified prepare receipt must be
+    refused by every entry — apply, verify, resume, rebind — whichever
+    target the operator names; only the adopted chain may drive a swap.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Distinct desktop fixture name: a case-insensitive default volume
+        # would alias "Codex" onto the "codex" CLI fixture.
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ")
+        self.plan_path = self.write_plan(
+            desktop_executable=str(self.tmp / "CodexDesktop"))
+
+    def prepare_and_rebind(self):
+        self.seed_target_cache()
+        assert self.main("--prepare") == 0
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-host-v2")
+        assert self.main("--rebind") == 0
+
+    def explicit(self, action, receipt):
+        return self.main(action, "--prepared-result", str(self.output / receipt))
+
+    def restore_initial_host(self):
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ")
+
+    def entries_refuse(self, fragments, allow_rebind_default_recovery=False):
+        # The explicit and automatic entries refuse the broken state and
+        # nothing installs; only the rebind default may recover the batch by
+        # writing the next exclusive pair from the last audited receipt.
+        cases = [
+            ("apply stale initial", lambda: self.explicit("--apply", "prepare.json")),
+            ("verify stale initial", lambda: self.explicit("--verify", "prepare.json")),
+            ("resume", lambda: self.main("--resume")),
+            ("rebind stale initial", lambda: self.explicit("--rebind", "prepare.json")),
+        ]
+        for name, entry in cases:
+            with self.subTest(entry=name):
+                before = sorted(path.name for path in self.output.glob("*.json"))
+                self.assertEqual(entry(), 2, name)
+                self.assertTrue(any(fragment in self.last_stderr() for fragment in fragments),
+                                (name, self.last_stderr()))
+                self.assertFalse((self.output / "apply.json").exists(), name)
+                self.assertEqual(sorted(path.name for path in self.output.glob("*.json")),
+                                 before, name)
+        with self.subTest(entry="rebind default"):
+            before = sorted(path.name for path in self.output.glob("*.json"))
+            code = self.main("--rebind")
+            if allow_rebind_default_recovery:
+                self.assertEqual(code, 0)
+            else:
+                self.assertEqual(code, 2)
+                self.assertTrue(any(fragment in self.last_stderr() for fragment in fragments))
+            self.assertEqual(self.fake.installed_version, OLD)
+            if not allow_rebind_default_recovery:
+                self.assertEqual(sorted(path.name for path in self.output.glob("*.json")),
+                                 before)
+
+    def scenario_a_removed_audited_receipt(self):
+        self.prepare_and_rebind()
+        (self.output / "prepare-2.json").unlink()
+        self.restore_initial_host()
+
+    def scenario_b_stale_explicit_rebind_source(self):
+        self.prepare_and_rebind()
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-host-v3")
+
+    def scenario_c_modified_receipt_content(self):
+        self.prepare_and_rebind()
+        receipt = self.read("prepare-2.json")
+        receipt["subject"]["installed_before"]["installed"] = False
+        (self.output / "prepare-2.json").write_text(json.dumps(receipt),
+                                                    encoding="utf-8")
+        self.host_status = inventory_result("running", desktop_pids=(4242,))
+
+    def scenario_d_gap_behind_adopted_chain(self):
+        self.seed_target_cache()
+        self.main("--prepare")
+        # Distinct from every prior scenario's host bytes so the drift gate
+        # sees a real change even when this matrix shares one fixture.
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-host-vD")
+        restore = self.failing_audit_writer("rebind.json")
+        self.assertEqual(self.main("--rebind"), 2)
+        restore()
+        self.assertEqual(self.main("--rebind"), 0)  # recovery: audited prepare-3
+        (self.output / "prepare-2.json").unlink()
+        self.restore_initial_host()
+
+    def test_counterexamples_are_refused_by_every_entry(self):
+        drifted = "preparation and execution drifted"
+        table = [
+            ("A removed audited receipt", self.scenario_a_removed_audited_receipt,
+             ("references missing prepare receipt",), False),
+            ("B stale explicit rebind source", self.scenario_b_stale_explicit_rebind_source,
+             ("current adoptable prepare receipt", drifted), True),
+            ("C modified receipt content", self.scenario_c_modified_receipt_content,
+             ("content does not match its subject digest",), True),
+            ("D numbering gap", self.scenario_d_gap_behind_adopted_chain,
+             ("was removed while",), False),
+        ]
+        for name, builder, fragments, recovery in table:
+            with self.subTest(scenario=name):
+                # Each scenario runs in its own exclusive batch directory;
+                # prepare creates it exclusively.
+                self.output = self.tmp / ("batch-" + name.split()[0])
+                builder()
+                self.entries_refuse(fragments, recovery)
+
+    def test_scenario_b_positive_default_rebind_chains_the_adopted_receipt(self):
+        self.scenario_b_stale_explicit_rebind_source()
+        self.assertEqual(self.main("--rebind"), 0)
+        rebound = self.read("prepare-3.json")
+        self.assertEqual(rebound["rebound_from"]["receipt"], "prepare-2.json")
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.read("apply.json")["prepared_sha256"],
+                         U.base.sha(self.output / "prepare-3.json"))
+
+    def test_scenario_d_positive_orphan_behind_chain_still_recovers(self):
+        self.seed_target_cache()
+        self.main("--prepare")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-host-v2")
+        restore = self.failing_audit_writer("rebind.json")
+        self.assertEqual(self.main("--rebind"), 2)
+        restore()
+        self.assertEqual(self.main("--rebind"), 0)
+        # The orphan stays behind the adopted chain end; the batch continues.
+        self.assertTrue((self.output / "prepare-2.json").is_file())
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.read("apply.json")["prepared_sha256"],
+                         U.base.sha(self.output / "prepare-3.json"))
+
+
+class TestResumeWait(DailyUpgradeCase):
+    """The bounded in-process wait: host quits, one command continues."""
+
+    def wait_main(self, *args):
+        import contextlib
+        import io
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            code = U.main(["--plan", str(self.plan_path), "--output",
+                           str(self.output), "--wait", *args])
+        self._stderr = buffer.getvalue()
+        return code
+
+    def test_wait_continues_after_host_exit(self):
+        self.seed_target_cache()
+        observations = [inventory_result("running", desktop_pids=(4242,)),
+                        inventory_result("running", desktop_pids=(4242,)),
+                        inventory_result("absent")]
+        state = {"polls": 0}
+
+        def flaky_inventory(desktop, markers, host_tools=None):
+            index = min(state["polls"], len(observations) - 1)
+            state["polls"] += 1
+            return observations[index]
+
+        self.patch(U, "_host_inventory", flaky_inventory)
+        self.patch(U, "_sleep", lambda seconds: None)
+        self.assertEqual(self.wait_main("--resume"), 0)
+        self.assertGreaterEqual(state["polls"], 2)
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_wait_deadline_exits_pending(self):
+        self.seed_target_cache()
+        self.patch(U, "_host_inventory",
+                   lambda desktop, markers, host_tools=None:
+                   inventory_result("running", desktop_pids=(4242,)))
+        self.patch(U, "_sleep", lambda seconds: None)
+        clock = {"now": 0.0}
+
+        def fake_now():
+            clock["now"] += 100.0
+            return clock["now"]
+
+        self.patch(U, "_now", fake_now)
+        self.assertEqual(self.wait_main("--resume", "--wait-minutes", "1"), 1)
+        self.assertFalse((self.output / "apply.json").exists())
+        self.assertIn("Desktop host must be observed absent", self.last_stderr())
+
+    def test_wait_requires_resume_and_bounded_minutes(self):
+        with self.assertRaises(SystemExit):
+            self.main("--apply", "--wait")
+        with self.assertRaises(SystemExit):
+            self.wait_main("--resume", "--wait-minutes", "0")
+        with self.assertRaises(SystemExit):
+            self.wait_main("--resume", "--wait-minutes", "721")
+        with self.assertRaises(SystemExit):
+            self.main("--verify", "--wait-minutes", "30")
 
 
 if __name__ == "__main__":

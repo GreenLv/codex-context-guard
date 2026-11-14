@@ -101,6 +101,9 @@ MARKET = "codex-context-guard"
 PLUGIN_NAME = "context-guard"
 EVENTS = frozenset(host.EVENTS)
 VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+")
+TEAM_IDENTIFIER = re.compile(r"^[A-Z0-9]{10}$")
+ANCHOR_REQUIREMENT = ('=anchor apple generic and anchor trusted and '
+                      'certificate leaf[subject.OU] = "{team}"')
 
 PREFLIGHT_NAME = "preflight.json"
 PREPARE_NAME = "prepare.json"
@@ -113,6 +116,9 @@ COMMAND_TIMEOUT = 90.0
 RPC_TIMEOUT = 45.0
 RPC_ROW_LIMIT = 10000
 RPC_LINE_CAP = 2 * 1024 * 1024
+WAIT_POLL_SECONDS = 15.0
+WAIT_MINUTES_DEFAULT = 60
+WAIT_MINUTES_MAX = 720
 
 require = base.require
 UpgradeError = base.UpgradeError
@@ -186,6 +192,27 @@ def _daily_home() -> Path:
     return (Path.home() / ".codex").resolve()
 
 
+def _now() -> float:
+    """Monotonic clock seam; tests patch this for bounded-wait deadlines."""
+    return time.monotonic()
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _inventory_host_tools(env: dict[str, str]) -> dict[str, Any]:
+    """The pinned process-enumeration tool identities for one observation."""
+    host_tools: dict[str, Any] = {}
+    if os.name == "nt":
+        host_tools["powershell"] = _powershell_identity(env)
+    else:
+        ps_identity = _ps_identity()
+        if ps_identity is not None:
+            host_tools["ps"] = ps_identity
+    return host_tools
+
+
 def _fact(stage: str, argv: list[str], result: Any, observation: Any = None,
           **extra: Any) -> dict[str, Any]:
     return {"stage": stage, "argv": [str(item) for item in argv], "cwd": str(ROOT),
@@ -256,6 +283,107 @@ def _same_path(raw: Any, expected: Any) -> bool:
     if raw is None or expected is None:
         return raw is None and expected is None
     return native._official_path_matches(raw, Path(expected), windows=os.name == "nt")
+
+
+def _codesign_publisher(path: Path, env: dict[str, str],
+                        expected_team: str | None = None) -> dict[str, Any]:
+    """macOS host provenance: a trust-anchored team identity, not self-report.
+
+    ``codesign --verify --strict`` alone checks only the internal signature
+    and its own designated requirement, so the audited identity must also
+    pass an explicit ``--test-requirement`` anchored to Apple's generic
+    trusted anchor with the publisher's organizational unit
+    (``anchor apple generic and anchor trusted and
+    certificate leaf[subject.OU] = "TEAM"``). ``certificate leaf trusted``
+    is deliberately not used — official distribution hosts fail it. The team
+    identifier is strictly format-validated before any requirement probe,
+    and when re-binding, the requirement is evaluated against the prepared
+    publisher identity, never against a self-reported or self-signed OU
+    string. An unsigned, ad-hoc, team-less or requirement-failing host is
+    recorded as unverified and is never a trusted publisher identity.
+    """
+    verify = _probe_run(["codesign", "--verify", "--strict", str(path)], env)
+    detail = _probe_run(["codesign", "-dv", "--verbose=4", str(path)], env)
+    text = detail.stderr.decode("utf-8", "replace")
+    team_observed = None
+    authority = None
+    for line in text.splitlines():
+        if line.startswith("TeamIdentifier="):
+            team_observed = line.split("=", 1)[1].strip() or None
+        elif line.startswith("Authority=") and authority is None:
+            authority = line.split("=", 1)[1].strip() or None
+    team = expected_team if expected_team is not None else team_observed
+    require(team is not None and TEAM_IDENTIFIER.fullmatch(team),
+            "publisher team identifier is not a valid 10-character issuer identity")
+    requirement = ANCHOR_REQUIREMENT.format(team=team)
+    anchored = _probe_run(["codesign", "--verify", "--strict",
+                           "--test-requirement", requirement, str(path)], env)
+    verified = (verify.returncode == 0 and anchored.returncode == 0
+                and team_observed == team)
+    reason = None
+    if not verified:
+        if team_observed != team:
+            reason = "host team identifier differs from the audited publisher"
+        elif verify.returncode != 0:
+            reason = "signature verification failed"
+        else:
+            reason = "trust-anchor requirement failed (rc=%d)" % anchored.returncode
+    return {"method": "codesign", "verified": verified,
+            "identity": team if verified else None,
+            "authority": authority, "team_requirement": requirement,
+            "team_observed": team_observed,
+            "anchor_requirement_rc": anchored.returncode,
+            "verify_rc": verify.returncode, "reason": reason}
+
+
+def _authenticode_publisher(path: Path, shell: str,
+                            env: dict[str, str]) -> dict[str, Any]:
+    """Windows host provenance: a Valid Authenticode signer thumbprint."""
+    literal = str(path).replace("'", "''")
+    script = ("$s = Get-AuthenticodeSignature -LiteralPath '" + literal + "'; "
+              "$t = $null; $u = $null; "
+              "if ($s -and $s.SignerCertificate) { "
+              "$t = $s.SignerCertificate.Thumbprint; "
+              "$u = $s.SignerCertificate.Subject }; "
+              "(@{ status = [string]$s.Status; thumbprint = $t; subject = $u } | "
+              "ConvertTo-Json -Compress)")
+    result = _probe_run([shell, "-NoProfile", "-NonInteractive", "-Command",
+                         script], env)
+    require(result.returncode == 0, "Authenticode publisher probe failed")
+    payload = adoption.strict_json(result.stdout.decode("utf-8-sig"))
+    require(isinstance(payload, dict), "Authenticode publisher payload invalid")
+    thumbprint = payload.get("thumbprint")
+    verified = payload.get("status") == "Valid" and isinstance(thumbprint, str) \
+        and bool(thumbprint)
+    return {"method": "authenticode", "verified": verified,
+            "identity": thumbprint if verified else None,
+            "subject": payload.get("subject"), "status": payload.get("status")}
+
+
+def _host_publisher(path: Path, env: dict[str, str], host_tools: dict[str, Any],
+                    expected_team: str | None = None) -> dict[str, Any]:
+    """Trusted-publisher observation for the desktop host; tests replace this seam.
+
+    Fail-closed by construction: an unavailable verifier, an unsigned or
+    ad-hoc host, a non-Valid Authenticode status and an unsupported platform
+    all record ``verified: False`` and never become a trusted identity. On
+    macOS ``expected_team`` re-audits the bytes against a previously
+    verified publisher identity instead of the host's self-reported team.
+    This is a signature/publisher boundary only — not a security sandbox.
+    """
+    try:
+        if os.name == "nt":
+            shell = (host_tools.get("powershell") or {}).get("path")
+            require(shell is not None,
+                    "publisher verification requires the pinned PowerShell")
+            return _authenticode_publisher(path, shell, env)
+        if sys.platform == "darwin":
+            return _codesign_publisher(path, env, expected_team=expected_team)
+    except (UpgradeError, CapabilityPending, OSError, ValueError) as exc:
+        return {"method": None, "verified": False, "identity": None,
+                "reason": type(exc).__name__ + ": " + str(exc)[:160]}
+    return {"method": None, "verified": False, "identity": None,
+            "reason": "publisher verification unsupported on this platform"}
 
 
 def _load_plan(plan_path: Path) -> dict[str, Any]:
@@ -458,14 +586,9 @@ def _preflight_checks(plan: dict[str, Any]) -> dict[str, Any]:
         raise CapabilityPending("public CLI hard-link aliases require review") from None
     artifact = _verify_artifact(plan)
     desktop = plan["desktop_executable"]
-    host_tools: dict[str, Any] = {}
-    if os.name == "nt":
-        host_tools["powershell"] = _powershell_identity(env)
-    else:
-        ps_identity = _ps_identity()
-        if ps_identity is not None:
-            host_tools["ps"] = ps_identity
+    host_tools = _inventory_host_tools(env)
     host_state = _host_inventory(desktop, plan["sandbox_markers"], host_tools)
+    publisher = _host_publisher(Path(desktop), env, host_tools)
     state = _daily_state(cli, env, "preflight")
     if plan.get("expected_cli_version") is not None:
         require(state["cli_version"] == plan["expected_cli_version"],
@@ -484,7 +607,8 @@ def _preflight_checks(plan: dict[str, Any]) -> dict[str, Any]:
         "daily_home": str(daily),
         "artifact": artifact,
         "market_identity": {"entry": ENTRY, "marketplace": MARKET},
-        "desktop_executable": {"path": desktop, "sha256": _sha_loose(Path(desktop))},
+        "desktop_executable": {"path": desktop, "sha256": _sha_loose(Path(desktop)),
+                               "publisher": publisher},
         "sandbox_markers": [{"path": marker, "sha256": _sha_loose(Path(marker))}
                             for marker in plan["sandbox_markers"]],
         "installed_before": {key: state[key] for key in
@@ -771,16 +895,149 @@ def _numbered_receipt(output: Path, base_name: str) -> Path:
     return output / f"{stem}-{index}.json"
 
 
-def _newest_prepare_receipt(output: Path) -> Path:
-    """The newest prepare receipt in the batch, numbered or initial."""
-    newest = output / PREPARE_NAME
-    if not newest.exists():
-        return newest
-    index = 2
-    while (output / f"prepare-{index}.json").exists():
-        newest = output / f"prepare-{index}.json"
-        index += 1
-    return newest
+def _rebind_audits(output: Path) -> list[tuple[str, dict[str, Any]]]:
+    """Every retained rebind audit receipt, with its own file name."""
+    audits = []
+    for path in sorted(output.glob("rebind*.json")):
+        require(path.is_file() and not path.is_symlink(),
+                "rebind audit must be a regular file: " + path.name)
+        value = base._read_json(path)
+        require(value.get("schema") == REPORT and value.get("stage") == "rebind"
+                and isinstance(value.get("rebound_to"), dict),
+                "rebind audit is invalid: " + path.name)
+        audits.append((path.name, value))
+    return audits
+
+
+def _prepare_receipt_number(path: Path) -> int:
+    if path.name == PREPARE_NAME:
+        return 1
+    match = re.fullmatch(r"prepare-(\d+)\.json", path.name)
+    require(match is not None, "unexpected prepare receipt name: " + path.name)
+    return int(match.group(1))
+
+
+def _all_prepare_receipts(output: Path) -> list[Path]:
+    """Every prepare receipt on disk, ordered; a gap is removed evidence.
+
+    Enumeration covers the whole directory (glob, not a ``while exists``
+    walk), so a deleted middle receipt is never invisible behind a higher
+    numbered one.
+    """
+    found = [path for path in output.glob("prepare*.json")
+             if path.is_file() and not path.is_symlink()
+             and re.fullmatch(r"prepare(-\d+)?\.json", path.name)]
+    found.sort(key=_prepare_receipt_number)
+    for earlier, later in zip(found, found[1:]):
+        require(_prepare_receipt_number(later) == _prepare_receipt_number(earlier) + 1,
+                "prepare receipt " + earlier.name + " was removed while "
+                + later.name + " exists; retained evidence was removed and the "
+                "batch must not continue")
+    return found
+
+
+def _load_prepare_receipt(output: Path, receipt: Path) -> dict[str, Any]:
+    """One prepare receipt with its embedded subject digest recomputed."""
+    value, _sha = _read_bound_result(receipt, stage="prepare")
+    require(isinstance(value.get("subject"), dict)
+            and base.digest(value["subject"]) == value.get("subject_sha256"),
+            "prepare receipt " + receipt.name + " content does not match its "
+            "subject digest; retained evidence was modified")
+    return value
+
+
+def _audit_bound(audits: list[tuple[str, dict[str, Any]]], receipt: Path,
+                 subject_sha256: Any) -> bool:
+    return any(value["rebound_to"].get("receipt") == receipt.name
+               and value["rebound_to"].get("subject_sha256") == subject_sha256
+               for _name, value in audits)
+
+
+def _resolve_prepare_receipt(output: Path, *, strict: bool) -> Path | None:
+    """The adoptable prepare receipt for one entry point, over one law.
+
+    Every caller — resume, apply, verify, rebind, an explicit
+    ``--prepared-result`` or the batch default — consumes this single
+    production path. It enumerates the whole directory, recomputes each
+    receipt's subject digest, and validates the audited chain: a numbered
+    receipt is adoptable only when it chains to the previously adopted
+    receipt through a matching ``rebound_from`` and a retained rebind audit
+    binds both its file name and its subject digest. Refusal families:
+
+    - an audit whose target receipt is missing, or a numbering gap, means
+      retained evidence was removed and refuses every entry;
+    - a receipt whose content no longer matches its subject digest refuses
+      everywhere (its evidence was modified);
+    - an unchained or unbound numbered receipt behind the adopted chain end
+      is retained orphan evidence that cannot bypass it; at or past the chain
+      end it refuses with the deterministic recovery (re-run ``--rebind``).
+    """
+    audits = _rebind_audits(output)
+    for audit_name, audit in audits:
+        target = str(audit["rebound_to"].get("receipt"))
+        require((output / target).is_file(),
+                "rebind audit " + audit_name + " references missing prepare receipt "
+                + target + "; retained evidence was removed and the batch must "
+                "not continue")
+    receipts = _all_prepare_receipts(output)
+    if not receipts:
+        return None
+    initial = receipts[0]
+    require(_prepare_receipt_number(initial) == 1,
+            "the batch's initial prepare receipt is missing; retained evidence "
+            "was removed and the batch must not continue")
+    initial_value = _load_prepare_receipt(output, initial)
+    adoptable = initial
+    prev_name, prev_digest = initial.name, initial_value.get("subject_sha256")
+    orphans: list[tuple[Path, str]] = []
+    for receipt in receipts[1:]:
+        try:
+            value = _load_prepare_receipt(output, receipt)
+        except UpgradeError:
+            # A receipt whose content no longer matches its subject digest is
+            # modified evidence; it refuses everywhere and nothing past it is
+            # trusted, whether or not it sits at the chain end.
+            if strict:
+                raise
+            continue  # retained orphan evidence; never adopted
+        rebound = value.get("rebound_from")
+        linked = (isinstance(rebound, dict)
+                  and rebound.get("receipt") == prev_name
+                  and rebound.get("subject_sha256") == prev_digest
+                  and _audit_bound(audits, receipt, value.get("subject_sha256")))
+        if linked:
+            adoptable = receipt
+            prev_name, prev_digest = receipt.name, value.get("subject_sha256")
+        else:
+            reason = ("does not chain to the adopted receipt " + str(prev_name)
+                      if not isinstance(rebound, dict)
+                      or rebound.get("receipt") != prev_name
+                      or rebound.get("subject_sha256") != prev_digest
+                      else "has no binding rebind audit")
+            orphans.append((receipt, reason))
+    if strict:
+        adopted_number = _prepare_receipt_number(adoptable)
+        for orphan, reason in orphans:
+            # Orphans behind the adopted chain end are retained evidence and
+            # cannot bypass it; an orphan at or past the chain end is an
+            # interrupted rebind and refuses with the deterministic recovery.
+            require(_prepare_receipt_number(orphan) < adopted_number,
+                    "interrupted rebind: " + orphan.name + " " + reason
+                    + "; re-run --rebind to recover (prior receipts are retained)")
+    return adoptable
+
+
+def _require_explicit_prepared(output: Path, prepared_path: Path) -> None:
+    """An explicit stage target must be the batch's adoptable prepare receipt.
+
+    No entry point may consume a stale, orphaned, modified or removed
+    receipt: apply, verify and rebind all resolve the same adopted chain and
+    refuse anything else, whatever the operator named on the command line.
+    """
+    resolved = _resolve_prepare_receipt(output, strict=True)
+    require(resolved is not None and resolved == prepared_path,
+            "prepared receipt is not this batch's current adoptable prepare "
+            "receipt: " + str(resolved))
 
 
 DRIFT_ADVICE = {
@@ -816,10 +1073,18 @@ def rebind(plan: dict[str, Any], output: Path,
     require(output.is_absolute(), "output must be an absolute path")
     require(output.is_dir() and not output.is_symlink(),
             "rebind requires the existing batch output directory")
-    if prepared_path is None:
-        # A rebind always rebinds the newest prepare receipt, so a second
-        # host update rebinds the already rebound batch.
-        prepared_path = _newest_prepare_receipt(output)
+    if prepared_path is not None:
+        # An explicitly named source must be the batch's current adoptable
+        # receipt; an operator cannot rebind from a stale one.
+        _require_explicit_prepared(output, prepared_path)
+    else:
+        # The default recovery path rebinds the newest adoptable prepare
+        # receipt, so a second host update rebinds the already rebound
+        # batch; an orphan receipt from an interrupted rebind stays as
+        # retained evidence and is never the source.
+        prepared_path = _resolve_prepare_receipt(output, strict=False)
+    require(prepared_path is not None,
+            "rebind requires an existing prepare receipt")
     require(prepared_path.parent == output,
             "the prepare receipt must live in this batch's output directory")
     require(not (output / JOURNAL_NAME).is_file(),
@@ -841,6 +1106,43 @@ def rebind(plan: dict[str, Any], output: Path,
     old_host, new_host = old_view["desktop_executable"], new_view["desktop_executable"]
     require(_same_path(old_host.get("path"), new_host.get("path")),
             DRIFT_ADVICE["desktop_executable"])
+    # Trusted-publisher boundary: both the prepared host and the changed
+    # host bytes must carry a verified platform signature from the same
+    # publisher. An unverifiable signature refuses; this is a provenance
+    # check, not a security sandbox.
+    old_pub = old_host.get("publisher") or {}
+    new_pub = new_host.get("publisher") or {}
+    require(old_pub.get("verified") is True and old_pub.get("identity"),
+            "the preparation receipt did not record a verified publisher "
+            "identity; start a new batch")
+    if sys.platform == "darwin":
+        # Trust-anchor re-audit: the changed bytes must satisfy the prepared
+        # publisher's requirement (anchor + trusted + OU), not merely a
+        # self-reported team string.
+        bound_pub = _host_publisher(Path(new_host["path"]), _scrubbed_env(),
+                                    subject["host_tools"],
+                                    expected_team=old_pub.get("identity"))
+        require(bound_pub.get("verified") is True,
+                "the changed host bytes do not satisfy the prepared publisher "
+                "requirement" + (" (" + str(bound_pub.get("reason")) + ")"
+                                 if bound_pub.get("reason") else "")
+                + "; start a new batch")
+        require(bound_pub.get("identity") == old_pub.get("identity"),
+                "the host update was signed by a different publisher ("
+                + str(old_pub.get("identity")) + " -> "
+                + str(bound_pub.get("identity")) + "); start a new batch")
+    else:
+        # Limited Windows boundary: a Valid Authenticode status with the
+        # same certificate thumbprint. Certificate rotation changes the
+        # thumbprint and is refused — never auto-allowed.
+        require(new_pub.get("verified") is True,
+                "the changed host bytes are not a verified publisher-signed update"
+                + (" (" + str(new_pub.get("reason")) + ")" if new_pub.get("reason")
+                   else "") + "; start a new batch")
+        require(new_pub.get("identity") == old_pub.get("identity"),
+                "the host update was signed by a different publisher ("
+                + str(old_pub.get("identity")) + " -> " + str(new_pub.get("identity"))
+                + "); start a new batch")
     new_prepare = _numbered_receipt(output, PREPARE_NAME)
     result = _prepare_result(plan, subject)
     result["rebound_from"] = {"receipt": prepared_path.name,
@@ -864,22 +1166,57 @@ def rebind(plan: dict[str, Any], output: Path,
     return audit
 
 
-def resume(plan: dict[str, Any], output: Path) -> int:
+def _wait_for_host_exit(plan: dict[str, Any], deadline: float) -> None:
+    """Bounded read-only wait for the Desktop host to exit; closes nothing.
+
+    Polls the pinned-executable inventory until the host is observed absent
+    or the deadline passes. The caller re-runs apply afterwards, whose fresh
+    apply-time inventory remains the deciding gate. Nothing is ever closed
+    or signalled; unrelated processes do not gate the wait.
+    """
+    env = _scrubbed_env()
+    host_tools = _inventory_host_tools(env)
+    while _now() < deadline:
+        state = _host_inventory(plan["desktop_executable"],
+                                plan["sandbox_markers"], host_tools)
+        if state.get("status") == "absent":
+            return
+        _sleep(min(WAIT_POLL_SECONDS, max(0.0, deadline - _now())))
+
+
+def resume(plan: dict[str, Any], output: Path, wait_minutes: int | None = None) -> int:
     """The thin same-command continuation across the batch's pending stages.
 
     This dispatches to the existing stage implementations and adds no rule
     of its own: a missing prepare receipt is prepared, an unapplied prepared
     batch is applied (the host-absent gate still answers with its one precise
-    instruction), and every arrival verifies. All identity, drift and journal
-    reconciliation checks run exactly as in a directly typed command.
+    instruction), and every arrival verifies. All identity, drift, adoption
+    and journal reconciliation checks run exactly as in a directly typed
+    command. With ``wait_minutes`` a host-absent pending state becomes a
+    bounded in-process wait for the host to exit, after which apply is
+    retried — the operator starts the command once, quits the host at
+    leisure, and the batch continues; killing the wait loses nothing because
+    the batch receipts are the persistence layer and the same command
+    resumes.
     """
     require(output.is_absolute(), "output must be an absolute path")
-    if not (output / PREPARE_NAME).exists():
+    if _resolve_prepare_receipt(output, strict=True) is None:
         prepare(plan, output)
-    prepared_path = _newest_prepare_receipt(output)
+    prepared_path = _resolve_prepare_receipt(output, strict=True)
+    require(prepared_path is not None, "batch has no prepare receipt")
     prepared, _sha = _read_bound_result(prepared_path, stage="prepare")
     if prepared.get("status") == "prepared" and not (output / APPLY_NAME).is_file():
-        apply(plan, output, prepared_path)
+        deadline = None if wait_minutes is None else _now() + wait_minutes * 60
+        while True:
+            try:
+                apply(plan, output, prepared_path)
+                break
+            except HostPending:
+                if deadline is None or _now() >= deadline:
+                    raise
+                print(json.dumps({"stage": "resume", "status": "waiting_for_host_exit",
+                                  "wait_minutes": wait_minutes}))
+                _wait_for_host_exit(plan, deadline)
     result = verify(plan, output, prepared_path, None)
     return 0 if result["status"] == "passed" else 1
 
@@ -922,6 +1259,7 @@ def apply(plan: dict[str, Any], output: Path, prepared_path: Path) -> dict[str, 
             "apply requires the existing batch output directory")
     require(prepared_path.parent == output,
             "the prepare receipt must live in this batch's output directory")
+    _require_explicit_prepared(output, prepared_path)
     if prepared.get("status") == "already_current":
         raise UpgradeError("installed version already equals the target; run --verify instead")
     require(prepared.get("status") == "prepared", "prepare receipt is not applicable")
@@ -1258,6 +1596,7 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
     require(output.is_dir() and not output.is_symlink(),
             "verify requires the existing batch output directory")
     require(prepared_path.parent == output, "the prepare receipt must live in this output directory")
+    _require_explicit_prepared(output, prepared_path)
     subject = _preflight_checks(plan)
     fresh_binding = base.digest(_binding_view(subject))
     drift = sorted(key for key in set(_binding_view(subject))
@@ -1396,9 +1735,20 @@ def main(argv: list[str] | None = None) -> int:
                         help="controlled host re-identification for an unstarted batch")
     parser.add_argument("--prepared-result", type=Path)
     parser.add_argument("--verify-output", type=Path)
+    parser.add_argument("--wait", action="store_true",
+                        help="with --resume: wait for the Desktop host to exit, then continue")
+    parser.add_argument("--wait-minutes", type=int, default=WAIT_MINUTES_DEFAULT,
+                        help="bounded wait ceiling in minutes (1-%d, default %d)"
+                             % (WAIT_MINUTES_MAX, WAIT_MINUTES_DEFAULT))
     args = parser.parse_args(argv)
     if not args.verify and args.verify_output is not None:
         parser.error("--verify-output requires --verify")
+    if args.wait and not args.resume:
+        parser.error("--wait requires --resume")
+    if args.wait and not 1 <= args.wait_minutes <= WAIT_MINUTES_MAX:
+        parser.error("--wait-minutes must be between 1 and %d" % WAIT_MINUTES_MAX)
+    if not args.wait and args.wait_minutes != WAIT_MINUTES_DEFAULT:
+        parser.error("--wait-minutes requires --wait")
     if args.apply or args.verify:
         prepared = args.prepared_result or (args.output / PREPARE_NAME)
     elif args.rebind:
@@ -1427,13 +1777,18 @@ def main(argv: list[str] | None = None) -> int:
         elif args.rebind:
             rebind(plan, args.output, prepared)
         elif args.resume:
-            return resume(plan, args.output)
+            return resume(plan, args.output,
+                          wait_minutes=args.wait_minutes if args.wait else None)
         else:
             require(prepared is not None, "prepared result required")
             result = verify(plan, args.output, prepared, args.verify_output)
             return 0 if result["status"] == "passed" else 1
     except (HostPending, CapabilityPending) as exc:
         print("daily_upgrade=pending; " + str(exc), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("daily_upgrade=pending; interrupted by the operator; batch "
+              "receipts are intact and the same command resumes", file=sys.stderr)
         return 1
     except (UpgradeError, OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
         print("daily_upgrade=refused; " + type(exc).__name__ + "; " + str(exc)[:300],

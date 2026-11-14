@@ -629,7 +629,6 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
     status, cleanup = "failed", "passed"
     retain_temporary = False
     codex_version = "unavailable"
-    artifact = None
     temporary = Path(tempfile.mkdtemp(prefix="ccg-official-marketplace-")).resolve()
     try:
         names = ("home", "os-home", "userprofile", "host-temp", "xdg-config", "xdg-data", "xdg-cache", "xdg-state")
@@ -656,8 +655,6 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
         if archive_path.is_symlink() or not archive_path.is_file():
             raise NativeRunError("release ZIP must be a regular file")
         zip_bytes = archive_path.read_bytes()
-        artifact = {"kind": "release_zip", "sha256": hashlib.sha256(zip_bytes).hexdigest(),
-                    "size_bytes": len(zip_bytes), "file_count": len(files)}
         source = temporary / "release"
         source.mkdir()
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
@@ -676,7 +673,10 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
         (old / "synthetic-preservation-control").write_bytes(b"synthetic previous cache object\n")
         old_before = strict_cache_objects(old)
         added, cache = documented_official_flow(root, codex, home, source, environment, files, version, None)
-        gates.append(gate("isolated_install", digest, passed=True, note="official marketplace commands in internally created fresh HOME"))
+        gates.append(gate("isolated_install", digest, passed=True,
+                          note="official marketplace commands in internally created fresh HOME; "
+                               "local marketplace source retained only during this isolated gate, "
+                               "no long-term refresh or startup claim"))
         gates.append(gate("distribution_file_parity", digest, passed=True))
         if artifacts.tree_manifest(cache) != artifacts.tree_manifest(root):
             raise NativeRunError("installed runtime tree differs")
@@ -704,17 +704,56 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
             shutil.rmtree(temporary, ignore_errors=True)
         if temporary.exists():
             cleanup, status = "failed", "failed"
+    return finish_portable_result(status=status, gates=gates,
+        archive_path=archive_path, files=files, digest=digest,
+        source_commit=source_commit, repository_url=repository_url,
+        toolchain={"python": platform.python_version(), "codex": codex_version},
+        cleanup=cleanup, started=started, finished=timestamp(), run_url=run_url)
+
+
+def result_document(*, status: str, gates: list[dict[str, Any]], artifact: dict[str, Any],
+                    digest: str, source_commit: str, repository_url: str,
+                    toolchain: dict[str, str], cleanup: str, started: str,
+                    finished: str, run_url: str | None) -> dict[str, Any]:
+    """The standard closed native-acceptance/v2 portable shape.
+
+    Top-level keys are exactly the portable evidence set; capability
+    boundaries live in gate notes instead of a separate top-level field, and
+    the artifact binds its filename and git head so generic consumers can
+    cite it without a product-specific reader. Old receipts are never
+    rewritten; this shape applies to future portable producers only.
+    """
     return {"schema": "native-acceptance/v2", "status": status,
         "product": "codex_context_guard", "gate_profile": "portable_runtime",
         "repository": {"url": repository_url, "commit": source_commit},
         "runtime_tree_sha256": digest, "artifact": artifact,
         "platform": {"os": {"Darwin": "macos", "Windows": "windows"}.get(platform.system(), "linux"),
-                     "shell": "python-subprocess", "toolchain": {"python": platform.python_version(), "codex": codex_version}},
+                     "shell": "python-subprocess", "toolchain": toolchain},
         "gates": gates, "cleanup": {"status": cleanup, "remaining_ids": [] if cleanup == "passed" else ["official_temporary_root"]},
-        "run": {"started_at": started, "finished_at": timestamp(), "run_url": run_url},
-        "limitations": ["local marketplace source retained only during this isolated gate; no long-term refresh/startup claim",
-                        "direct repeated plugin add is not claimed idempotent", "no normal Hook trust or real old-task continuity established"],
+        "run": {"started_at": started, "finished_at": finished, "run_url": run_url},
         "unperformed_actions": ["commit", "push", "merge", "tag", "release", "public_promotion"]}
+
+
+def finish_portable_result(*, status: str, gates: list[dict[str, Any]],
+                           archive_path: Path, files: dict[str, str],
+                           digest: str, source_commit: str, repository_url: str,
+                           toolchain: dict[str, str], cleanup: str, started: str,
+                           finished: str, run_url: str | None) -> dict[str, Any]:
+    """Bind the real release ZIP bytes into the standard portable result.
+
+    This is the portable producer's only result assembly point: the artifact
+    record is derived from the actual archive bytes (name, digest, size) and
+    the reviewed manifest inventory, so consumers can cite the exact object.
+    """
+    zip_bytes = archive_path.read_bytes()
+    artifact = {"filename": archive_path.name,
+                "sha256": hashlib.sha256(zip_bytes).hexdigest(),
+                "size_bytes": len(zip_bytes), "file_count": len(files),
+                "git_head": source_commit}
+    return result_document(status=status, gates=gates, artifact=artifact,
+        digest=digest, source_commit=source_commit, repository_url=repository_url,
+        toolchain=toolchain, cleanup=cleanup, started=started, finished=finished,
+        run_url=run_url)
 
 
 RETENTION_BATCH_SCHEMA = "cg-retention-native-batch/v4"

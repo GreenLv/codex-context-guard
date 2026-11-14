@@ -8,20 +8,28 @@ review; a later release of the same version does not change that evidence.
 
 Repository-owned operator and CI tooling only; schema 13, Stop protocol
 5.0.0, the nine Hook commands, retention behavior, the default business-tool
-path and the packaged runtime bytes are unchanged, so the runtime-tree digest
-and any published artifact identity are unchanged and no consumed cache is
-affected. The daily-upgrade tool (outside the runtime-tree roots) adds the
-thin `--resume` continuation and the controlled `--rebind` host
-re-identification under the existing private `cg-daily-upgrade-plan/v1`,
-`cg-daily-upgrade-result/v1` and `cg-daily-upgrade-journal/v1` contracts;
-`--rebind` writes numbered `prepare-N.json` receipts plus exclusive
-`rebind.json` audit records and accepts only a same-path desktop-executable
-byte change for an unstarted batch. Candidate CI adds the
+path and the packaged runtime behavior are unchanged, and no consumed cache
+is affected. The reviewed distribution manifest changes with the reader
+documentation, and that manifest lives inside the runtime-tree roots, so the
+runtime-tree digest changes from published 0.17.3 and a future release
+consumes a new manifest and artifact identity. The daily-upgrade tool
+(outside the runtime-tree roots) adds the thin `--resume` continuation with
+a bounded in-process host-exit wait, the controlled `--rebind` host
+re-identification — which records and re-audits the platform trust-anchored
+publisher identity of both the prepared and the changed host bytes and
+refuses every unverifiable case — under the existing private
+`cg-daily-upgrade-plan/v1`, `cg-daily-upgrade-result/v1` and
+`cg-daily-upgrade-journal/v1` contracts; `--rebind` writes numbered
+`prepare-N.json` receipts plus exclusive `rebind.json` audit records, and a
+numbered receipt is adoptable only when its audit binds both the receipt
+name and the subject digest. Candidate CI adds the
 `cg-ci-reuse-evidence/v1` receipt and consumes a passed full run on the
 exact commit per `docs/CI_POLICY.md`; the required summary stays fail-closed
-and denies fall back to the ordinary lanes. These tool changes require their
-own affected checks; prior installed, native and daily receipts retain their
-original identities.
+and denies fall back to the ordinary lanes. The portable native-acceptance/v2
+producer emits the standard closed shape (artifact bound to filename and git
+head, capability boundaries in gate notes); historical receipts retain their
+original identity and are never rewritten. These tool changes require their
+own affected checks.
 
 ## 0.17.3 — 2026-11-14
 
