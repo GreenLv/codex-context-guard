@@ -239,15 +239,15 @@ read-only prepare reusing still-valid test and acceptance evidence.
 Only what the platform actually requires of a human:
 
 - Quitting the Codex Desktop host before a swap that replaces a consumed
-  cache — the stable-identity add replaces the cache and there is no
-  supported way to preserve the old bytes for a running host. Apply refuses
+  cache — the observed local-source CLI route removes the previous version's
+  cache. This tool has not established a safe live replacement. Apply refuses
   until the host is observed absent, then one command completes the batch.
 - Hook trust after the swap, through CLI `/hooks` or Desktop's Review hooks /
   Settings > Hooks.
 - Credential copies stay governed by existing permissions; the tool never
   outputs or transfers credentials and never creates a login in isolation.
 
-## Official same-entry refresh semantics (observed, macOS fixture 2026-11-14)
+## Official same-entry refresh semantics (macOS fixtures, 2026-11-14–15)
 
 A controlled isolated-HOME fixture ran the real installed CLI (0.169.0) and
 recorded what each official route does to the version cache slot and the
@@ -257,16 +257,21 @@ fresh-client Hook inventory (`cg-daily-loaded-probe/v1` receipts, private):
   marketplaces ("not configured as a Git marketplace"). The verified local
   artifact route this tool drives therefore has no official `upgrade`
   subcommand; refresh for a local source is add/remove based only.
-- A bare official re-add of the same stable identity (`plugin add` again,
-  no remove) succeeds and **replaces** the version slot directory (new
-  inode, fresh install). The old bytes do not survive for a running host, so
-  a bare re-add is swap-equivalent and offers no safe hot refresh.
+- A bare official re-add of the same version replaces its slot directory
+  (new inode, fresh install). A separate 0.17.3 → 0.17.4 control kept the
+  registered local source directory and used no remove command: the old
+  107-file cache was intact immediately before `plugin add` and absent
+  immediately afterwards, before any following list call. The new slot had
+  110 files. This CLI/local-source route therefore cannot preserve code
+  needed by an active old task. The control used reviewed distribution files,
+  not the final CI ZIP, and is not final-artifact acceptance.
 - `plugin marketplace remove` retires the registration; the slot directory
   remained on disk in the fixture, and the following re-add created a fresh
   slot — consistent with the resumable apply's readback-driven staging.
-- In an isolated home, every install and refresh route loads exactly the
-  nine plugin Hooks (enabled) with `trustStatus: untrusted`: Hook trust
-  never auto-migrates; it stays with the official review interface.
+- The original isolated home never granted Hook trust. Its fresh-client
+  inventories showed nine enabled but untrusted Hooks before and after each
+  operation; that does not test migration of an existing trust decision.
+  Hook review remains in the official interface.
 - The macOS Desktop host observed in daily use lives inside
   `ChatGPT.app`'s versioned `Codex Framework.framework` tree, so a host
   auto-update can change the pinned executable's **path**, not only its
@@ -274,10 +279,12 @@ fresh-client Hook inventory (`cg-daily-loaded-probe/v1` receipts, private):
   the operator writes a new plan and starts a new batch, reusing still-valid
   test and acceptance evidence.
 
-Conclusion: no observed official route refreshes a local-source stable
-identity in place while preserving the old cache for running tasks. The
-host-absent apply gate and the historical managed remove/add route remain
-required; this tool makes no no-restart promise.
+These observations do not establish running-Desktop loading or old-task
+continuity. The [official local-plugin guide](https://developers.openai.com/plugins/build/plugins)
+also instructs users to restart the desktop app after changing a local plugin.
+The tool therefore keeps its host-absent apply gate and makes no no-restart
+promise. The source-checkout tools and CI changes can be adopted without
+replacing the daily plugin; existing 0.17.3 Hook behavior is unchanged.
 
 ## Records and limitations
 
