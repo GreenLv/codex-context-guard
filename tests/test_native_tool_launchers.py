@@ -47,23 +47,27 @@ class LauncherWire(unittest.TestCase):
         for name, module in DISPATCH.items():
             self.assertIn(f'"{module}"', ps1_text)
 
+    @unittest.skipUnless(shutil.which("sh"), "POSIX sh unavailable; PowerShell launcher is checked separately")
     def test_sh_launcher_requires_a_known_target(self):
         result = subprocess.run(["sh", str(SH)], capture_output=True,
                                 text=True, timeout=60)
         self.assertEqual(result.returncode, 2)
         self.assertIn("usage:", result.stderr)
 
+    @unittest.skipUnless(shutil.which("sh"), "POSIX sh unavailable; PowerShell launcher is checked separately")
     def test_sh_launcher_rejects_unknown_target(self):
         result = subprocess.run(["sh", str(SH), "unknown-target"],
                                 capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 2)
 
+    @unittest.skipUnless(shutil.which("sh"), "POSIX sh unavailable; PowerShell launcher is checked separately")
     def test_sh_launcher_passes_arguments_through_to_the_core(self):
         result = subprocess.run(["sh", str(SH), "upgrade", "--help"],
                                 capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--plan PLAN", result.stdout)
 
+    @unittest.skipUnless(shutil.which("sh"), "POSIX sh unavailable; PowerShell launcher is checked separately")
     def test_between_turns_launcher_reaches_versioned_entry(self):
         result = subprocess.run(["sh", str(SH), "between-turns", "--help"],
                                 capture_output=True, text=True, timeout=60)

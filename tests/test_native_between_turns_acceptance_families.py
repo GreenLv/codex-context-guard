@@ -40,6 +40,73 @@ class FamilyTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_safe_bytes_compares_each_stat_provider_independently(self):
+        path = self.root / "input.txt"
+        path.write_bytes(b"evidence")
+        actual = path.lstat()
+
+        def snapshot(**changes):
+            fields = {
+                name: getattr(actual, name)
+                for name in (
+                    "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+                    "st_mtime_ns", "st_ctime_ns",
+                )
+            }
+            fields.update(changes)
+            return types.SimpleNamespace(**fields)
+
+        before = snapshot()
+        opened = snapshot(st_ctime_ns=actual.st_ctime_ns + 100)
+        cases = (
+            ("stable provider difference", before, opened, opened, before, True),
+            ("handle ctime changes", before, opened,
+             snapshot(st_ctime_ns=opened.st_ctime_ns + 1), before, False),
+            ("path ctime changes", before, opened, opened,
+             snapshot(st_ctime_ns=before.st_ctime_ns + 1), False),
+            ("path replacement", before, opened, opened,
+             snapshot(st_ino=before.st_ino + 1), False),
+            ("handle link count changes", before, opened,
+             snapshot(st_ctime_ns=opened.st_ctime_ns, st_nlink=2), before, False),
+            ("path reparse attribute appears", before, opened, opened,
+             snapshot(st_file_attributes=0x400), False),
+        )
+        for name, first_path, first_handle, last_handle, last_path, accepted in cases:
+            with (
+                self.subTest(name=name),
+                mock.patch.object(bt, "regular", return_value=path),
+                # Provider mutation fixtures isolate identity checks from the
+                # real OS opener, which has its own invocation regression.
+                mock.patch.object(bt.native_io, "open_snapshot_file",
+                                  side_effect=lambda p: os.open(p, os.O_RDONLY)),
+                mock.patch.object(Path, "lstat", side_effect=[first_path, last_path]),
+                mock.patch.object(bt.os, "fstat", side_effect=[first_handle, last_handle]),
+            ):
+                if accepted:
+                    self.assertEqual(bt.safe_bytes(path), b"evidence")
+                else:
+                    with self.assertRaises(bt.Refused):
+                        bt.safe_bytes(path)
+
+        executable_mode = snapshot(st_mode=actual.st_mode | 0o111)
+        self.assertEqual(
+            bt._safe_common_identity(before, windows_executable=True),
+            bt._safe_common_identity(executable_mode, windows_executable=True),
+        )
+        self.assertNotEqual(
+            bt._safe_common_identity(before), bt._safe_common_identity(executable_mode)
+        )
+
+    def test_safe_bytes_uses_repository_no_follow_opener(self):
+        path = self.root / "evidence.json"
+        path.write_bytes(b"evidence")
+        with mock.patch.object(bt.native_io, "open_snapshot_file", wraps=bt.native_io.open_snapshot_file) as opener:
+            self.assertEqual(bt.safe_bytes(path), b"evidence")
+        opener.assert_called_once_with(path)
+        with mock.patch.object(bt.native_io, "open_snapshot_file", side_effect=OSError("reparse refused")):
+            with self.assertRaises(OSError):
+                bt.safe_bytes(path)
+
     def make_client(self, response, spawn_error=None):
         ctx = {
             "output": self.root,

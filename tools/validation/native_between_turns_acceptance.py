@@ -24,6 +24,11 @@ import threading
 import time
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tools.validation import native_acceptance as native_io  # noqa: E402
+
 PLAN = "cg-between-turn-native-plan/v1"
 REPORT = "cg-between-turn-native-result/v1"
 ENTRY = "context-guard@codex-context-guard"
@@ -105,50 +110,61 @@ def directory(path):
     return p.resolve(strict=True)
 
 
+def _safe_stat_identity(info):
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _safe_common_identity(info, *, windows_executable=False):
+    # Windows path and handle providers can differ in ctime and executable
+    # mode bits. Each provider is still checked in full across the read.
+    values = list(_safe_stat_identity(info)[:-1])
+    if windows_executable:
+        values[2] &= ~0o111
+    return tuple(values)
+
+
 def safe_bytes(path, limit=256 * 1024 * 1024):
     p = regular(path)
-    before = p.stat()
+    before = p.lstat()
+    require(
+        stat.S_ISREG(before.st_mode)
+        and before.st_nlink == 1
+        and not getattr(before, "st_file_attributes", 0) & 0x400,
+        "single-link regular file required",
+    )
     require(before.st_size <= limit, "input too large")
-    fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    try:
-        with os.fdopen(fd, "rb") as f:
-            opened = os.fstat(f.fileno())
-            require(
-                (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-                == (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns),
-                "input changed before read",
-            )
-            data = f.read(limit + 1)
-            after = os.fstat(f.fileno())
-        current = p.stat()
+    fd = native_io.open_snapshot_file(p)
+    with os.fdopen(fd, "rb") as f:
+        opened = os.fstat(f.fileno())
+        windows_executable = os.name == "nt" and p.suffix.casefold() in {
+            ".exe", ".com", ".bat", ".cmd"
+        }
         require(
-            len(data) <= limit
-            and (
-                opened.st_dev,
-                opened.st_ino,
-                opened.st_size,
-                opened.st_mtime_ns,
-                opened.st_ctime_ns,
-            )
-            == (
-                after.st_dev,
-                after.st_ino,
-                after.st_size,
-                after.st_mtime_ns,
-                after.st_ctime_ns,
-            )
-            == (
-                current.st_dev,
-                current.st_ino,
-                current.st_size,
-                current.st_mtime_ns,
-                current.st_ctime_ns,
-            ),
-            "input changed during read",
+            _safe_common_identity(before, windows_executable=windows_executable)
+            == _safe_common_identity(opened, windows_executable=windows_executable),
+            "input changed before read",
         )
-        return data
-    except BaseException:
-        raise
+        data = f.read(limit + 1)
+        after = os.fstat(f.fileno())
+    current = p.lstat()
+    require(not getattr(current, "st_reparse_tag", 0)
+            and not getattr(current, "st_file_attributes", 0) & 0x400,
+            "input became a reparse object during read")
+    require(
+        len(data) <= limit
+        and _safe_stat_identity(opened) == _safe_stat_identity(after)
+        and _safe_stat_identity(before) == _safe_stat_identity(current),
+        "input changed during read",
+    )
+    return data
 
 
 def _unique_pairs(pairs):
