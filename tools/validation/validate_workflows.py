@@ -103,12 +103,15 @@ def validate(root: Path) -> list[str]:
         "  ci_reuse:\n"
         "    name: Exact-commit candidate run reuse\n"
         "    needs: classify\n"
-        "    if: needs.classify.outputs.profile == 'full'\n"
         "    outputs:\n"
         "      reuse: ${{ steps.reuse.outputs.reuse }}\n"
     )
     if expected_reuse not in candidate:
         errors.append("exact-commit reuse job is missing or malformed")
+    reuse_block = candidate.split("  ci_reuse:\n", 1)[-1].split("  ubuntu_py310:", 1)[0]
+    if "\n    if:" in reuse_block:
+        errors.append("exact-commit reuse job must run in every profile so the "
+                      "lanes that need it are never skipped")
     for fragment in ("permissions:\n  contents: read\n  actions: read",
                      "python tools/validation/ci_reuse.py",
                      "--reuse \"$REUSE_CONFIRMED\"",

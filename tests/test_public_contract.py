@@ -202,6 +202,21 @@ class PublicContractTests(unittest.TestCase):
                 ["bad.yml: external action actions/setup-node@v4 must use a full commit"],
             )
 
+    def test_exact_commit_reuse_job_never_skips_and_lanes_depend_on_it(self) -> None:
+        """A skipped ci_reuse would skip every lane that needs it (GitHub
+        skips dependents of a skipped job), which failed the daily summary
+        once; the reuse job must therefore run in every profile."""
+        import yaml
+        caller = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+        reuse = caller["jobs"]["ci_reuse"]
+        self.assertNotIn("if", reuse)
+        self.assertEqual(reuse["needs"], "classify")
+        self.assertIn("reuse", reuse["outputs"])
+        for job_id in ("ubuntu_py310", "macos_py312", "windows_py312"):
+            self.assertIn("ci_reuse", caller["jobs"][job_id]["needs"])
+        self.assertIn("ci_reuse", caller["jobs"]["required"]["needs"])
+
     def test_pr_gate_is_blocking_and_portable_windows_is_conditional(self) -> None:
         pr = (ROOT / ".github" / "workflows" / "validation-shadow.yml").read_text(
             encoding="utf-8"

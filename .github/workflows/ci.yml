@@ -94,7 +94,6 @@ jobs:
   ci_reuse:
     name: Exact-commit candidate run reuse
     needs: classify
-    if: needs.classify.outputs.profile == 'full'
     outputs:
       reuse: ${{ steps.reuse.outputs.reuse }}
     runs-on: ubuntu-latest

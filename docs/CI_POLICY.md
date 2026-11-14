@@ -64,8 +64,10 @@ host behavior, trust or installation.
 
 ## Exact-commit run reuse
 
-The `ci_reuse` job is that rule's real result consumer, and it runs only in
-the full profile. It queries the official Actions API for completed runs of
+The `ci_reuse` job is that rule's real result consumer, and it runs in every
+candidate run (it must never be skipped, because the lanes depend on it and
+GitHub skips dependents of a skipped job). Its verdict gates only the
+full-profile lanes. It queries the official Actions API for completed runs of
 this workflow on the exact head commit, re-derives the prior run's
 full-coverage facts from its job list, and emits the
 `cg-ci-reuse-evidence/v1` receipt (uploaded as
