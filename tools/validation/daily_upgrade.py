@@ -15,8 +15,9 @@ manifest digest it actually consumed:
 - ``--preflight`` — read-only readiness: pinned executable identities, the
   current official installation state, target artifact verification, data
   policy observation and a host process inventory.
-- ``--prepare`` — binds the preflight subject and decides whether the swap
-  needs the Desktop host stopped.
+- ``--prepare`` — binds the preflight subject. A v1 plan requires the
+  Desktop host stopped for a swap; an explicit between-turns v2 plan requires
+  a compatible old/target artifact pair and the operator's pause.
 - ``--apply`` — the resumable swap. Each destructive stage writes a durable
   intent event before the official command and a fact event afterwards; a
   rerun reconciles every stage against official readbacks before re-running
@@ -43,14 +44,17 @@ oracles, parse-only launcher checks and read-only process enumeration are
 probed. Nested ``--help`` probing of unknown CLIs is deliberately absent: a
 help probe can start real system facilities (2026-11-11 daily-HOME incident).
 
-The stable-identity swap replaces the consumed plugin cache. There is no
-supported way to preserve the old bytes for a running host, so when an
-installation exists, apply requires a host-absent observation — an exact
-pinned-executable inventory with zero unreadable Desktop candidates — before
-the first destructive command. A running host is answered with one precise
-instruction, never with a claimed hot swap. Pinned sandbox services are
-identified by executable identity and recorded; they are not the host and do
-not gate the swap.
+The stable-identity swap may prune the old plugin cache through official
+Codex commands. The default v1 route requires an absent Desktop host. The
+explicit v2 between-turns route keeps the host and tasks open: the operator
+pauses new operations, this tool drains existing old-runtime processes, and
+then it performs the official swap. It does not preserve old runtime bytes.
+The old and target runtime trees must be identical except the two named
+version constants and plugin version metadata; an old task can therefore
+continue through its existing compatible fallback. Active or ambiguous
+process observations remain pending, never permission to kill another task.
+Normal Hook review may still be required before continuing. A clear snapshot
+is not a lock: keep the pause through the swap and successful verification.
 
 Results live in the exclusive ``--output`` directory outside the repository;
 existing result files are never replaced. Exit codes: ``0`` completed,
@@ -62,6 +66,7 @@ never assumes that nothing changed. No login, no credential copy, no model call.
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import hashlib
 import json
@@ -70,6 +75,7 @@ import platform
 import queue
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -81,6 +87,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts.artifact_identity import (  # noqa: E402
+    checked_metadata,
+    checked_walk,
     compare_artifact,
     distribution_manifest,
 )
@@ -90,16 +98,19 @@ from tools.validation import native_acceptance as native  # noqa: E402
 from tools.validation import native_cli_adoption as adoption  # noqa: E402
 from tools.validation import native_scheduler_batch as scheduler  # noqa: E402
 from tools.validation import native_upgrade_acceptance as base  # noqa: E402
+from tools.validation import runtime_activity as activity_observer  # noqa: E402
 from tools.validation import stop_host_acceptance as host  # noqa: E402
 
 PLAN = "cg-daily-upgrade-plan/v1"
 PLAN_V2 = "cg-daily-upgrade-plan/v2"
 REPORT = "cg-daily-upgrade-result/v1"
+REPORT_V2 = "cg-daily-upgrade-result/v2"
 COLD_MODE = "stopped-host"
 HOT_MODE = "between-turns"
 DRAIN_SECONDS_DEFAULT = 120
 DRAIN_SECONDS_MAX = 900
 JOURNAL_SCHEMA = "cg-daily-upgrade-journal/v1"
+JOURNAL_SCHEMA_V2 = "cg-daily-upgrade-journal/v2"
 PROBE_SCHEMA = "cg-daily-loaded-probe/v1"
 ENTRY = "context-guard@codex-context-guard"
 MARKET = "codex-context-guard"
@@ -128,6 +139,19 @@ WAIT_MINUTES_MAX = 720
 require = base.require
 UpgradeError = base.UpgradeError
 CapabilityPending = base.CapabilityPending
+
+
+def _report_schema(mode: str) -> str:
+    require(mode in (COLD_MODE, HOT_MODE), "unknown transition mode")
+    return REPORT_V2 if mode == HOT_MODE else REPORT
+
+
+def _result_mode(value: dict[str, Any]) -> str:
+    mode = value.get("mode", COLD_MODE)
+    require(mode in (COLD_MODE, HOT_MODE)
+            and value.get("schema") == _report_schema(mode),
+            "result schema does not match its transition mode")
+    return mode
 
 
 class HostPending(Exception):
@@ -264,7 +288,7 @@ def _helper_identities() -> dict[str, str]:
     migration = ROOT / "tools" / "guard_state_migration.py"
     if migration.is_file():
         helpers[migration.relative_to(ROOT).as_posix()] = base.sha(migration)
-    for name in ("run_daily_upgrade.sh", "run_daily_upgrade.ps1"):
+    for name in ("run_daily_upgrade.sh", "run_daily_upgrade.ps1", "runtime_activity_windows.ps1"):
         path = ROOT / "tools" / "validation" / name
         if path.is_file():
             helpers[path.relative_to(ROOT).as_posix()] = base.sha(path)
@@ -405,6 +429,9 @@ def _load_plan(plan_path: Path) -> dict[str, Any]:
     markers = raw.get("sandbox_markers", [])
     require(isinstance(markers, list) and len(markers) <= 64, "sandbox_markers invalid")
     if schema == PLAN_V2:
+        require(len(target) <= 16 and re.fullmatch(
+            r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", target),
+            "between-turns target must be a supported numeric version")
         strategy = raw.get("transition_strategy")
         require(strategy == HOT_MODE,
                 'plan v2 transition_strategy must be "between-turns"')
@@ -618,18 +645,28 @@ def _walk_regular_files(root: Path) -> dict[str, str]:
     silently dropped.
     """
     tree: dict[str, str] = {}
-    for path in sorted(root.rglob("*")):
-        rel = path.relative_to(root).as_posix()
-        require(not path.is_symlink(), "distribution tree contains a link: " + rel)
-        if path.is_dir():
-            continue
-        require(path.is_file(),
-                "distribution tree contains a non-regular object: " + rel)
-        try:
+    try:
+        for path, info in checked_walk(root):
+            rel = path.relative_to(root).as_posix()
+            if stat.S_ISDIR(info.st_mode):
+                continue
+            require(stat.S_ISREG(info.st_mode),
+                    "distribution tree contains a non-regular object: " + rel)
             tree[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
-        except OSError:
-            raise UpgradeError("distribution tree object unreadable: " + rel) from None
+    except (OSError, RuntimeError) as exc:
+        raise UpgradeError("distribution tree cannot be verified: " + type(exc).__name__) from None
     return tree
+
+
+def _checked_cache_ancestors(path: Path) -> None:
+    for component in reversed((path, *path.parents)):
+        try:
+            info = checked_metadata(component)
+        except FileNotFoundError:
+            continue
+        except (OSError, RuntimeError):
+            raise UpgradeError("cache path cannot be verified") from None
+        require(stat.S_ISDIR(info.st_mode), "cache ancestor is not a regular directory")
 
 
 def _version_literal_swap(name: str, old_text: str, new_text: str,
@@ -642,15 +679,39 @@ def _version_literal_swap(name: str, old_text: str, new_text: str,
     refuses.
     """
     declaration = VERSION_LITERAL_FILES[name]
-    any_declaration = re.compile(r'^%s = "[^"]*"$' % declaration, re.M)
-    if len(any_declaration.findall(old_text)) != 1:
+
+    def literal(text: str, expected: str) -> tuple[bytes, int, int] | None:
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            return None
+        stores = [node for node in ast.walk(tree)
+                  if isinstance(node, ast.Name) and node.id == declaration
+                  and isinstance(node.ctx, ast.Store)]
+        assignments = [node for node in tree.body if isinstance(node, ast.Assign)
+                       and len(node.targets) == 1
+                       and isinstance(node.targets[0], ast.Name)
+                       and node.targets[0].id == declaration]
+        if len(stores) != 1 or len(assignments) != 1:
+            return None
+        value = assignments[0].value
+        if not isinstance(value, ast.Constant) or value.value != expected:
+            return None
+        lines = text.encode("utf-8").splitlines(keepends=True)
+        start = sum(map(len, lines[:value.lineno - 1])) + value.col_offset
+        end = sum(map(len, lines[:value.end_lineno - 1])) + value.end_col_offset
+        body = text.encode("utf-8")
+        if body[start:end] not in (('"' + expected + '"').encode(),
+                                   ("'" + expected + "'").encode()):
+            return None
+        return body, start, end
+
+    before, after = literal(old_text, old_version), literal(new_text, new_version)
+    if before is None or after is None:
         return False
-    if len(any_declaration.findall(new_text)) != 1:
-        return False
-    match = any_declaration.search(old_text)
-    expected_line = '%s = "%s"' % (declaration, new_version)
-    replaced = old_text[:match.start()] + expected_line + old_text[match.end():]
-    return old_text != new_text and replaced == new_text
+    body, start, end = before
+    replacement = body[start:start + 1] + new_version.encode() + body[end - 1:end]
+    return body != after[0] and body[:start] + replacement + body[end:] == after[0]
 
 
 def _verify_between_turns_compatibility(plan: dict[str, Any],
@@ -666,24 +727,44 @@ def _verify_between_turns_compatibility(plan: dict[str, Any],
     Unknown or unproved compatibility refuses the route rather than
     downgrading it to the stopped-host requirement.
     """
-    old_version = installed_version
     old_dir = Path(plan["old_artifact_dir"])
+    distribution_manifest(old_dir)
+    old_metadata = adoption.strict_json(
+        (old_dir / ".codex-plugin" / "plugin.json").read_text("utf-8"))
+    require(isinstance(old_metadata, dict), "old artifact metadata is malformed")
+    old_version = old_metadata.get("version")
+    require(isinstance(old_version, str) and len(old_version) <= 16
+            and re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", old_version),
+            "old artifact version is not a supported numeric version")
     old_artifact = _verify_artifact(plan, artifact_dir=plan["old_artifact_dir"],
                                     expected_version=old_version)
     daily = _daily_home()
-    candidates = _cache_candidates(daily, old_version)
-    require(len(candidates) == 1,
-            "the installed old version cache slot is missing or ambiguous")
-    slot = candidates[0]
+    slot = daily / "plugins" / "cache" / MARKET / PLUGIN_NAME / old_version
+    _checked_cache_ancestors(slot)
     # The whole installed old distribution must match the retained old
     # artifact; unknown extra files or missing files would be silently
     # deleted or lost by the official prune.
-    installed_tree = _walk_regular_files(slot)
     old_tree = _walk_regular_files(old_dir)
-    require(installed_tree == old_tree,
-            "the installed old distribution differs from the retained old "
-            "artifact; the between-turns route refuses migrated or repaired "
-            "installs")
+    if installed_version != plan["target_version"]:
+        require(installed_version in (None, old_version),
+                "installed version differs from the retained old artifact")
+        require(tuple(map(int, plan["target_version"].split(".")))
+                > tuple(map(int, old_version.split("."))),
+                "between-turns transitions require an increasing version")
+        target_slot = slot.parent / plan["target_version"]
+        require(not target_slot.exists() and not target_slot.is_symlink(),
+                "target cache slot already exists without the target official installation")
+        for sibling in slot.parent.iterdir():
+            require(not sibling.is_symlink(), "unreviewed linked cache entry")
+            if sibling.is_dir():
+                require(sibling.name == old_version,
+                        "unreviewed cache slot would be pruned: " + sibling.name)
+        candidates = _cache_candidates(daily, old_version)
+        require(len(candidates) == 1 and candidates[0] == slot,
+                "the installed old version cache slot is missing or ambiguous")
+        require(_walk_regular_files(slot) == old_tree,
+                "the installed old distribution differs from the retained old "
+                "artifact; the between-turns route refuses migrated or repaired installs")
     # Compatibility between the two verified trees is a separate, scoped
     # comparison: the runtime compatibility roots with the exact literal
     # allowance; distribution manifests and packaged reader docs are outside.
@@ -704,8 +785,8 @@ def _verify_between_turns_compatibility(plan: dict[str, Any],
         require(name in VERSION_LITERAL_FILES,
                 "runtime file " + name + " differs beyond the version literal "
                 "allowance")
-        old_text = (old_dir / name).read_text(encoding="utf-8")
-        new_text = (Path(plan["artifact_dir"]) / name).read_text(encoding="utf-8")
+        old_text = (old_dir / name).read_bytes().decode("utf-8")
+        new_text = (Path(plan["artifact_dir"]) / name).read_bytes().decode("utf-8")
         require(_version_literal_swap(name, old_text, new_text,
                                       old_version, plan["target_version"]),
                 "runtime file " + name + " differs beyond the exact single "
@@ -731,68 +812,56 @@ def _verify_between_turns_compatibility(plan: dict[str, Any],
     require(old_market.get("name") == new_market.get("name") == MARKET
             and old_market.get("plugins") == new_market.get("plugins"),
             "the marketplace manifest differs beyond the allowed packaging")
-    return {"verdict": "compatible", "old_version": old_version,
+    # This binding is derived from retained artifacts, so it remains identical
+    # after official add has pruned the old slot. The initial installed-tree
+    # check above is represented by the integrity-bound prepared subject;
+    # verification does not pretend to recheck a tree which no longer exists.
+    return {"verdict": "compatible", "rule": "version-literals-only/v1",
+            "old_version": old_version,
             "old_artifact": old_artifact, "installed_slot": str(slot),
+            "old_distribution_sha256": base.digest(old_tree),
             "runtime_differences": differences, "compared_roots": list(COMPAT_ROOTS)}
 
 
-def _runtime_activity(daily_home: Path, version: str,
-                      host_tools: dict[str, Any]) -> dict[str, Any]:
-    """Read-only inventory of processes using the selected old cached runtime.
-
-    Matches real process command lines that reference the old cache slot —
-    Hook invocations, maintenance children, any consumer of the pinned path.
-    Nothing is ever signalled or killed; unreadable or ambiguous inventory is
-    reported as ``unknown`` and stays pending. Tests replace this seam.
-    """
-    slot = daily_home / "plugins" / "cache" / MARKET / PLUGIN_NAME / version
-    marker = str(slot)
-    candidates: list[dict[str, Any]] = []
-    # The original inline shell/PowerShell Hook command references the cached
-    # launcher only through the PLUGIN_ROOT environment value, so the drain
-    # also matches the product's entry script and launcher names; matched
-    # processes are recorded as pid/ppid only, never with their command lines.
-    tokens = (marker, "context_guard.py", "run_context_guard", "run-context-guard")
+def _old_slot_outcome(plan: dict[str, Any], compatibility: dict[str, Any]) -> dict[str, Any]:
+    """An old slot may survive intact or disappear, never remain partial."""
+    slot = Path(compatibility["installed_slot"])
+    _checked_cache_ancestors(slot)
     try:
-        if os.name == "nt":
-            shell = (host_tools.get("powershell") or {}).get("path")
-            require(shell is not None,
-                    "activity inventory requires the pinned PowerShell")
-            pattern = "'*" + "*' -or $_.CommandLine -like '*".join(
-                token.replace("'", "''") for token in tokens) + "*'"
-            script = ("$rows = @(Get-CimInstance Win32_Process | "
-                      "Where-Object { $_.CommandLine -ne $null -and "
-                      "($_.CommandLine -like '" + pattern + "') } | "
-                      "ForEach-Object { @{ pid = $_.ProcessId; "
-                      "ppid = $_.ParentProcessId } }); "
-                      "ConvertTo-Json -InputObject $rows -Compress")
-            result = _probe_run([shell, "-NoProfile", "-NonInteractive",
-                                 "-Command", script], {})
-            require(result.returncode == 0, "process activity inventory failed")
-            payload = adoption.strict_json(result.stdout.decode("utf-8-sig"))
-            rows = payload if isinstance(payload, list) else [payload]
-            for row in rows:
-                require(isinstance(row, dict)
-                        and isinstance(row.get("pid"), int)
-                        and isinstance(row.get("ppid"), int),
-                        "activity inventory row is ambiguous")
-                candidates.append({"pid": row["pid"], "ppid": row["ppid"]})
-        else:
-            ps = (host_tools.get("ps") or {}).get("path")
-            require(ps is not None, "activity inventory requires the pinned ps")
-            result = _probe_run([ps, "-axo", "pid=,ppid=,command="], {})
-            require(result.returncode == 0, "process activity inventory failed")
-            for line in result.stdout.decode("utf-8", "replace").splitlines():
-                parts = line.strip().split(None, 2)
-                if len(parts) == 3 and any(token in parts[2] for token in tokens):
-                    require(parts[0].isdigit() and parts[1].isdigit(),
-                            "activity inventory row is ambiguous")
-                    candidates.append({"pid": int(parts[0]), "ppid": int(parts[1])})
-    except (UpgradeError, CapabilityPending, OSError, ValueError) as exc:
-        return {"status": "unknown", "candidates": [], "slot": marker,
-                "reason": type(exc).__name__ + ": " + str(exc)[:160]}
-    return {"status": "active" if candidates else "clear",
-            "candidates": candidates[:32], "slot": marker}
+        info = checked_metadata(slot)
+    except FileNotFoundError:
+        return {"status": "absent"}
+    except (OSError, RuntimeError):
+        raise UpgradeError("unsafe partial old cache: old slot cannot be verified") from None
+    require(stat.S_ISDIR(info.st_mode),
+            "unsafe partial old cache: old slot is not a regular directory")
+    try:
+        actual = _walk_regular_files(slot)
+    except (OSError, UpgradeError) as exc:
+        raise UpgradeError("unsafe partial old cache: old slot cannot be verified") from exc
+    require(base.digest(actual) == compatibility["old_distribution_sha256"],
+            "unsafe partial old cache: official add did not remove the whole old tree; "
+            "keep new operations paused and review the retained journal")
+    return {"status": "retained_intact", "distribution_sha256": base.digest(actual)}
+
+
+def _runtime_activity(daily_home: Path, version: str,
+                      host_tools: dict[str, Any], *, compatibility: dict[str, Any],
+                      allow_absent: bool = False) -> dict[str, Any]:
+    """Observe only the prepared old slot and byte-bound old Hook definitions."""
+    old = compatibility["old_artifact"]
+    old_dir = Path(old["path"])
+    require(_verify_artifact({}, artifact_dir=str(old_dir), expected_version=version) == old,
+            "retained old artifact changed before activity observation")
+    for name in ("ps", "powershell"):
+        identity = host_tools.get(name)
+        if identity is not None:
+            require(_sha_loose(Path(identity["path"])) == identity["sha256"],
+                    "activity host tool changed before observation")
+    definitions = adoption.strict_json((old_dir / "hooks" / "hooks.json").read_text("utf-8"))
+    return activity_observer.observe(
+        daily_home, version, host_tools, hooks=definitions,
+        slots=[Path(compatibility["installed_slot"])], allow_absent=allow_absent)
 
 
 def _preflight_checks(plan: dict[str, Any]) -> dict[str, Any]:
@@ -816,13 +885,9 @@ def _preflight_checks(plan: dict[str, Any]) -> dict[str, Any]:
     data_policy = _data_policy(plan, env, state["commands"], state["version"])
     compatibility = None
     if plan["mode"] == HOT_MODE:
-        if state["version"] == plan["target_version"]:
-            compatibility = {"verdict": "already-current",
-                             "old_version": plan["target_version"]}
-        else:
-            compatibility = _verify_between_turns_compatibility(plan, state["version"])
+        compatibility = _verify_between_turns_compatibility(plan, state["version"])
     subject: dict[str, Any] = {
-        "schema": REPORT,
+        "schema": _report_schema(plan["mode"]),
         "mode": plan["mode"],
         "tool_sha256": base.sha(Path(__file__)),
         "tool_root": str(ROOT),
@@ -852,14 +917,13 @@ def _preflight_checks(plan: dict[str, Any]) -> dict[str, Any]:
 def _binding_view(subject: dict[str, Any]) -> dict[str, Any]:
     """The identity fields whose change is a refused preflight/execution drift.
 
-    ``installed_before``, ``host``, ``data_policy`` and ``compatibility`` are
+    ``installed_before``, ``host`` and ``data_policy`` are
     live observations that legitimately change between prepare, apply and
     verify (the operator quits the host, maintenance runs, the official add
     prunes the old cache); each is judged by its own explicit gate instead.
     """
     return {key: value for key, value in subject.items()
-            if key not in ("installed_before", "host", "data_policy",
-                           "compatibility", "commands")}
+            if key not in ("installed_before", "host", "data_policy", "commands")}
 
 
 def _claim_output(subject: dict[str, Any], output: Path) -> None:
@@ -870,12 +934,12 @@ def _claim_output(subject: dict[str, Any], output: Path) -> None:
 def _read_bound_result(path: Path, *, stage: str,
                        mode: str | None = None) -> tuple[dict[str, Any], str]:
     value, file_sha = base._read_json_with_sha(path)
-    require(value.get("schema") == REPORT and value.get("stage") == stage,
-            "bound result has the wrong schema or stage")
+    require(value.get("stage") == stage, "bound result has the wrong stage")
+    observed_mode = _result_mode(value)
     if mode is not None:
         # Receipts carry their transition mode; a v1 stopped-host receipt can
         # never be reinterpreted by a between-turns plan and vice versa.
-        require(value.get("mode") == mode,
+        require(observed_mode == mode,
                 "bound result belongs to a different transition mode: "
                 + str(value.get("mode")))
     return value, file_sha
@@ -946,12 +1010,72 @@ def _read_journal(path: Path) -> list[dict[str, Any]]:
     events = []
     for line in lines:
         try:
-            event = json.loads(line)
+            event = adoption.strict_json(line)
         except ValueError:
             raise UpgradeError("apply journal is corrupt") from None
         require(isinstance(event, dict) and event.get("event") in
                 ("begin", "intent", "fact", "note"), "apply journal event invalid")
         events.append(event)
+    require(events and events[0].get("event") == "begin",
+            "apply journal must begin with its identity record")
+    mode = events[0].get("mode", COLD_MODE)
+    expected_schema = JOURNAL_SCHEMA_V2 if mode == HOT_MODE else JOURNAL_SCHEMA
+    require(mode in (COLD_MODE, HOT_MODE)
+            and events[0].get("schema") == expected_schema,
+            "journal schema does not match its transition mode")
+    pending: dict[str, list[list[str]]] = {}
+    mutations = {"plugin_remove", "marketplace_remove", "marketplace_add", "plugin_add"}
+    for event in events[1:]:
+        require(event["event"] != "begin", "apply journal repeats its identity record")
+        stage = event.get("stage")
+        require(isinstance(stage, str) and bool(stage), "apply journal stage is malformed")
+        if event["event"] == "intent":
+            require(stage in mutations and not (mode == HOT_MODE and stage == "plugin_remove"),
+                    "apply journal contains an unsupported mutation")
+            argv = event.get("argv")
+            require(isinstance(argv, list) and bool(argv)
+                    and all(isinstance(arg, str) and bool(arg) for arg in argv),
+                    "apply journal intent command is malformed")
+            pending.setdefault(stage, []).append(argv)
+        elif event["event"] == "fact" and stage in mutations:
+            intents = pending.get(stage, [])
+            require(intents and intents[-1] == event.get("argv"),
+                    "apply journal mutation fact has no preceding matching intent")
+            require(type(event.get("exit_code")) is int,
+                    "apply journal mutation result is malformed")
+            intents.pop()
+    return events
+
+
+def _check_hot_journal(plan: dict[str, Any], subject: dict[str, Any],
+                       prepared_sha: str, output: Path,
+                       applied: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    events = _read_journal(output / JOURNAL_NAME)
+    expected = {"event": "begin", "schema": JOURNAL_SCHEMA_V2, "mode": HOT_MODE,
+                "subject_sha256": base.digest(_binding_view(subject)),
+                "prepared_sha256": prepared_sha}
+    require(events[0] == expected, "between-turns journal belongs to another preparation")
+    cli = subject["cli"]["path"]
+    allowed = {
+        "marketplace_remove": [cli, "plugin", "marketplace", "remove", MARKET],
+        "marketplace_add": [cli, "plugin", "marketplace", "add", plan["artifact_dir"]],
+        "plugin_add": [cli, "plugin", "add", ENTRY, "--json"],
+    }
+    for event in events[1:]:
+        argv = event.get("argv")
+        if not isinstance(argv, list) or event["event"] not in ("intent", "fact"):
+            continue
+        mutating = (argv[1:3] in (["plugin", "add"], ["plugin", "remove"])
+                    or argv[1:4] in (["plugin", "marketplace", "add"],
+                                     ["plugin", "marketplace", "remove"]))
+        if mutating or event["event"] == "intent":
+            require(event.get("stage") in allowed
+                    and argv == allowed[event["stage"]],
+                    "between-turns journal contains an out-of-scope command")
+    if applied is not None:
+        require(applied.get("commands") == [event for event in events
+                                            if event["event"] == "fact"],
+                "apply receipt facts differ from the retained journal")
     return events
 
 
@@ -963,7 +1087,7 @@ def preflight_action(plan: dict[str, Any], output: Path) -> None:
     _claim_output(subject, output)
     output.mkdir(mode=0o700)
     base._write_new(output / PREFLIGHT_NAME,
-                    {"schema": REPORT, "stage": "preflight", "status": "observed",
+                    {"schema": _report_schema(plan["mode"]), "stage": "preflight", "status": "observed",
                      "subject": subject, "subject_sha256": base.digest(subject)})
     print("daily_upgrade_preflight=passed; prepare_not_run")
 
@@ -1104,7 +1228,7 @@ def _prepare_result(plan: dict[str, Any], subject: dict[str, Any]) -> dict[str, 
                   "host state is unknown (" + str(subject["host"]["reason"]) + "); a swap must "
                   "not start while a Desktop host may be running")
         swap = {"required": True, "reason": reason, "observed_host_status": host_status}
-    return {"schema": REPORT, "stage": "prepare", "mode": plan["mode"],
+    return {"schema": _report_schema(plan["mode"]), "stage": "prepare", "mode": plan["mode"],
             "status": status, "subject": subject,
             "subject_sha256": base.digest(subject), "swap": swap,
             "commands": subject["commands"],
@@ -1515,6 +1639,15 @@ def _reconcile_between_turns_prestate(prepared: dict[str, Any], current: dict[st
     """
     pre = prepared["subject"]["installed_before"]
     target = plan["target_version"]
+    successful = {event.get("stage") for event in journal.facts()
+                  if event.get("exit_code") == 0}
+    if "plugin_add" in successful:
+        require(current["installed"] and current["version"] == target,
+                "target installation changed after the recorded successful add")
+    if "marketplace_add" in successful:
+        require(current["registered"]
+                and _same_path(current["market_root"], plan["artifact_dir"]),
+                "marketplace changed after the recorded successful add")
     if current["installed"]:
         require(current["version"] in (pre["version"], target),
                 "installed version changed outside this batch; re-prepare")
@@ -1522,15 +1655,24 @@ def _reconcile_between_turns_prestate(prepared: dict[str, Any], current: dict[st
             require(journal.has_intent("plugin_add"),
                     "target installation appeared without a recorded add from this batch")
     else:
-        require(pre["installed"],
+        # The CLI may temporarily omit an unregistered installation during
+        # this batch's own registration gap. Its exact old tree must still
+        # exist; no plugin removal is part of this transition.
+        require(pre["installed"] and journal.has_intent("marketplace_remove")
+                and not current["registered"]
+                and _old_slot_outcome(plan, prepared["subject"]["compatibility"])["status"]
+                == "retained_intact",
                 "the existing installation disappeared without a recorded removal "
                 "from this batch; the between-turns route never removes the plugin")
     if current["registered"]:
         root = current["market_root"]
         pre_root = pre["market_root"]
-        if not _same_path(root, pre_root) and not _same_path(root, plan["artifact_dir"]):
-            require(journal.has_intent("marketplace_add"),
+        if not _same_path(root, pre_root):
+            require(journal.has_intent("marketplace_add")
+                    and _same_path(root, plan["artifact_dir"]),
                     "marketplace registration changed outside this batch; re-prepare")
+        elif "marketplace_remove" in successful and not _same_path(root, plan["artifact_dir"]):
+            raise UpgradeError("marketplace registration reappeared after its recorded removal")
     else:
         require(journal.has_intent("marketplace_remove") or not pre["registered"],
                 "marketplace registration disappeared without a recorded removal "
@@ -1555,19 +1697,25 @@ def _apply_between_turns(plan: dict[str, Any], output: Path, prepared: dict[str,
     host_tools = subject["host_tools"]
     old_version = prepared["subject"]["installed_before"]["version"]
     drain_deadline = _now() + plan["drain_seconds"]
-    begin = {"event": "begin", "schema": JOURNAL_SCHEMA, "mode": HOT_MODE,
+    begin = {"event": "begin", "schema": JOURNAL_SCHEMA_V2, "mode": HOT_MODE,
              "subject_sha256": base.digest(_binding_view(subject)),
              "prepared_sha256": prepared_sha}
     journal = _Journal(output / JOURNAL_NAME, begin)
     try:
+        _check_hot_journal(plan, subject, prepared_sha, output)
         current = _daily_state(cli, env, "apply_state")
         for fact in current["commands"]:
             journal.raw_fact(fact)
         _reconcile_between_turns_prestate(prepared, current, journal, plan)
         while True:
-            activity = _runtime_activity(daily, old_version, host_tools)
+            activity = _runtime_activity(
+                daily, old_version, host_tools, compatibility=subject["compatibility"],
+                allow_absent=current["version"] == plan["target_version"])
             if activity["status"] == "clear":
                 break
+            if activity.get("query_cleanup") == "unconfirmed":
+                raise HostPending("activity query cleanup unconfirmed; keep new operations paused "
+                                  "and review the owned query before retrying")
             if _now() >= drain_deadline:
                 raise HostPending(
                     "between-turns activity drain timed out: the old cached runtime "
@@ -1612,7 +1760,12 @@ def _apply_between_turns(plan: dict[str, Any], output: Path, prepared: dict[str,
                     and _same_path(current["market_root"], artifact_str),
                     "marketplace registration after add differs from the plan artifact")
         # Second fresh drain immediately before the official add.
-        activity = _runtime_activity(daily, old_version, host_tools)
+        activity = _runtime_activity(
+            daily, old_version, host_tools, compatibility=subject["compatibility"],
+            allow_absent=current["version"] == plan["target_version"])
+        if activity.get("query_cleanup") == "unconfirmed":
+            raise HostPending("activity query cleanup unconfirmed; keep new operations paused "
+                              "and review the owned query before retrying")
         if activity["status"] != "clear":
             raise HostPending(
                 "between-turns activity drain observed " + activity["status"]
@@ -1648,12 +1801,14 @@ def _apply_between_turns(plan: dict[str, Any], output: Path, prepared: dict[str,
                            "enabled": current["enabled"],
                            "cache_path": str(candidates[0]),
                            "cache_entries": retained}
+        old_outcome = _old_slot_outcome(plan, subject["compatibility"])
         journal.note("apply_complete", "official stages reconciled; apply receipt follows")
-        result = {"schema": REPORT, "stage": "apply", "mode": HOT_MODE,
+        result = {"schema": REPORT_V2, "stage": "apply", "mode": HOT_MODE,
                   "transition": HOT_MODE, "status": "applied",
                   "subject_sha256": base.digest(_binding_view(subject)),
                   "prepared_sha256": prepared_sha,
                   "installed_after": installed_after,
+                  "old_slot_outcome": old_outcome,
                   "commands": journal.facts(),
                   "host_status_at_swap": subject["host"]["status"],
                   "pending": ["hook_trust_review", "verify"]}
@@ -1678,6 +1833,11 @@ def apply(plan: dict[str, Any], output: Path, prepared_path: Path) -> dict[str, 
     if prepared.get("status") == "already_current":
         raise UpgradeError("installed version already equals the target; run --verify instead")
     require(prepared.get("status") == "prepared", "prepare receipt is not applicable")
+    if plan["mode"] == HOT_MODE and (output / APPLY_NAME).exists():
+        completed, _sha = _read_bound_result(output / APPLY_NAME, stage="apply", mode=HOT_MODE)
+        require(completed.get("prepared_sha256") == prepared_sha,
+                "completed apply belongs to another preparation")
+        raise UpgradeError("apply has already completed; run --verify or --resume")
     subject = _preflight_checks(plan)
     drift = sorted(key for key in set(_binding_view(subject))
                    | set(_binding_view(prepared["subject"]))
@@ -2036,6 +2196,8 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
                 "apply result was bound to a different prepare receipt")
         require(apply_result.get("subject_sha256") == fresh_binding,
                 "apply result was bound to a different execution identity")
+        if plan["mode"] == HOT_MODE:
+            _check_hot_journal(plan, subject, prepared_sha, output, apply_result)
     cli = Path(subject["cli"]["path"])
     env = _scrubbed_env()
     current = _daily_state(cli, env, "verify")
@@ -2047,6 +2209,8 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
     require(len(candidates) == 1, "installed cache is missing or ambiguous")
     cache_path = candidates[0]
     compare_artifact(Path(plan["artifact_dir"]), cache_path)
+    if plan["mode"] == HOT_MODE:
+        _old_slot_outcome(plan, subject["compatibility"])
     # Fresh-client loaded-version probe under an exclusive attempt index.
     probe_root = output / "probe" / "loaded"
     probe_root.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -2104,7 +2268,7 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
         status = "passed"
         detail = None
     data_policy = _data_policy(plan, env, current["commands"], current["version"])
-    result = {"schema": REPORT, "stage": "verify", "mode": plan["mode"],
+    result = {"schema": _report_schema(plan["mode"]), "stage": "verify", "mode": plan["mode"],
               "status": status, "detail": detail,
               "subject_sha256": base.digest(_binding_view(subject)),
               "prepared_sha256": prepared_sha,

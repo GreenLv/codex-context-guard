@@ -16,6 +16,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
@@ -1616,7 +1617,7 @@ class TestBetweenTurnsMode(DailyUpgradeCase):
         self.activity = {"status": "clear", "candidates": [], "slot": "fixture"}
         self._real_runtime_activity = U._runtime_activity
         self.patch(U, "_runtime_activity",
-                   lambda daily, version, host_tools=None: dict(self.activity))
+                   lambda daily, version, host_tools=None, **kwargs: dict(self.activity))
         self.publisher = {"method": "fixture", "verified": True,
                           "identity": "FIXTURETEAM"}
         self.patch(U, "_host_publisher",
@@ -1693,7 +1694,7 @@ class TestBetweenTurnsMode(DailyUpgradeCase):
         self.assertEqual(self.main("--prepare"), 0)
         self.assertEqual(self.read("prepare.json")["status"], "already_current")
         self.assertEqual(self.read("prepare.json")["subject"]["compatibility"]["verdict"],
-                         "already-current")
+                         "compatible")
         self.assertEqual(self.main("--resume"), 0)
         self.assertEqual(self.plugin_add_calls(), [])
         self.assertEqual(self.read("verify.json")["status"], "passed")
@@ -1702,7 +1703,7 @@ class TestBetweenTurnsMode(DailyUpgradeCase):
         self.seed_old_slot()
         polls = {"count": 0}
 
-        def flaky_activity(daily, version, host_tools=None):
+        def flaky_activity(daily, version, host_tools=None, **kwargs):
             polls["count"] += 1
             if polls["count"] == 1:
                 return {"status": "active", "candidates": [{"pid": 901, "ppid": 1}],
@@ -1718,7 +1719,7 @@ class TestBetweenTurnsMode(DailyUpgradeCase):
     def test_activity_drain_timeout_is_pending(self):
         self.seed_old_slot()
         self.patch(U, "_runtime_activity",
-                   lambda daily, version, host_tools=None:
+                   lambda daily, version, host_tools=None, **kwargs:
                    {"status": "active", "candidates": [{"pid": 901, "ppid": 1}],
                     "slot": "fixture"})
         self.patch(U, "_sleep", lambda seconds: None)
@@ -1738,7 +1739,7 @@ class TestBetweenTurnsMode(DailyUpgradeCase):
         self.seed_old_slot()
         polls = {"count": 0}
 
-        def active_before_add(daily, version, host_tools=None):
+        def active_before_add(daily, version, host_tools=None, **kwargs):
             polls["count"] += 1
             if polls["count"] >= 2:
                 return {"status": "active", "candidates": [{"pid": 902, "ppid": 1}],
@@ -1754,7 +1755,7 @@ class TestBetweenTurnsMode(DailyUpgradeCase):
         self.activity = {"status": "clear", "candidates": [], "slot": "fixture"}
         self._real_runtime_activity = U._runtime_activity
         self.patch(U, "_runtime_activity",
-                   lambda daily, version, host_tools=None: dict(self.activity))
+                   lambda daily, version, host_tools=None, **kwargs: dict(self.activity))
         self.assertEqual(self.main("--resume"), 0)
         self.assertEqual(len(self.plugin_add_calls()), 1)
 
@@ -1774,22 +1775,15 @@ class TestBetweenTurnsMode(DailyUpgradeCase):
         self.assertIn("unknown", self.last_stderr())
         self.assertFalse((self.output / "apply.json").exists())
 
-    def test_drain_matches_the_inline_hook_command_token(self):
-        # The original inline shell/PowerShell Hook command references the
-        # cached launcher only through PLUGIN_ROOT; the drain matches the
-        # product's entry script and launcher names as well as the exact
-        # slot path, and records pid/ppid only.
-        def fake_ps_probe(argv, env, timeout=30.0):
-            ps_lines = ("  1  1 sh -c 'python3 -B "
-                        '"$PLUGIN_ROOT/scripts/context_guard.py" hook\'\n'
-                        "  2  1 /usr/libexec/unrelated\n")
-            return completed(argv, ps_lines.encode("utf-8"))
-
-        self.patch(U, "_probe_run", fake_ps_probe)
-        activity = self._real_runtime_activity(self.daily, OLD,
-                                               {"ps": {"path": "/bin/ps"}})
-        self.assertEqual(activity["status"], "active")
-        self.assertEqual(activity["candidates"], [{"pid": 1, "ppid": 1}])
+    def test_drain_uses_bound_old_artifact_definitions_and_slot(self):
+        self.seed_old_slot()
+        compatibility = U._verify_between_turns_compatibility(U._load_plan(self.plan_path), OLD)
+        with mock.patch.object(U.activity_observer, "observe", return_value={"status": "clear"}) as query:
+            result = self._real_runtime_activity(self.daily, OLD, {}, compatibility=compatibility)
+        self.assertEqual(result["status"], "clear")
+        self.assertEqual(query.call_args.kwargs["slots"], [self.daily / "plugins/cache" / U.MARKET / U.PLUGIN_NAME / OLD])
+        self.assertEqual(query.call_args.kwargs["hooks"], json.loads((self.old_artifact / "hooks/hooks.json").read_text()))
+        self.assertFalse(query.call_args.kwargs["allow_absent"])
 
     def regenerate_manifest(self, root):
         from scripts.artifact_identity import distribution_files
@@ -1961,6 +1955,146 @@ class TestBetweenTurnsMode(DailyUpgradeCase):
         first = json.loads((self.output / U.JOURNAL_NAME)
                            .read_text(encoding="utf-8").splitlines()[0])
         self.assertEqual(first["mode"], "between-turns")
+
+    def test_hot_reports_and_journal_have_distinct_v2_schemas(self):
+        self.seed_old_slot()
+        self.assertEqual(self.main("--resume"), 0)
+        for filename in ("prepare.json", "apply.json", "verify.json"):
+            self.assertEqual(self.read(filename)["schema"], U.REPORT_V2)
+        first = json.loads((self.output / U.JOURNAL_NAME).read_text().splitlines()[0])
+        self.assertEqual(first["schema"], U.JOURNAL_SCHEMA_V2)
+
+    def test_v1_report_cannot_claim_the_hot_mode(self):
+        self.seed_old_slot()
+        self.assertEqual(self.main("--prepare"), 0)
+        prepared = self.read("prepare.json")
+        prepared["schema"] = U.REPORT
+        (self.output / "prepare.json").write_text(json.dumps(prepared))
+        self.assertEqual(self.main("--resume"), 2)
+        self.assertIn("schema does not match", self.last_stderr())
+        self.assertEqual(len(self.plugin_add_calls()), 0)
+
+    def test_old_artifact_bytes_are_bound_after_prepare(self):
+        self.seed_old_slot()
+        self.assertEqual(self.main("--prepare"), 0)
+        relative = Path(".codex-plugin/distribution-manifest.json")
+        original = (self.old_artifact / relative).read_text()
+        changed = json.dumps(json.loads(original), indent=2) + "\n"
+        self.assertNotEqual(changed, original)
+        (self.old_artifact / relative).write_text(changed)
+        (self.cache_root / OLD / relative).write_text(changed)
+        self.assertEqual(self.main("--apply"), 2)
+        self.assertIn("compatibility", self.last_stderr())
+        self.assertEqual(len(self.plugin_add_calls()), 0)
+
+    def test_constant_values_and_duplicate_syntax_are_checked(self):
+        name = "scripts/context_guard.py"
+        old_line = 'PRODUCT_VERSION = "%s"\n' % OLD
+        new_line = 'PRODUCT_VERSION = "%s"\n' % TARGET
+        cases = [
+            ('PRODUCT_VERSION = "wrong"\n', new_line),
+            (old_line + 'PRODUCT_VERSION="%s"\n' % OLD,
+             new_line + 'PRODUCT_VERSION="%s"\n' % OLD),
+            (old_line + 'PRODUCT_VERSION: str = "%s"\n' % OLD,
+             new_line + 'PRODUCT_VERSION: str = "%s"\n' % OLD),
+            (old_line + 'BANNER = "%s"\n' % OLD,
+             new_line + 'BANNER = "%s"\n' % TARGET),
+        ]
+        for before, after in cases:
+            with self.subTest(before=before):
+                self.assertFalse(U._version_literal_swap(name, before, after, OLD, TARGET))
+
+    def test_compatibility_does_not_normalize_line_endings(self):
+        self.seed_old_slot()
+        for directory in (self.old_artifact, self.cache_root / OLD):
+            path = directory / "scripts/context_guard.py"
+            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+            self.regenerate_manifest(directory)
+        self.assertEqual(self.main("--prepare"), 2)
+        self.assertIn("exact single version-literal", self.last_stderr())
+
+    def test_old_slot_permission_error_is_not_absent(self):
+        self.seed_old_slot()
+        compatibility = U._verify_between_turns_compatibility(U._load_plan(self.plan_path), OLD)
+        with mock.patch.object(U, "checked_metadata", side_effect=PermissionError):
+            with self.assertRaises(U.UpgradeError):
+                U._old_slot_outcome({}, compatibility)
+
+    def test_unreadable_tree_is_not_silently_incomplete(self):
+        with mock.patch.object(U, "checked_walk", side_effect=PermissionError):
+            with self.assertRaises(U.UpgradeError):
+                U._walk_regular_files(self.old_artifact)
+
+    def test_second_drain_preserves_unconfirmed_cleanup_reason(self):
+        self.seed_old_slot()
+        with mock.patch.object(U, "_runtime_activity", side_effect=[
+                {"status": "clear", "candidates": []},
+                {"status": "unknown", "candidates": [], "query_cleanup": "unconfirmed"}]) as query:
+            self.assertEqual(self.main("--resume"), 1)
+        self.assertIn("cleanup unconfirmed", self.last_stderr())
+        self.assertEqual(query.call_count, 2)
+        self.assertEqual(self.plugin_add_calls(), [])
+
+    def test_unconfirmed_query_cleanup_stops_without_spawning_another(self):
+        self.seed_old_slot()
+        with mock.patch.object(U, "_runtime_activity", return_value={
+                "status": "unknown", "candidates": [], "query_cleanup": "unconfirmed"}) as query:
+            self.assertEqual(self.main("--resume"), 1)
+        self.assertIn("cleanup unconfirmed", self.last_stderr())
+        self.assertEqual(query.call_count, 1)
+        self.assertEqual(self.plugin_add_calls(), [])
+
+    def test_partial_old_slot_blocks_continuation_without_repeated_add(self):
+        self.seed_old_slot()
+        self.assertEqual(self.main("--resume"), 0)
+        shutil.copytree(self.old_artifact, self.cache_root / OLD)
+        (self.cache_root / OLD / "scripts/context_guard.py").unlink()
+        self.assertEqual(self.main("--resume"), 2)
+        self.assertIn("unsafe partial old cache", self.last_stderr())
+        self.assertEqual(self.fake.plugin_add_executed, 1)
+
+    def test_completed_explicit_apply_does_not_change_its_journal(self):
+        self.seed_old_slot()
+        self.assertEqual(self.main("--resume"), 0)
+        path = self.output / U.JOURNAL_NAME
+        before = path.read_bytes()
+        self.assertEqual(self.main("--apply"), 2)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.main("--verify"), 0)
+        self.assertEqual(self.fake.plugin_add_executed, 1)
+
+    def test_verify_refuses_fact_before_intent(self):
+        self.seed_old_slot()
+        self.assertEqual(self.main("--resume"), 0)
+        path = self.output / U.JOURNAL_NAME
+        events = [json.loads(line) for line in path.read_text().splitlines()]
+        index = next(i for i, event in enumerate(events)
+                     if event.get("event") == "fact" and event.get("stage") == "plugin_add")
+        fact = events.pop(index)
+        events.insert(1, fact)
+        path.write_text("".join(json.dumps(event) + "\n" for event in events))
+        self.assertEqual(self.main("--verify"), 2)
+        self.assertIn("preceding matching intent", self.last_stderr())
+        self.assertEqual(self.fake.plugin_add_executed, 1)
+
+    def test_unreviewed_sibling_cache_is_not_silently_pruned(self):
+        self.seed_old_slot()
+        sibling = self.cache_root / "0.1.0"
+        sibling.mkdir()
+        marker = sibling / "user-note.txt"
+        marker.write_text("retained unrelated cache content")
+        self.assertEqual(self.main("--prepare"), 2)
+        self.assertIn("unreviewed cache slot", self.last_stderr())
+        self.assertTrue(marker.exists())
+        self.assertEqual(len(self.plugin_add_calls()), 0)
+
+    def test_unselected_target_slot_is_not_overwritten(self):
+        self.seed_old_slot()
+        target = self.cache_root / TARGET
+        target.mkdir()
+        self.assertEqual(self.main("--prepare"), 2)
+        self.assertIn("target cache slot already exists", self.last_stderr())
+        self.assertEqual(len(self.plugin_add_calls()), 0)
 
 
 if __name__ == "__main__":
