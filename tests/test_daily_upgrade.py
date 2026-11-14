@@ -57,6 +57,26 @@ def make_artifact(root: Path, version: str = TARGET) -> Path:
     return root
 
 
+def make_versioned_artifact(root: Path, version: str) -> Path:
+    """A reviewed artifact with nested runtime sections and version literals."""
+    make_artifact(root, version)
+    (root / "scripts" / "context_guard.py").write_text(
+        'PRODUCT_VERSION = "%s"\n' % version, encoding="utf-8")
+    (root / "scripts" / "validate_public_repo.py").write_text(
+        'VERSION = "%s"\n' % version, encoding="utf-8")
+    (root / "skills" / "context-guard").mkdir(parents=True, exist_ok=True)
+    (root / "skills" / "context-guard" / "SKILL.md").write_text(
+        "# version-independent skill bytes\n", encoding="utf-8")
+    (root / "assets").mkdir(exist_ok=True)
+    (root / "assets" / "icon.svg").write_text("<svg/>\n", encoding="utf-8")
+    from scripts.artifact_identity import distribution_files
+    files = distribution_files(root)
+    (root / ".codex-plugin" / "distribution-manifest.json").write_text(json.dumps({
+        "schema": "cg-distribution-manifest/v1",
+        "file_count": len(files), "files": files}), encoding="utf-8")
+    return root
+
+
 class FakeHost:
     """In-memory official CLI; the command families mirror the daily flow."""
 
@@ -73,6 +93,9 @@ class FakeHost:
         self.calls: list[list[str]] = []
         self.crash_argv: list[str] | None = None
         self.crash_after_add = False
+        self.plugin_add_rc = 0
+        self.prune_on_add = False
+        self.plugin_add_executed = 0
         self.plugin_add_stdout = json.dumps(
             {"pluginId": ENTRY, "name": "context-guard", "marketplaceName": MARKET,
              "version": TARGET, "installedPath": str(tmp / "cache")}).encode()
@@ -112,8 +135,24 @@ class FakeHost:
                 raise OSError("simulated crash after the add landed")
             return completed(argv)
         if rest == ["plugin", "add", ENTRY, "--json"]:
-            self.installed_version = TARGET
-            return completed(argv, self.plugin_add_stdout)
+            if self.crash_argv is None:
+                self.plugin_add_executed += 1
+            if self.plugin_add_rc == 0:
+                self.installed_version = TARGET
+                # The official install materializes the target slot and, on a
+                # cross-version add, prunes the older version slots.
+                cache_root = (self.tmp / "daily-home" / ".codex" / "plugins"
+                              / "cache" / MARKET / "context-guard")
+                # The official install materializes the target slot from the
+                # registered marketplace source.
+                shutil.copytree(self.tmp / "artifact", cache_root / TARGET,
+                                dirs_exist_ok=True)
+                if self.prune_on_add:
+                    for slot in cache_root.iterdir():
+                        if slot.is_dir() and slot.name != TARGET \
+                                and not slot.is_symlink():
+                            shutil.rmtree(slot, ignore_errors=True)
+            return completed(argv, self.plugin_add_stdout, self.plugin_add_rc)
         if "cleanup" in rest and "--policy" in rest and "show" in rest:
             return completed(argv, json.dumps({
                 "policy": {"enabled": True, "min_age_days": 30},
@@ -1556,6 +1595,372 @@ class TestResumeWait(DailyUpgradeCase):
             self.wait_main("--resume", "--wait-minutes", "721")
         with self.assertRaises(SystemExit):
             self.main("--verify", "--wait-minutes", "30")
+
+
+class TestBetweenTurnsMode(DailyUpgradeCase):
+    """The between-turns route: no plugin remove, host stays running.
+
+    The compatibility gate, the activity drain and the mode binding are
+    exercised through the same in-memory fake host; no real HOME, trust or
+    process is ever touched.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Distinct desktop fixture name (case-insensitive volume aliasing).
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ")
+        self.old_artifact = make_versioned_artifact(self.tmp / "old-artifact", OLD)
+        self.artifact = make_versioned_artifact(self.tmp / "artifact", TARGET)
+        self.fake.remove_retires_plugin = False
+        self.fake.prune_on_add = True
+        self.activity = {"status": "clear", "candidates": [], "slot": "fixture"}
+        self._real_runtime_activity = U._runtime_activity
+        self.patch(U, "_runtime_activity",
+                   lambda daily, version, host_tools=None: dict(self.activity))
+        self.publisher = {"method": "fixture", "verified": True,
+                          "identity": "FIXTURETEAM"}
+        self.patch(U, "_host_publisher",
+                   lambda path, env, host_tools=None, expected_team=None:
+                   dict(self.publisher))
+        self.plan_path = self.write_plan_v2()
+
+    def write_plan_v2(self, **overrides):
+        plan = {"schema": U.PLAN_V2, "entry": ENTRY, "marketplace": MARKET,
+                "transition_strategy": "between-turns",
+                "old_artifact_dir": str(self.old_artifact),
+                "drain_seconds": 2,
+                "target_version": TARGET, "artifact_dir": str(self.artifact),
+                "cwd": str(self.tmp / "cwd"),
+                "desktop_executable": str(self.tmp / "CodexDesktop"),
+                "sandbox_markers": [str(self.tmp / "CodexSandboxService")],
+                "cli": str(self.tmp / "codex")}
+        plan.update(overrides)
+        path = self.tmp / "plan-v2.json"
+        path.write_text(json.dumps(plan), encoding="utf-8")
+        return path
+
+    def seed_old_slot(self):
+        shutil.copytree(self.old_artifact, self.cache_root / OLD, dirs_exist_ok=True)
+
+    def plugin_add_calls(self):
+        return [call for call in self.fake.calls if call[1:3] == ["plugin", "add"]]
+
+    def forbidden_remove_calls(self):
+        return [call for call in self.fake.calls
+                if call[1:3] in (["plugin", "remove"], ["plugin", "uninstall"])]
+
+    def test_prepare_records_compatibility_and_allows_running_host(self):
+        self.seed_old_slot()
+        self.host_status = inventory_result("running", desktop_pids=(4242,))
+        self.assertEqual(self.main("--prepare"), 0)
+        prepared = self.read("prepare.json")
+        self.assertEqual(prepared["mode"], "between-turns")
+        self.assertEqual(prepared["subject"]["mode"], "between-turns")
+        compatibility = prepared["subject"]["compatibility"]
+        self.assertEqual(compatibility["verdict"], "compatible")
+        self.assertEqual(compatibility["runtime_differences"],
+                         ["scripts/context_guard.py: version literal",
+                          "scripts/validate_public_repo.py: version literal"])
+        self.assertFalse(prepared["swap"]["required"])
+
+    def test_hot_apply_keeps_host_running_and_never_removes_the_plugin(self):
+        self.seed_old_slot()
+        self.host_status = inventory_result("running", desktop_pids=(4242,))
+        self.assertEqual(self.main("--resume"), 0)
+        applied = self.read("apply.json")
+        self.assertEqual(applied["mode"], "between-turns")
+        self.assertEqual(applied["installed_after"]["version"], TARGET)
+        self.assertEqual(applied["host_status_at_swap"], "running")
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+        self.assertEqual(len(self.plugin_add_calls()), 1)
+        self.assertEqual(self.forbidden_remove_calls(), [])
+        self.assertEqual(self.fake.calls.count(
+            [str(self.tmp / "codex"), "plugin", "marketplace", "remove", MARKET]), 1)
+
+    def test_registered_at_target_skips_marketplace_repoint(self):
+        self.seed_old_slot()
+        self.fake.market_root = str(self.artifact)
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.fake.calls.count(
+            [str(self.tmp / "codex"), "plugin", "marketplace", "remove", MARKET]), 0)
+        self.assertEqual(len(self.plugin_add_calls()), 1)
+
+    def test_already_current_hot_is_a_strict_read_only_no_op(self):
+        self.fake.installed_version = TARGET
+        self.fake.registered = True
+        self.fake.market_root = str(self.artifact)
+        self.seed_target_cache()
+        self.assertEqual(self.main("--prepare"), 0)
+        self.assertEqual(self.read("prepare.json")["status"], "already_current")
+        self.assertEqual(self.read("prepare.json")["subject"]["compatibility"]["verdict"],
+                         "already-current")
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.plugin_add_calls(), [])
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_activity_drain_pauses_then_continues(self):
+        self.seed_old_slot()
+        polls = {"count": 0}
+
+        def flaky_activity(daily, version, host_tools=None):
+            polls["count"] += 1
+            if polls["count"] == 1:
+                return {"status": "active", "candidates": [{"pid": 901, "ppid": 1}],
+                        "slot": "fixture"}
+            return {"status": "clear", "candidates": [], "slot": "fixture"}
+
+        self.patch(U, "_runtime_activity", flaky_activity)
+        self.patch(U, "_sleep", lambda seconds: None)
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertGreaterEqual(polls["count"], 2)
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_activity_drain_timeout_is_pending(self):
+        self.seed_old_slot()
+        self.patch(U, "_runtime_activity",
+                   lambda daily, version, host_tools=None:
+                   {"status": "active", "candidates": [{"pid": 901, "ppid": 1}],
+                    "slot": "fixture"})
+        self.patch(U, "_sleep", lambda seconds: None)
+        clock = {"now": 0.0}
+
+        def advancing_now():
+            clock["now"] += 10.0
+            return clock["now"]
+
+        self.patch(U, "_now", advancing_now)
+        self.assertEqual(self.main("--resume"), 1)
+        self.assertIn("activity drain timed out", self.last_stderr())
+        self.assertIn("nothing is ever killed", self.last_stderr())
+        self.assertFalse((self.output / "apply.json").exists())
+
+    def test_second_drain_before_add_is_pending_after_repoint(self):
+        self.seed_old_slot()
+        polls = {"count": 0}
+
+        def active_before_add(daily, version, host_tools=None):
+            polls["count"] += 1
+            if polls["count"] >= 2:
+                return {"status": "active", "candidates": [{"pid": 902, "ppid": 1}],
+                        "slot": "fixture"}
+            return {"status": "clear", "candidates": [], "slot": "fixture"}
+
+        self.patch(U, "_runtime_activity", active_before_add)
+        self.assertEqual(self.main("--resume"), 1)
+        self.assertIn("before the official add", self.last_stderr())
+        self.assertTrue(self.fake.registered)
+        self.assertEqual(self.fake.market_root, str(self.artifact))
+        self.assertEqual(self.plugin_add_calls(), [])
+        self.activity = {"status": "clear", "candidates": [], "slot": "fixture"}
+        self._real_runtime_activity = U._runtime_activity
+        self.patch(U, "_runtime_activity",
+                   lambda daily, version, host_tools=None: dict(self.activity))
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(len(self.plugin_add_calls()), 1)
+
+    def test_unknown_activity_is_pending(self):
+        self.seed_old_slot()
+        self.activity = {"status": "unknown", "candidates": [], "slot": "fixture",
+                         "reason": "ps unreadable"}
+        self.patch(U, "_sleep", lambda seconds: None)
+        clock = {"now": 0.0}
+
+        def advancing_now():
+            clock["now"] += 10.0
+            return clock["now"]
+
+        self.patch(U, "_now", advancing_now)
+        self.assertEqual(self.main("--resume"), 1)
+        self.assertIn("unknown", self.last_stderr())
+        self.assertFalse((self.output / "apply.json").exists())
+
+    def test_drain_matches_the_inline_hook_command_token(self):
+        # The original inline shell/PowerShell Hook command references the
+        # cached launcher only through PLUGIN_ROOT; the drain matches the
+        # product's entry script and launcher names as well as the exact
+        # slot path, and records pid/ppid only.
+        def fake_ps_probe(argv, env, timeout=30.0):
+            ps_lines = ("  1  1 sh -c 'python3 -B "
+                        '"$PLUGIN_ROOT/scripts/context_guard.py" hook\'\n'
+                        "  2  1 /usr/libexec/unrelated\n")
+            return completed(argv, ps_lines.encode("utf-8"))
+
+        self.patch(U, "_probe_run", fake_ps_probe)
+        activity = self._real_runtime_activity(self.daily, OLD,
+                                               {"ps": {"path": "/bin/ps"}})
+        self.assertEqual(activity["status"], "active")
+        self.assertEqual(activity["candidates"], [{"pid": 1, "ppid": 1}])
+
+    def regenerate_manifest(self, root):
+        from scripts.artifact_identity import distribution_files
+        files = distribution_files(root)
+        (root / ".codex-plugin" / "distribution-manifest.json").write_text(
+            json.dumps({"schema": "cg-distribution-manifest/v1",
+                        "file_count": len(files), "files": files}), encoding="utf-8")
+
+    def retarget_plugin_manifest(self, mutate):
+        manifest = json.loads((self.artifact / ".codex-plugin" / "plugin.json")
+                              .read_text(encoding="utf-8"))
+        mutate(manifest)
+        (self.artifact / ".codex-plugin" / "plugin.json").write_text(
+            json.dumps(manifest), encoding="utf-8")
+        self.regenerate_manifest(self.artifact)
+
+    def retarget_marketplace_name(self, name):
+        market = json.loads((self.artifact / ".agents" / "plugins" / "marketplace.json")
+                            .read_text(encoding="utf-8"))
+        market["name"] = name
+        (self.artifact / ".agents" / "plugins" / "marketplace.json").write_text(
+            json.dumps(market), encoding="utf-8")
+        self.regenerate_manifest(self.artifact)
+
+    def test_compat_gate_refuses_runtime_drift(self):
+        # Each case gets its own isolated target artifact; `regenerate` marks
+        # whether the mutated target still needs a consistent reviewed
+        # manifest to reach the compatibility gate (link mutations refuse at
+        # packaging first, which is also a correct fail-closed refusal).
+        cases = [
+            ("installed drift",
+             lambda: (self.cache_root / OLD / "hooks" / "hooks.json")
+             .write_text("{}", encoding="utf-8"),
+             "differs from the retained old artifact", False),
+            ("added runtime file",
+             lambda: (self.artifact / "hooks" / "extra.txt")
+             .write_text("extra", encoding="utf-8"),
+             "adds or deletes runtime files", True),
+            ("deleted runtime file",
+             lambda: (self.artifact / "assets" / "icon.svg").unlink(),
+             "adds or deletes runtime files", True),
+            ("symlinked runtime file",
+             lambda: (self.artifact / "hooks" / "link.json")
+             .symlink_to(self.artifact / "hooks" / "hooks.json"),
+             ("contains a link", "artifact links and reparse objects are refused"),
+             False),
+            ("linked runtime section",
+             lambda: (shutil.rmtree(self.artifact / "skills"),
+                      (self.artifact / "skills").symlink_to(self.tmp / "cwd")),
+             ("contains a link", "artifact links and reparse objects are refused"),
+             False),
+            ("hook body mismatch",
+             lambda: ((self.artifact / "hooks" / "hooks.json")
+                      .write_text(json.dumps(
+                          {"hooks": {event: [] for event in U.EVENTS}
+                           | {"Extra": []}}), encoding="utf-8"),
+                      self.regenerate_manifest(self.artifact)),
+             ("differs beyond the version literal allowance",
+              "does not cover the nine Hook events"), True),
+            ("second literal changed",
+             lambda: ((self.artifact / "scripts" / "context_guard.py")
+                      .write_text('PRODUCT_VERSION = "%s"\n# note %s\n' % (TARGET, OLD),
+                                  encoding="utf-8"),
+                      self.regenerate_manifest(self.artifact)),
+             "beyond the exact single version-literal replacement", True),
+            ("missing declaration",
+             lambda: ((self.artifact / "scripts" / "context_guard.py")
+                      .write_text("# no declaration\n", encoding="utf-8"),
+                      self.regenerate_manifest(self.artifact)),
+             "beyond the exact single version-literal replacement", True),
+            ("plugin manifest extra change",
+             lambda: self.retarget_plugin_manifest(
+                 lambda manifest: manifest.update({"future_flag": True})),
+             ("plugin manifest differs beyond its version field",
+              "the plugin manifest name or shape differs"), True),
+            ("marketplace name change",
+             lambda: self.retarget_marketplace_name("other-market"),
+             ("marketplace manifest differs",
+              "artifact marketplace manifest name differs from the stable "
+              "marketplace"), True),
+        ]
+        for name, mutate, fragment, regenerate in cases:
+            with self.subTest(case=name):
+                self.seed_old_slot()
+                self.artifact = make_versioned_artifact(
+                    self.tmp / ("artifact-" + name.replace(" ", "-")), TARGET)
+                self.plan_path = self.write_plan_v2()
+                mutate()
+                if regenerate:
+                    self.regenerate_manifest(self.artifact)
+                self.output = self.tmp / ("compat-" + name.replace(" ", "-"))
+                self.assertEqual(self.main("--prepare"), 2)
+                self.assertTrue(any(candidate in self.last_stderr()
+                                    for candidate in (fragment if isinstance(fragment, tuple)
+                                                      else (fragment,))),
+                                self.last_stderr())
+
+    def test_full_installed_distribution_is_compared(self):
+        # An extra private file inside the installed slot is not silently
+        # deleted by the official prune without refusing the route.
+        self.seed_old_slot()
+        (self.cache_root / OLD / "private-extra.txt").write_text("private",
+                                                                 encoding="utf-8")
+        self.assertEqual(self.main("--prepare"), 2)
+        self.assertIn("differs from the retained old artifact", self.last_stderr())
+
+    def test_mode_separation_refuses_cross_mode_receipts(self):
+        self.seed_old_slot()
+        self.main("--prepare")  # v2 batch receipt
+        self.plan_path = self.write_plan()  # v1 plan
+        self.assertEqual(self.main("--apply"), 2)
+        self.assertIn("different transition mode", self.last_stderr())
+
+    def test_v1_plan_refuses_a_between_turns_receipt(self):
+        self.seed_old_slot()
+        self.assertEqual(self.main("--prepare"), 0)
+        # The receipt carries the hot mode; a v1 plan must refuse it instead
+        # of reinterpreting it as a stopped-host preparation.
+        self.plan_path = self.write_plan()
+        self.assertEqual(self.main("--apply"), 2)
+        self.assertIn("different transition mode", self.last_stderr())
+
+    def test_wait_misuse_is_refused_for_between_turns(self):
+        self.seed_old_slot()
+        self.assertEqual(self.main("--resume", "--wait"), 2)
+        self.assertIn("keeps it running", self.last_stderr())
+
+    def test_interrupted_add_reconciles_without_duplicate(self):
+        self.seed_old_slot()
+        self.fake.crash_argv = [str(self.tmp / "codex"), "plugin", "add",
+                                ENTRY, "--json"]
+        self.assertEqual(self.main("--resume"), 2)
+        self.assertEqual(self.fake.plugin_add_executed, 0)
+        self.fake.crash_argv = None
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.fake.plugin_add_executed, 1)
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_trust_pending_resume_never_duplicates_add(self):
+        self.seed_old_slot()
+        self.probe["hooks"] = [{**row, "trustStatus": "untrusted"}
+                               for row in self.probe["hooks"]]
+        self.assertEqual(self.main("--resume"), 1)
+        self.assertEqual(self.read("verify.json")["status"], "hook_trust_pending")
+        self.probe["hooks"] = self.trusted_hooks()
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.fake.plugin_add_executed, 1)
+        self.assertEqual(self.read("verify-2.json")["status"], "passed")
+
+    def test_nonzero_official_add_refuses_and_recovers(self):
+        self.seed_old_slot()
+        self.fake.plugin_add_rc = 1
+        self.assertEqual(self.main("--resume"), 2)
+        self.assertIn("official plugin add failed", self.last_stderr())
+        journal = (self.output / U.JOURNAL_NAME).read_text(encoding="utf-8")
+        self.assertIn('"plugin_add"', journal)
+        self.fake.plugin_add_rc = 0
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_rebind_refuses_between_turns_plan(self):
+        self.seed_old_slot()
+        self.assertEqual(self.main("--rebind"), 2)
+        self.assertIn("stopped-host rebind", self.last_stderr())
+
+    def test_hot_journal_begin_carries_the_mode(self):
+        self.seed_old_slot()
+        self.assertEqual(self.main("--resume"), 0)
+        first = json.loads((self.output / U.JOURNAL_NAME)
+                           .read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(first["mode"], "between-turns")
 
 
 if __name__ == "__main__":

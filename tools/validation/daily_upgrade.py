@@ -93,7 +93,12 @@ from tools.validation import native_upgrade_acceptance as base  # noqa: E402
 from tools.validation import stop_host_acceptance as host  # noqa: E402
 
 PLAN = "cg-daily-upgrade-plan/v1"
+PLAN_V2 = "cg-daily-upgrade-plan/v2"
 REPORT = "cg-daily-upgrade-result/v1"
+COLD_MODE = "stopped-host"
+HOT_MODE = "between-turns"
+DRAIN_SECONDS_DEFAULT = 120
+DRAIN_SECONDS_MAX = 900
 JOURNAL_SCHEMA = "cg-daily-upgrade-journal/v1"
 PROBE_SCHEMA = "cg-daily-loaded-probe/v1"
 ENTRY = "context-guard@codex-context-guard"
@@ -388,7 +393,8 @@ def _host_publisher(path: Path, env: dict[str, str], host_tools: dict[str, Any],
 
 def _load_plan(plan_path: Path) -> dict[str, Any]:
     raw = base._read_json(plan_path)
-    require(raw.get("schema") == PLAN, "wrong plan schema")
+    schema = raw.get("schema")
+    require(schema in (PLAN, PLAN_V2), "wrong plan schema")
     require(raw.get("entry") == ENTRY, "plan entry must be the stable identity")
     require(raw.get("marketplace") == MARKET, "plan marketplace must be the stable marketplace")
     target = raw.get("target_version")
@@ -398,6 +404,23 @@ def _load_plan(plan_path: Path) -> dict[str, Any]:
             "expected_cli_version must be a string")
     markers = raw.get("sandbox_markers", [])
     require(isinstance(markers, list) and len(markers) <= 64, "sandbox_markers invalid")
+    if schema == PLAN_V2:
+        strategy = raw.get("transition_strategy")
+        require(strategy == HOT_MODE,
+                'plan v2 transition_strategy must be "between-turns"')
+        old_dir = str(base._absolute_real(raw.get("old_artifact_dir"), "old_artifact_dir"))
+        drain = raw.get("drain_seconds", DRAIN_SECONDS_DEFAULT)
+        require(isinstance(drain, int) and not isinstance(drain, bool)
+                and 1 <= drain <= DRAIN_SECONDS_MAX,
+                "drain_seconds must be bounded seconds between 1 and %d" % DRAIN_SECONDS_MAX)
+        mode = HOT_MODE
+    else:
+        require(raw.get("transition_strategy") is None,
+                "v1 plans are the stopped-host route and must not declare "
+                "transition_strategy")
+        require(raw.get("old_artifact_dir") is None,
+                "old_artifact_dir belongs to the between-turns plan")
+        strategy, old_dir, drain, mode = COLD_MODE, None, None, COLD_MODE
     cli_value = raw.get("cli")
     if cli_value is None:
         resolved = shutil.which("codex")
@@ -413,7 +436,9 @@ def _load_plan(plan_path: Path) -> dict[str, Any]:
                 "data_dir must be an absolute path when given")
         base._reject_credential_path(Path(data_dir))
         data_dir = str(Path(data_dir))
-    return {"schema": PLAN, "entry": ENTRY, "marketplace": MARKET,
+    return {"schema": schema, "entry": ENTRY, "marketplace": MARKET,
+            "mode": mode, "transition_strategy": strategy,
+            "old_artifact_dir": old_dir, "drain_seconds": drain,
             "target_version": target,
             "artifact_dir": str(base._absolute_real(raw.get("artifact_dir"), "artifact_dir")),
             "cwd": str(base._absolute_real(raw.get("cwd"), "cwd")),
@@ -426,10 +451,11 @@ def _load_plan(plan_path: Path) -> dict[str, Any]:
             "data_dir": None if data_dir is None else str(data_dir)}
 
 
-def _verify_artifact(plan: dict[str, Any]) -> dict[str, Any]:
-    """Exact reviewed-manifest verification plus identity checks on the target."""
-    artifact = Path(plan["artifact_dir"])
-    target = plan["target_version"]
+def _verify_artifact(plan: dict[str, Any], artifact_dir: str | None = None,
+                     expected_version: str | None = None) -> dict[str, Any]:
+    """Exact reviewed-manifest verification plus identity checks on one artifact."""
+    artifact = Path(artifact_dir or plan["artifact_dir"])
+    target = expected_version or plan["target_version"]
     files = distribution_manifest(artifact)
     manifest_file = artifact / ".codex-plugin" / "distribution-manifest.json"
     plugin = adoption.strict_json((artifact / ".codex-plugin" / "plugin.json").read_text("utf-8"))
@@ -575,6 +601,200 @@ def _data_policy(plan: dict[str, Any], env: dict[str, str],
             "automatic_maintenance": policy.get("automatic_maintenance") if isinstance(policy, dict) else None}
 
 
+# ------------------------------------------------- between-turns route ----
+
+COMPAT_ROOTS = ("hooks", "assets", "skills", "scripts")
+VERSION_LITERAL_FILES = {
+    "scripts/context_guard.py": "PRODUCT_VERSION",
+    "scripts/validate_public_repo.py": "VERSION",
+}
+
+
+def _walk_regular_files(root: Path) -> dict[str, str]:
+    """Digests of every regular file under ``root``, nested dirs traversed.
+
+    Links (any depth, including a linked root section), non-regular objects
+    and unreadable bytes refuse the tree instead of being skipped or
+    silently dropped.
+    """
+    tree: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        require(not path.is_symlink(), "distribution tree contains a link: " + rel)
+        if path.is_dir():
+            continue
+        require(path.is_file(),
+                "distribution tree contains a non-regular object: " + rel)
+        try:
+            tree[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            raise UpgradeError("distribution tree object unreadable: " + rel) from None
+    return tree
+
+
+def _version_literal_swap(name: str, old_text: str, new_text: str,
+                          old_version: str, new_version: str) -> bool:
+    """True when two files differ by exactly one version-literal replacement.
+
+    Exactly one declaration line may exist on each side (duplicates refuse
+    regardless of their value or spacing), and only that declaration span is
+    exchanged; any other string that also changed between the versions
+    refuses.
+    """
+    declaration = VERSION_LITERAL_FILES[name]
+    any_declaration = re.compile(r'^%s = "[^"]*"$' % declaration, re.M)
+    if len(any_declaration.findall(old_text)) != 1:
+        return False
+    if len(any_declaration.findall(new_text)) != 1:
+        return False
+    match = any_declaration.search(old_text)
+    expected_line = '%s = "%s"' % (declaration, new_version)
+    replaced = old_text[:match.start()] + expected_line + old_text[match.end():]
+    return old_text != new_text and replaced == new_text
+
+
+def _verify_between_turns_compatibility(plan: dict[str, Any],
+                                        installed_version: str) -> dict[str, Any]:
+    """The strict gate for the between-turns route; any doubt refuses it.
+
+    The installed old tree must match the verified retained old artifact in
+    both directions, and the old artifact may differ from the reviewed
+    target only by the exact single ``PRODUCT_VERSION`` / ``VERSION``
+    literal replacement plus the ``version`` field of the plugin manifest.
+    Generated distribution manifests and packaged reader docs are excluded;
+    Hook bodies, runtime files, stable identity and safety fields are not.
+    Unknown or unproved compatibility refuses the route rather than
+    downgrading it to the stopped-host requirement.
+    """
+    old_version = installed_version
+    old_dir = Path(plan["old_artifact_dir"])
+    old_artifact = _verify_artifact(plan, artifact_dir=plan["old_artifact_dir"],
+                                    expected_version=old_version)
+    daily = _daily_home()
+    candidates = _cache_candidates(daily, old_version)
+    require(len(candidates) == 1,
+            "the installed old version cache slot is missing or ambiguous")
+    slot = candidates[0]
+    # The whole installed old distribution must match the retained old
+    # artifact; unknown extra files or missing files would be silently
+    # deleted or lost by the official prune.
+    installed_tree = _walk_regular_files(slot)
+    old_tree = _walk_regular_files(old_dir)
+    require(installed_tree == old_tree,
+            "the installed old distribution differs from the retained old "
+            "artifact; the between-turns route refuses migrated or repaired "
+            "installs")
+    # Compatibility between the two verified trees is a separate, scoped
+    # comparison: the runtime compatibility roots with the exact literal
+    # allowance; distribution manifests and packaged reader docs are outside.
+    target_tree = {name: digest for name, digest in
+                   _walk_regular_files(Path(plan["artifact_dir"])).items()
+                   if name.split("/", 1)[0] in COMPAT_ROOTS}
+    old_runtime = {name: digest for name, digest in old_tree.items()
+                   if name.split("/", 1)[0] in COMPAT_ROOTS}
+    added = sorted(set(target_tree) - set(old_runtime))
+    deleted = sorted(set(old_runtime) - set(target_tree))
+    require(not added and not deleted,
+            "the target artifact adds or deletes runtime files: "
+            + ", ".join(added[:4] + deleted[:4]))
+    differences = []
+    for name in sorted(set(old_runtime) & set(target_tree)):
+        if old_runtime[name] == target_tree[name]:
+            continue
+        require(name in VERSION_LITERAL_FILES,
+                "runtime file " + name + " differs beyond the version literal "
+                "allowance")
+        old_text = (old_dir / name).read_text(encoding="utf-8")
+        new_text = (Path(plan["artifact_dir"]) / name).read_text(encoding="utf-8")
+        require(_version_literal_swap(name, old_text, new_text,
+                                      old_version, plan["target_version"]),
+                "runtime file " + name + " differs beyond the exact single "
+                "version-literal replacement")
+        differences.append(name + ": version literal")
+    old_plugin = adoption.strict_json(
+        (old_dir / ".codex-plugin" / "plugin.json").read_text("utf-8"))
+    new_plugin = adoption.strict_json(
+        (Path(plan["artifact_dir"]) / ".codex-plugin" / "plugin.json").read_text("utf-8"))
+    require(isinstance(old_plugin, dict) and isinstance(new_plugin, dict)
+            and set(old_plugin) == set(new_plugin)
+            and old_plugin.get("name") == new_plugin.get("name") == PLUGIN_NAME,
+            "the plugin manifest name or shape differs")
+    manifest_changes = {key for key in old_plugin
+                        if old_plugin[key] != new_plugin.get(key)}
+    require(manifest_changes <= {"version"},
+            "the plugin manifest differs beyond its version field: "
+            + ", ".join(sorted(manifest_changes)))
+    old_market = adoption.strict_json(
+        (old_dir / ".agents" / "plugins" / "marketplace.json").read_text("utf-8"))
+    new_market = adoption.strict_json(
+        (Path(plan["artifact_dir"]) / ".agents" / "plugins" / "marketplace.json").read_text("utf-8"))
+    require(old_market.get("name") == new_market.get("name") == MARKET
+            and old_market.get("plugins") == new_market.get("plugins"),
+            "the marketplace manifest differs beyond the allowed packaging")
+    return {"verdict": "compatible", "old_version": old_version,
+            "old_artifact": old_artifact, "installed_slot": str(slot),
+            "runtime_differences": differences, "compared_roots": list(COMPAT_ROOTS)}
+
+
+def _runtime_activity(daily_home: Path, version: str,
+                      host_tools: dict[str, Any]) -> dict[str, Any]:
+    """Read-only inventory of processes using the selected old cached runtime.
+
+    Matches real process command lines that reference the old cache slot —
+    Hook invocations, maintenance children, any consumer of the pinned path.
+    Nothing is ever signalled or killed; unreadable or ambiguous inventory is
+    reported as ``unknown`` and stays pending. Tests replace this seam.
+    """
+    slot = daily_home / "plugins" / "cache" / MARKET / PLUGIN_NAME / version
+    marker = str(slot)
+    candidates: list[dict[str, Any]] = []
+    # The original inline shell/PowerShell Hook command references the cached
+    # launcher only through the PLUGIN_ROOT environment value, so the drain
+    # also matches the product's entry script and launcher names; matched
+    # processes are recorded as pid/ppid only, never with their command lines.
+    tokens = (marker, "context_guard.py", "run_context_guard", "run-context-guard")
+    try:
+        if os.name == "nt":
+            shell = (host_tools.get("powershell") or {}).get("path")
+            require(shell is not None,
+                    "activity inventory requires the pinned PowerShell")
+            pattern = "'*" + "*' -or $_.CommandLine -like '*".join(
+                token.replace("'", "''") for token in tokens) + "*'"
+            script = ("$rows = @(Get-CimInstance Win32_Process | "
+                      "Where-Object { $_.CommandLine -ne $null -and "
+                      "($_.CommandLine -like '" + pattern + "') } | "
+                      "ForEach-Object { @{ pid = $_.ProcessId; "
+                      "ppid = $_.ParentProcessId } }); "
+                      "ConvertTo-Json -InputObject $rows -Compress")
+            result = _probe_run([shell, "-NoProfile", "-NonInteractive",
+                                 "-Command", script], {})
+            require(result.returncode == 0, "process activity inventory failed")
+            payload = adoption.strict_json(result.stdout.decode("utf-8-sig"))
+            rows = payload if isinstance(payload, list) else [payload]
+            for row in rows:
+                require(isinstance(row, dict)
+                        and isinstance(row.get("pid"), int)
+                        and isinstance(row.get("ppid"), int),
+                        "activity inventory row is ambiguous")
+                candidates.append({"pid": row["pid"], "ppid": row["ppid"]})
+        else:
+            ps = (host_tools.get("ps") or {}).get("path")
+            require(ps is not None, "activity inventory requires the pinned ps")
+            result = _probe_run([ps, "-axo", "pid=,ppid=,command="], {})
+            require(result.returncode == 0, "process activity inventory failed")
+            for line in result.stdout.decode("utf-8", "replace").splitlines():
+                parts = line.strip().split(None, 2)
+                if len(parts) == 3 and any(token in parts[2] for token in tokens):
+                    require(parts[0].isdigit() and parts[1].isdigit(),
+                            "activity inventory row is ambiguous")
+                    candidates.append({"pid": int(parts[0]), "ppid": int(parts[1])})
+    except (UpgradeError, CapabilityPending, OSError, ValueError) as exc:
+        return {"status": "unknown", "candidates": [], "slot": marker,
+                "reason": type(exc).__name__ + ": " + str(exc)[:160]}
+    return {"status": "active" if candidates else "clear",
+            "candidates": candidates[:32], "slot": marker}
+
+
 def _preflight_checks(plan: dict[str, Any]) -> dict[str, Any]:
     """Read-only subject construction; identical inputs for every phase."""
     daily = _daily_home()
@@ -594,8 +814,16 @@ def _preflight_checks(plan: dict[str, Any]) -> dict[str, Any]:
         require(state["cli_version"] == plan["expected_cli_version"],
                 "CLI version differs from the plan pin")
     data_policy = _data_policy(plan, env, state["commands"], state["version"])
+    compatibility = None
+    if plan["mode"] == HOT_MODE:
+        if state["version"] == plan["target_version"]:
+            compatibility = {"verdict": "already-current",
+                             "old_version": plan["target_version"]}
+        else:
+            compatibility = _verify_between_turns_compatibility(plan, state["version"])
     subject: dict[str, Any] = {
         "schema": REPORT,
+        "mode": plan["mode"],
         "tool_sha256": base.sha(Path(__file__)),
         "tool_root": str(ROOT),
         "invocation_cwd": str(Path.cwd().resolve()),
@@ -615,6 +843,7 @@ def _preflight_checks(plan: dict[str, Any]) -> dict[str, Any]:
                              ("registered", "market_root", "installed", "version", "enabled")},
         "host": host_state,
         "data_policy": data_policy,
+        "compatibility": compatibility,
     }
     subject["commands"] = state["commands"]
     return subject
@@ -623,12 +852,14 @@ def _preflight_checks(plan: dict[str, Any]) -> dict[str, Any]:
 def _binding_view(subject: dict[str, Any]) -> dict[str, Any]:
     """The identity fields whose change is a refused preflight/execution drift.
 
-    ``installed_before``, ``host`` and ``data_policy`` are live observations
-    that legitimately change between prepare and apply (the operator quits the
-    host, maintenance runs); each is judged by its own explicit gate instead.
+    ``installed_before``, ``host``, ``data_policy`` and ``compatibility`` are
+    live observations that legitimately change between prepare, apply and
+    verify (the operator quits the host, maintenance runs, the official add
+    prunes the old cache); each is judged by its own explicit gate instead.
     """
     return {key: value for key, value in subject.items()
-            if key not in ("installed_before", "host", "data_policy", "commands")}
+            if key not in ("installed_before", "host", "data_policy",
+                           "compatibility", "commands")}
 
 
 def _claim_output(subject: dict[str, Any], output: Path) -> None:
@@ -636,10 +867,17 @@ def _claim_output(subject: dict[str, Any], output: Path) -> None:
     base._new_outside(output, protected)
 
 
-def _read_bound_result(path: Path, *, stage: str) -> tuple[dict[str, Any], str]:
+def _read_bound_result(path: Path, *, stage: str,
+                       mode: str | None = None) -> tuple[dict[str, Any], str]:
     value, file_sha = base._read_json_with_sha(path)
     require(value.get("schema") == REPORT and value.get("stage") == stage,
             "bound result has the wrong schema or stage")
+    if mode is not None:
+        # Receipts carry their transition mode; a v1 stopped-host receipt can
+        # never be reinterpreted by a between-turns plan and vice versa.
+        require(value.get("mode") == mode,
+                "bound result belongs to a different transition mode: "
+                + str(value.get("mode")))
     return value, file_sha
 
 
@@ -843,9 +1081,17 @@ def _prepare_result(plan: dict[str, Any], subject: dict[str, Any]) -> dict[str, 
         swap = {"required": False,
                 "reason": "installed version already equals the target version"}
     elif not installed["installed"]:
+        if plan["mode"] == HOT_MODE:
+            raise UpgradeError("between-turns mode upgrades an existing stable-identity "
+                               "installation; none observed; use the stopped-host route")
         status = "prepared"
         swap = {"required": False,
                 "reason": "no existing stable-identity installation; nothing consumes the old cache"}
+    elif plan["mode"] == HOT_MODE:
+        status = "prepared"
+        swap = {"required": False,
+                "reason": "between-turns route keeps the Desktop host running; the old "
+                          "runtime's activity is drained around the official add"}
     elif host_status == "absent":
         status = "prepared"
         swap = {"required": False,
@@ -858,7 +1104,8 @@ def _prepare_result(plan: dict[str, Any], subject: dict[str, Any]) -> dict[str, 
                   "host state is unknown (" + str(subject["host"]["reason"]) + "); a swap must "
                   "not start while a Desktop host may be running")
         swap = {"required": True, "reason": reason, "observed_host_status": host_status}
-    return {"schema": REPORT, "stage": "prepare", "status": status, "subject": subject,
+    return {"schema": REPORT, "stage": "prepare", "mode": plan["mode"],
+            "status": status, "subject": subject,
             "subject_sha256": base.digest(subject), "swap": swap,
             "commands": subject["commands"],
             "pending": ["apply", "verify"]}
@@ -1058,6 +1305,9 @@ def rebind(plan: dict[str, Any], output: Path,
            prepared_path: Path | None) -> dict[str, Any]:
     """Controlled host re-identification for an unstarted batch.
 
+    The rebind belongs to the stopped-host route only; a between-turns batch
+    with a changed host or plan starts a new batch instead.
+
     After a preparation, only one input may legitimately change by itself:
     the Desktop host auto-updates in place, so the pinned desktop executable
     keeps its path but its bytes move. A rebind re-derives the full preflight
@@ -1068,6 +1318,9 @@ def rebind(plan: dict[str, Any], output: Path,
     and a batch whose apply already began is never rebound — it recovers by
     its original journal instead.
     """
+    require(plan["mode"] == COLD_MODE,
+            "between-turns batches do not use the stopped-host rebind; start a "
+            "new batch for a changed host or a changed plan")
     require(output.is_absolute(), "output must be an absolute path")
     require(output.is_dir() and not output.is_symlink(),
             "rebind requires the existing batch output directory")
@@ -1148,7 +1401,7 @@ def rebind(plan: dict[str, Any], output: Path,
                               "prepared_sha256": prepared_sha,
                               "drift": drift}
     base._write_new(new_prepare, result)
-    audit = {"schema": REPORT, "stage": "rebind", "status": "rebound",
+    audit = {"schema": REPORT, "stage": "rebind", "mode": COLD_MODE, "status": "rebound",
              "previous": {"receipt": prepared_path.name,
                           "subject_sha256": prepared["subject_sha256"]},
              "rebound_to": {"receipt": new_prepare.name,
@@ -1202,7 +1455,8 @@ def resume(plan: dict[str, Any], output: Path, wait_minutes: int | None = None) 
         prepare(plan, output)
     prepared_path = _resolve_prepare_receipt(output, strict=True)
     require(prepared_path is not None, "batch has no prepare receipt")
-    prepared, _sha = _read_bound_result(prepared_path, stage="prepare")
+    prepared, _sha = _read_bound_result(prepared_path, stage="prepare",
+                                        mode=plan["mode"])
     if prepared.get("status") == "prepared" and not (output / APPLY_NAME).is_file():
         deadline = None if wait_minutes is None else _now() + wait_minutes * 60
         while True:
@@ -1251,8 +1505,171 @@ def _reconcile_prestate(prepared: dict[str, Any], current: dict[str, Any],
                     "target installation appeared without a recorded add from this batch")
 
 
+def _reconcile_between_turns_prestate(prepared: dict[str, Any], current: dict[str, Any],
+                                      journal: _Journal, plan: dict[str, Any]) -> None:
+    """Refuse daily-state changes this batch did not record, before mutating.
+
+    The between-turns route moves the marketplace registration only through
+    its own recorded intents and expects the official cross-version add to
+    prune the old cache; anything else refuses.
+    """
+    pre = prepared["subject"]["installed_before"]
+    target = plan["target_version"]
+    if current["installed"]:
+        require(current["version"] in (pre["version"], target),
+                "installed version changed outside this batch; re-prepare")
+        if current["version"] == target and pre["version"] != target:
+            require(journal.has_intent("plugin_add"),
+                    "target installation appeared without a recorded add from this batch")
+    else:
+        require(pre["installed"],
+                "the existing installation disappeared without a recorded removal "
+                "from this batch; the between-turns route never removes the plugin")
+    if current["registered"]:
+        root = current["market_root"]
+        pre_root = pre["market_root"]
+        if not _same_path(root, pre_root) and not _same_path(root, plan["artifact_dir"]):
+            require(journal.has_intent("marketplace_add"),
+                    "marketplace registration changed outside this batch; re-prepare")
+    else:
+        require(journal.has_intent("marketplace_remove") or not pre["registered"],
+                "marketplace registration disappeared without a recorded removal "
+                "from this batch")
+
+
+def _apply_between_turns(plan: dict[str, Any], output: Path, prepared: dict[str, Any],
+                         prepared_sha: str, subject: dict[str, Any]) -> dict[str, Any]:
+    """The official between-turns swap; the Desktop host stays running.
+
+    Sequence: fresh activity drain of the old cached runtime, official
+    marketplace repoint only if the registration still names another source,
+    a second fresh drain, then exactly one official ``plugin add`` — never a
+    plugin remove. The official cross-version install prunes the old cache;
+    that is the disclosed proved-compatible runtime migration, not old-byte
+    preservation. An interrupted run reconciles official readbacks instead of
+    repeating the add, and a trust-pending resume never duplicates it.
+    """
+    cli = Path(subject["cli"]["path"])
+    env = _scrubbed_env()
+    daily = Path(subject["daily_home"])
+    host_tools = subject["host_tools"]
+    old_version = prepared["subject"]["installed_before"]["version"]
+    drain_deadline = _now() + plan["drain_seconds"]
+    begin = {"event": "begin", "schema": JOURNAL_SCHEMA, "mode": HOT_MODE,
+             "subject_sha256": base.digest(_binding_view(subject)),
+             "prepared_sha256": prepared_sha}
+    journal = _Journal(output / JOURNAL_NAME, begin)
+    try:
+        current = _daily_state(cli, env, "apply_state")
+        for fact in current["commands"]:
+            journal.raw_fact(fact)
+        _reconcile_between_turns_prestate(prepared, current, journal, plan)
+        while True:
+            activity = _runtime_activity(daily, old_version, host_tools)
+            if activity["status"] == "clear":
+                break
+            if _now() >= drain_deadline:
+                raise HostPending(
+                    "between-turns activity drain timed out: the old cached runtime "
+                    "still shows " + activity["status"] + " process candidates. Pause "
+                    "starting new operations, then re-run the same command; nothing "
+                    "is ever killed.")
+            print(json.dumps({"stage": "apply", "status": "draining",
+                              "activity": activity["status"]}))
+            _sleep(min(WAIT_POLL_SECONDS, max(0.0, drain_deadline - _now())))
+        artifact_str = plan["artifact_dir"]
+        # Official marketplace-level repoint; the plugin itself is never removed.
+        if current["registered"] and not _same_path(current["market_root"], artifact_str):
+            argv = [str(cli), "plugin", "marketplace", "remove", MARKET]
+            journal.intent("marketplace_remove", argv)
+            result = _run_command(argv, env)
+            journal.fact("marketplace_remove", argv, result)
+            require(result.returncode == 0, "official marketplace remove failed")
+            current = _daily_state(cli, env, "apply_state")
+            for fact in current["commands"]:
+                journal.raw_fact(fact)
+            require(not current["registered"],
+                    "marketplace registration persisted after the official remove")
+        elif current["registered"]:
+            journal.note("marketplace_remove",
+                         "registration already at the plan artifact; remove not needed")
+        else:
+            journal.note("marketplace_remove", "marketplace not registered; remove not needed")
+        if current["registered"]:
+            require(_same_path(current["market_root"], artifact_str),
+                    "registered marketplace source differs from the plan artifact")
+            journal.note("marketplace_add", "already registered at the plan artifact")
+        else:
+            argv = [str(cli), "plugin", "marketplace", "add", artifact_str]
+            journal.intent("marketplace_add", argv)
+            result = _run_command(argv, env)
+            journal.fact("marketplace_add", argv, result)
+            require(result.returncode == 0, "official marketplace add failed")
+            current = _daily_state(cli, env, "apply_state")
+            for fact in current["commands"]:
+                journal.raw_fact(fact)
+            require(current["registered"]
+                    and _same_path(current["market_root"], artifact_str),
+                    "marketplace registration after add differs from the plan artifact")
+        # Second fresh drain immediately before the official add.
+        activity = _runtime_activity(daily, old_version, host_tools)
+        if activity["status"] != "clear":
+            raise HostPending(
+                "between-turns activity drain observed " + activity["status"]
+                + " before the official add. Pause starting new operations, then "
+                "re-run the same command; nothing is ever killed.")
+        # Exactly one official plugin add; never a plugin remove.
+        if current["installed"] and current["version"] == plan["target_version"]:
+            journal.note("plugin_add", "target installation already present; add not repeated")
+        else:
+            argv = [str(cli), "plugin", "add", ENTRY, "--json"]
+            journal.intent("plugin_add", argv)
+            result = _run_command(argv, env)
+            extra: dict[str, Any] = {}
+            if result.returncode == 0 and base._summary_dict(result) is None:
+                extra = {"summary_parse_failed": True,
+                         "stdout_sha256": hashlib.sha256(result.stdout).hexdigest(),
+                         "stdout_bytes": len(result.stdout)}
+            journal.fact("plugin_add", argv, result, **extra)
+            require(result.returncode == 0, "official plugin add failed")
+            current = _daily_state(cli, env, "apply_state")
+            for fact in current["commands"]:
+                journal.raw_fact(fact)
+            require(current["installed"] and current["version"] == plan["target_version"],
+                    "official readback does not show the target installation")
+        candidates = _cache_candidates(daily, plan["target_version"])
+        require(len(candidates) == 1, "installed cache is missing or ambiguous")
+        cache_root = daily / "plugins" / "cache" / MARKET / PLUGIN_NAME
+        retained = sorted(path.name for path in cache_root.iterdir()
+                          if path.is_dir() and not path.is_symlink())
+        installed_after = {"registered": current["registered"],
+                           "market_root": current["market_root"],
+                           "installed": True, "version": current["version"],
+                           "enabled": current["enabled"],
+                           "cache_path": str(candidates[0]),
+                           "cache_entries": retained}
+        journal.note("apply_complete", "official stages reconciled; apply receipt follows")
+        result = {"schema": REPORT, "stage": "apply", "mode": HOT_MODE,
+                  "transition": HOT_MODE, "status": "applied",
+                  "subject_sha256": base.digest(_binding_view(subject)),
+                  "prepared_sha256": prepared_sha,
+                  "installed_after": installed_after,
+                  "commands": journal.facts(),
+                  "host_status_at_swap": subject["host"]["status"],
+                  "pending": ["hook_trust_review", "verify"]}
+        base._write_new(output / APPLY_NAME, result)
+        print(json.dumps({"status": "applied", "stage": "apply", "mode": HOT_MODE,
+                          "version": installed_after["version"],
+                          "host": subject["host"]["status"],
+                          "hook_trust_pending": installed_after["enabled"] is not True}))
+        return result
+    finally:
+        journal.close()
+
+
 def apply(plan: dict[str, Any], output: Path, prepared_path: Path) -> dict[str, Any]:
-    prepared, prepared_sha = _read_bound_result(prepared_path, stage="prepare")
+    prepared, prepared_sha = _read_bound_result(prepared_path, stage="prepare",
+                                                mode=plan["mode"])
     require(output.is_dir() and not output.is_symlink(),
             "apply requires the existing batch output directory")
     require(prepared_path.parent == output,
@@ -1266,6 +1683,8 @@ def apply(plan: dict[str, Any], output: Path, prepared_path: Path) -> dict[str, 
                    | set(_binding_view(prepared["subject"]))
                    if _binding_view(subject).get(key) != _binding_view(prepared["subject"]).get(key))
     require(not drift, "preparation and execution drifted: " + ", ".join(drift))
+    if plan["mode"] == HOT_MODE:
+        return _apply_between_turns(plan, output, prepared, prepared_sha, subject)
     # Host gate: replacing an existing installation always requires an
     # observed host-absent state, whatever prepare observed — the Desktop
     # host may have started between prepare and apply, and the fresh
@@ -1364,7 +1783,8 @@ def apply(plan: dict[str, Any], output: Path, prepared_path: Path) -> dict[str, 
                            "cache_path": str(candidates[0]),
                            "cache_entries": retained}
         journal.note("apply_complete", "official stages reconciled; apply receipt follows")
-        result = {"schema": REPORT, "stage": "apply", "status": "applied",
+        result = {"schema": REPORT, "stage": "apply", "mode": COLD_MODE,
+                  "status": "applied",
                   "subject_sha256": base.digest(_binding_view(subject)),
                   "prepared_sha256": prepared_sha,
                   "installed_after": installed_after,
@@ -1590,7 +2010,8 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
     destructive apply stages are resume-once work; verification is a
     measurement, and a passed receipt never substitutes for current state.
     """
-    prepared, prepared_sha = _read_bound_result(prepared_path, stage="prepare")
+    prepared, prepared_sha = _read_bound_result(prepared_path, stage="prepare",
+                                                mode=plan["mode"])
     require(output.is_dir() and not output.is_symlink(),
             "verify requires the existing batch output directory")
     require(prepared_path.parent == output, "the prepare receipt must live in this output directory")
@@ -1608,7 +2029,8 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
     else:
         require((output / APPLY_NAME).is_file(),
                 "apply has not completed; no apply receipt exists")
-        apply_result, _apply_sha = _read_bound_result(output / APPLY_NAME, stage="apply")
+        apply_result, _apply_sha = _read_bound_result(output / APPLY_NAME, stage="apply",
+                                                       mode=plan["mode"])
         require(apply_result.get("status") == "applied", "apply has not completed")
         require(apply_result.get("prepared_sha256") == prepared_sha,
                 "apply result was bound to a different prepare receipt")
@@ -1682,7 +2104,8 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
         status = "passed"
         detail = None
     data_policy = _data_policy(plan, env, current["commands"], current["version"])
-    result = {"schema": REPORT, "stage": "verify", "status": status, "detail": detail,
+    result = {"schema": REPORT, "stage": "verify", "mode": plan["mode"],
+              "status": status, "detail": detail,
               "subject_sha256": base.digest(_binding_view(subject)),
               "prepared_sha256": prepared_sha,
               "installed_after": {"registered": current["registered"],
@@ -1775,6 +2198,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.rebind:
             rebind(plan, args.output, prepared)
         elif args.resume:
+            if args.wait and plan["mode"] == HOT_MODE:
+                raise UpgradeError(
+                    "--wait waits for the Desktop host to exit; the between-turns mode "
+                    "keeps it running across the swap and never asks for a quit. Use a "
+                    "stopped-host (v1) plan for the wait route.")
             return resume(plan, args.output,
                           wait_minutes=args.wait_minutes if args.wait else None)
         else:
