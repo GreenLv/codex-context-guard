@@ -33,7 +33,7 @@ COMMIT = "b" * 40
 def build_release_zip(directory: Path) -> tuple[Path, dict[str, str]]:
     """A real reviewed-manifest-shaped archive, hashed like the producer sees it."""
     files = {".codex-plugin/plugin.json": "e" * 64, "hooks/hooks.json": "f" * 64}
-    archive = directory / "context-guard-0.17.4.zip"
+    archive = directory / "context-guard-0.18.0.zip"
     with zipfile.ZipFile(archive, "w") as zipped:
         for name in files:
             zipped.writestr(name, f"fixture bytes for {name}\n")

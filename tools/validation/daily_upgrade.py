@@ -484,6 +484,8 @@ def _verify_artifact(plan: dict[str, Any], artifact_dir: str | None = None,
     artifact = Path(artifact_dir or plan["artifact_dir"])
     target = expected_version or plan["target_version"]
     files = distribution_manifest(artifact)
+    require(_walk_regular_files(artifact) == files,
+            "expanded artifact contains files outside the reviewed distribution manifest")
     manifest_file = artifact / ".codex-plugin" / "distribution-manifest.json"
     plugin = adoption.strict_json((artifact / ".codex-plugin" / "plugin.json").read_text("utf-8"))
     require(isinstance(plugin, dict) and plugin.get("name") == PLUGIN_NAME
@@ -1759,6 +1761,16 @@ def _apply_between_turns(plan: dict[str, Any], output: Path, prepared: dict[str,
             require(current["registered"]
                     and _same_path(current["market_root"], artifact_str),
                     "marketplace registration after add differs from the plan artifact")
+        # The first drain may wait for minutes. Recheck all prepared inputs
+        # and live official state before the final observation, not only at
+        # the start of apply.
+        fresh = _preflight_checks(plan)
+        require(_binding_view(fresh) == _binding_view(subject),
+                "prepared inputs drifted during the activity drain")
+        current = fresh["installed_before"]
+        for fact in fresh["commands"]:
+            journal.raw_fact(fact)
+        _reconcile_between_turns_prestate(prepared, current, journal, plan)
         # Second fresh drain immediately before the official add.
         activity = _runtime_activity(
             daily, old_version, host_tools, compatibility=subject["compatibility"],
@@ -1771,6 +1783,13 @@ def _apply_between_turns(plan: dict[str, Any], output: Path, prepared: dict[str,
                 "between-turns activity drain observed " + activity["status"]
                 + " before the official add. Pause starting new operations, then "
                 "re-run the same command; nothing is ever killed.")
+        # A snapshot is not a lock. Bind the actual directory handed to the
+        # official add again after the last query, before recording intent.
+        require(_verify_artifact(plan) == subject["artifact"],
+                "target artifact drifted during the final activity observation")
+        require(_helper_identities() == subject["helpers"]
+                and _sha_loose(cli) == subject["cli"]["sha256"],
+                "execution helpers or CLI drifted during the final observation")
         # Exactly one official plugin add; never a plugin remove.
         if current["installed"] and current["version"] == plan["target_version"]:
             journal.note("plugin_add", "target installation already present; add not repeated")

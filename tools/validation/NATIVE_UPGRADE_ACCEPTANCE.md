@@ -1,5 +1,20 @@
 # Native cross-version upgrade acceptance
 
+## 0.18.0 source candidate scope
+
+The optional between-turns route is a separate acceptance subject: it needs an
+actual old task to continue after the switch and a new task to execute real
+Hooks from the verified target bundle, with the old data root and normal trust
+observed. Use the [between-turns native acceptance guide](NATIVE_BETWEEN_TURNS_ACCEPTANCE.md)
+for its plan, launcher and evidence boundaries. Native results for this
+candidate remain pending. A stdio app-server witness and an observation of
+Desktop's graphical interface have different boundaries and are recorded
+separately.
+
+The historical entry described below has its own version constants and
+acceptance scope. Its earlier results do not establish a 0.17.3 to 0.18.0
+between-turns transition.
+
 `native_upgrade_acceptance.py` verifies one real cross-version upgrade of
 Context Guard on one host: preflight inputs, an official marketplace install of
 the old release, a live open task, the transition to the new release, a cold

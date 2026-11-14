@@ -1,5 +1,11 @@
 # Daily upgrade entry
 
+The unreleased 0.18.0 source candidate adds an optional between-turns route for
+a strictly compatible stable-entry upgrade while Codex stays open. The
+operator must wait for the current turn to end and pause new operations until
+the switch finishes. The original stopped-host route remains available. Exact
+candidate package and native-platform acceptance are still pending.
+
 `tools/validation/daily_upgrade.py` is the maintained operator entry for
 routine upgrades of the daily HOME's `context-guard@codex-context-guard`
 installation. It replaces the per-round, hand-assembled upgrade scripts: one
@@ -20,14 +26,48 @@ and Hook trust stays with the normal official review interface.
   `context-guard@codex-context-guard` in the stable marketplace. No
   per-version entries are created.
 - No publication, no release artifact building, no cache repair. The tool
-  consumes a release ZIP you have already verified and extracted, or a
-  product checkout, as the marketplace source.
+  consumes an already verified and extracted release ZIP as the marketplace
+  source. The expanded directory must contain exactly the reviewed release
+  files; extra files, including ignored runtime caches, refuse before install.
+  Keep the operator's source checkout separate from this directory.
 - No model calls, no trust bypass, no `--help` probing of unknown CLIs.
   Command readiness probes use `--version`-style oracles, parse-only
   launcher checks, the launcher's real `print-argv` echo mode and read-only
   process enumeration only.
 
-## Plan file
+## Choose an upgrade route
+
+The existing v1 plan selects the stopped-host route. The v2 plan selects the
+optional between-turns route and requires a complete, retained and verified old
+artifact in `old_artifact_dir`, in addition to the target artifact. It compares
+the installed old files to that artifact and the old and new runtimes under a
+strict compatibility rule. The target must be newer; existing or ambiguous
+cache slots and unreviewed changes are refused. The official plugin add may
+remove the old cache. The tool does not copy files into a consumed cache.
+
+To form a v2 plan, use the fields in the v1 example below, change `schema` to
+`cg-daily-upgrade-plan/v2`, and add `transition_strategy` as `between-turns`
+and `old_artifact_dir` as the absolute path to the retained verified old
+release directory. Optional `drain_seconds` is an integer from 1 to 900;
+the default is 120. This is a separate plan and batch, not a reinterpretation
+of a v1 preparation. Run `--preflight-commands` and `--prepare` before the
+switch. After the current turn ends, pause new operations and use `--apply`
+or the same-batch `--resume`; keep the pause until the switch finishes.
+The tool waits for old runtime activity to clear, performs official market
+registration and plugin-add operations, and rechecks the installed state.
+If activity is uncertain or the wait ends, follow the reported pending state.
+Do not start another turn during the switch.
+
+Normal Hook review may still be needed. A fresh-client Hook inventory does
+not prove old-task continuation, actual new-task Hook execution or Desktop GUI
+loading; these require separate observations. See the
+[candidate upgrade guide](../../docs/UPGRADE_0_18_0.md).
+
+`--resume --wait [--wait-minutes N]` is the v1 stopped-host wait for Desktop to
+exit. It is not accepted with a v2 between-turns plan; v2 uses its own bounded
+activity drain and does not ask the host to exit.
+
+## Stopped-host v1 plan file
 
 Write a JSON plan outside the repository, for example as private local
 state (never commit it):
@@ -37,7 +77,7 @@ state (never commit it):
   "schema": "cg-daily-upgrade-plan/v1",
   "entry": "context-guard@codex-context-guard",
   "marketplace": "codex-context-guard",
-  "target_version": "0.17.4",
+  "target_version": "0.18.0",
   "artifact_dir": "/absolute/path/to/extracted-release",
   "cwd": "/absolute/path/to/an/existing/directory",
   "desktop_executable": "/absolute/path/to/the/Codex/Desktop/binary",
@@ -62,7 +102,7 @@ state (never commit it):
   must equal the exact output of the selected CLI's `--version`; do not copy
   a version from another machine.
 
-## Phases
+## Stopped-host v1 phases
 
 All commands run the launcher (macOS/POSIX sh, Windows PowerShell), which
 selects a Python 3.10+ interpreter and starts exactly one Python process
@@ -160,7 +200,7 @@ nonzero exit does not mean that no stage changed. After completed apply or
 or pending verify can be repeated after its cause is resolved; an explicitly
 selected `--verify-output` needs a new filename on the next attempt.
 
-## Thin continuation and controlled rebinding
+## Stopped-host continuation and controlled rebinding
 
 Two dispatcher actions remove the remaining hand-assembly between stages.
 Neither adds its own identity rule: every stage still re-derives its subject
@@ -262,9 +302,10 @@ fresh-client Hook inventory (`cg-daily-loaded-probe/v1` receipts, private):
   registered local source directory and used no remove command: the old
   107-file cache was intact immediately before `plugin add` and absent
   immediately afterwards, before any following list call. The new slot had
-  110 files. This CLI/local-source route therefore cannot preserve code
-  needed by an active old task. The control used reviewed distribution files,
-  not the final CI ZIP, and is not final-artifact acceptance.
+  110 files. This CLI/local-source route removed the old cached bytes; the
+  fixture did not establish whether a compatible runtime could safely continue
+  an old task. The control used an unpublished candidate's reviewed distribution
+  files, not the final ZIP, and is not final-artifact acceptance.
 - `plugin marketplace remove` retires the registration; the slot directory
   remained on disk in the fixture, and the following re-add created a fresh
   slot — consistent with the resumable apply's readback-driven staging.
@@ -282,9 +323,11 @@ fresh-client Hook inventory (`cg-daily-loaded-probe/v1` receipts, private):
 These observations do not establish running-Desktop loading or old-task
 continuity. The [official local-plugin guide](https://developers.openai.com/plugins/build/plugins)
 also instructs users to restart the desktop app after changing a local plugin.
-The tool therefore keeps its host-absent apply gate and makes no no-restart
-promise. The source-checkout tools and CI changes can be adopted without
-replacing the daily plugin; existing 0.17.3 Hook behavior is unchanged.
+Those observations apply to the tested fixture and do not establish the later
+between-turns route or its old-task continuity. The v1 route retains its
+host-absent apply gate. The unreleased v2 candidate instead requires the
+explicit between-turns pause, strict compatibility and activity drain described
+above; its exact-artifact and native acceptance are separate pending work.
 
 ## Records and limitations
 
@@ -300,9 +343,10 @@ executed helper closure (`scripts/`, `tools/validation/`,
 process-enumeration executables, so any helper drift between phases is
 refused. Results contain host-local paths and process
 facts and are private to the operator; never commit them. The fresh-client
-probe observes only what a new client would load — it cannot prove what the
-already-running Desktop has in memory, which is precisely why the swap
-requires the host stopped. Sandbox services observed at swap time are
+probe observes only what a new client would load; it cannot prove what the
+already-running Desktop has in memory or whether an old task continues. The
+stopped-host route requires the host absent; the between-turns route instead
+uses its explicit pause, compatibility checks and activity drain. Sandbox services observed at swap time are
 recorded in the apply result. Process identification on macOS uses `ps` plus
 libproc executable paths and treats other-user unreadable processes as
 kernel-family; on Windows it walks one complete Toolhelp snapshot (`PROCESSENTRY32W`,

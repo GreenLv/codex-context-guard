@@ -71,13 +71,26 @@ authoritative.
   retain prior evidence, and install changed bytes in a fresh isolated HOME. Keep `pyproject.toml`, `.codex-plugin/plugin.json`, validator constants,
   protocol documentation, and compatibility claims consistent.
 - Installed versioned plugin caches are immutable. Never refresh or repair an
-  already consumed cache from new source bytes. Preserve old caches for open
-  tasks; same-version candidate revisions use separate isolated homes.
+  already consumed cache from new source bytes. Same-version candidate revisions
+  use separate isolated homes. Official cross-version installation may remove an
+  old cache; preserve it while still needed unless the explicitly adopted
+  between-turns route below has established its compatibility prerequisites.
 - For a future single-identity upgrade, follow [the stable marketplace identity
   contract](tools/validation/STABLE_MARKETPLACE_IDENTITY.md) before changing a daily HOME.
-- Use official Codex marketplace operations for installation; the candidate supplies no cache or archive repair. Do not hand-copy into
-  a live cache, delete historical caches automatically, or treat an unindexed or
-  hash-mismatched archive as repair authority.
+- Use official Codex marketplace operations for installation; the candidate
+  supplies no cache or archive repair. Do not hand-copy into a live cache,
+  directly delete historical caches, or treat an unindexed or hash-mismatched
+  archive as repair authority. An official cross-version add may prune an old
+  slot under the reviewed lifecycle contract.
+- The 0.18.0 source candidate adds an opt-in between-turns route at the stable
+  identity. It requires a verified old artifact, exact installed-old parity and
+  a reviewed compatible target runtime, and the user must pause starting new
+  operations after a turn finishes until the switch completes. Observe and drain
+  old runtime activity before official installation; an uncertain observation
+  remains pending. The existing stopped-host route remains available. Normal
+  Hook review may be required. Old-task continuation, new-task Hook execution
+  and Desktop GUI loading require their own native evidence; a fresh-client
+  inventory does not establish those outcomes.
 - Keep public author and committer identities on GitHub-provided noreply
   addresses. Never print rejected identity values or other credentials.
 

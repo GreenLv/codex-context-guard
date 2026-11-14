@@ -4,23 +4,21 @@
 
 版本从新到旧排列。正式发布的版本见 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases)，测试结果和平台范围见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。[原始详细更新日志](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.zh-CN.md)保留了此前逐项记录的实现和验证过程。
 
-## 0.17.4 — 2026-11-15
+## 0.18.0 — 未发布
 
 ### 主要改进
 
-- 已准备的日常升级批次可以用同一条命令接续。从外部终端启动后，工具能在限定时间内等待 Desktop 退出，再继续安装；Hook 仍通过官方界面正常审核。[日常升级工具](https://github.com/GreenLv/codex-context-guard/blob/v0.17.4/tools/validation/DAILY_UPGRADE.md)
-- 批次尚未开始安装、同一路径下的 Desktop 已更新时，只有新宿主的签名来源验证通过且与准备时一致，才允许重新绑定。原记录保持完整；审计写入中断可以恢复，证据被删或被改则阻止继续，须重新准备批次。
-- 候选 CI 可以复用同一精确提交上已通过的完整运行；所需证据缺失或不匹配时，照常执行检查。[CI 策略](https://github.com/GreenLv/codex-context-guard/blob/v0.17.4/docs/CI_POLICY.md)
+- 对于符合兼容条件的稳定入口，可以先准备升级，再在两个回合之间切换，保持 Codex 打开。切换完成前请暂停新操作；如果旧运行时仍在执行或无法确认是否空闲，升级会等待。[升级指南](docs/UPGRADE_0_18_0.zh-CN.md)
 
 ### 变更
 
-- 升级工具来自源码仓库，不在发行 ZIP 或插件缓存内。Hook 行为、任务状态格式和清理设置沿用 0.17.3。现有用户无需紧急更新运行时；切换前请完成或安全交接仍需旧 Hook 的任务。[升级指南](https://github.com/GreenLv/codex-context-guard/blob/v0.17.4/docs/UPGRADE_0_17_4.zh-CN.md)
-- 可移植原生验收结果采用标准结构，标明 ZIP 文件名和源码提交。成功、失败及清理结果都使用清理临时文件前捕获的字节生成；历史报告保留原身份。
-- 版本元数据和包内文档发生变化，因此 0.17.4 使用独立的分发清单、运行树摘要和发行制品；已消费的缓存保持不可变。
+- 工具会将已安装的旧文件与保留的已核验旧版对照，并检查新版运行时。官方安装可能删除旧缓存；插件稳定身份和原有数据目录继续使用。原有的退出后升级方式仍可使用，新 Hook 可能仍需通过官方界面正常审核。
+- 源码仓库中的操作工具可以接续中断的批次，避免重复已完成的安装。退出后升级方式支持限时等待宿主退出，并可核查同一路径下宿主更新的签名来源。该工具不包含在插件 ZIP 中。
+- 候选 CI 只可复用完全相同提交已通过的完整运行；证据不匹配时照常执行所需检查。可移植原生验收结果标明 ZIP 与源码提交，历史报告保留原身份。
 
 ### 验证
 
-- [发行验收报告](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.4/context-guard-0.17.4-acceptance.json)分别标明源码检查、精确 ZIP 和各原生平台结果；日常 Desktop 采用情况另行记录。
+- 源码、精确发行包、macOS 与 Windows 原生行为及实际 Desktop 采用情况分别记录；本候选所需结果仍待验证。
 
 ## 0.17.3 — 2026-11-14
 

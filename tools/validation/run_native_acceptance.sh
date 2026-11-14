@@ -6,8 +6,9 @@
 # Python cores with passthrough arguments, so either shell starts exactly one
 # Python process and stdout/stderr/stdin keep the tool wire contract.
 #
-# Usage: run_native_acceptance.sh {upgrade|acceptance|retention|scheduler} [args...]
+# Usage: run_native_acceptance.sh {upgrade|between-turns|acceptance|retention|scheduler} [args...]
 #   upgrade    tools/validation/native_upgrade_acceptance.py
+#   between-turns tools/validation/native_between_turns_acceptance.py
 #   acceptance tools/validation/native_acceptance.py (host/retention/scheduler batches)
 #   retention  tools/validation/windows_retention_native.py
 #   scheduler  tools/validation/native_scheduler_batch.py
@@ -33,11 +34,12 @@ fi
 
 case "${1:-}" in
     upgrade) target="$script_dir/native_upgrade_acceptance.py" ;;
+    between-turns) target="$script_dir/native_between_turns_acceptance.py" ;;
     acceptance) target="$script_dir/native_acceptance.py" ;;
     retention) target="$script_dir/windows_retention_native.py" ;;
     scheduler) target="$script_dir/native_scheduler_batch.py" ;;
     *)
-        printf '%s\n' "usage: $0 {upgrade|acceptance|retention|scheduler} [args...]" >&2
+        printf '%s\n' "usage: $0 {upgrade|between-turns|acceptance|retention|scheduler} [args...]" >&2
         exit 2
         ;;
 esac

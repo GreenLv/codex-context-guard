@@ -4,26 +4,13 @@ The release entries begin with the newest version. Historical candidate
 sections preserve the status of their specific source revision at the time of
 review; a later release of the same version does not change that evidence.
 
-## 0.17.4 — 2026-11-15
+## 0.18.0 — source candidate (unreleased)
 
-This is a compatible patch to the source-checkout daily-upgrade and CI tools.
-It adds bounded host-exit continuation and same-path host re-identification
-with platform signing-source checks under the existing private daily-upgrade
-plan, result and journal v1 contracts. Every continuation entry validates the
-same retained prepare/audit chain; corrupted or removed evidence fails closed.
-Windows certificate rotation and a changed host path require a new batch.
+The candidate extends the installation lifecycle with an optional between-turns route for a strictly compatible upgrade at the stable marketplace identity. It uses versioned v2 plan, result and journal contracts; the stopped-host v1 route remains available. The operator pauses new turns during the switch, and the tool checks old runtime activity before the official installation. Its observation is not a lock on future work.
 
-Candidate CI consumes a successful full run on the exact commit through
-`cg-ci-reuse-evidence/v1`; unavailable evidence falls back to ordinary coverage.
-Future portable `native-acceptance/v2` results use the standard closed artifact
-identity; historical reports are not rewritten.
+The compatibility gate compares the retained old artifact, installed old files and new runtime. Relative to the reviewed 0.17.3 runtime, the only permitted changes under `hooks/`, `assets/`, `skills/` and `scripts/` are the exact product and validator version literals; the plugin manifest may change its version field. Schema 13, Stop protocol 5.0.0, Hook behavior, retention behavior and the default business-tool path remain unchanged. Exact package, installed and native results must be checked separately.
 
-Schema 13, Stop protocol 5.0.0, all nine Hooks, retention behavior and the
-default business-tool path remain unchanged. Version metadata and packaged
-reader documents change, including the manifest inside the runtime-tree roots,
-so the runtime-tree digest and release artifact identity change. Previous
-installed/native results retain their original subjects; new artifact bytes
-require their applicable acceptance. Consumed caches remain immutable.
+The source-checkout tools also retain bounded stopped-host continuation, same-path host re-identification with signing-source checks, exact-commit CI reuse and portable acceptance identity improvements from the unpublished 0.17.4 candidate. The earlier candidate was not released. The new version and packaged documents require a new distribution manifest, runtime-tree digest and release artifact. Consumed caches remain immutable; an official cross-version add may remove the old slot.
 
 ## 0.17.3 — 2026-11-14
 

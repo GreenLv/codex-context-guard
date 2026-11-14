@@ -20,6 +20,7 @@ PS1 = ROOT / "tools/validation/run_native_acceptance.ps1"
 
 DISPATCH = {
     "upgrade": "native_upgrade_acceptance.py",
+    "between-turns": "native_between_turns_acceptance.py",
     "acceptance": "native_acceptance.py",
     "retention": "windows_retention_native.py",
     "scheduler": "native_scheduler_batch.py",
@@ -62,6 +63,13 @@ class LauncherWire(unittest.TestCase):
                                 capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--plan PLAN", result.stdout)
+
+    def test_between_turns_launcher_reaches_versioned_entry(self):
+        result = subprocess.run(["sh", str(SH), "between-turns", "--help"],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--verify-result", result.stdout)
+        self.assertIn("--preflight", result.stdout)
 
     def test_sh_launcher_starts_python_exactly_once_with_b(self):
         sh_text = SH.read_text(encoding="utf-8")

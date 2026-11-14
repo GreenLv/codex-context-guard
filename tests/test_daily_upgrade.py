@@ -91,6 +91,7 @@ class FakeHost:
         self.cli_version = cli_version
         self.enabled = enabled
         self.remove_retires_plugin = remove_retires_plugin
+        self.registration_hidden_version = None
         self.calls: list[list[str]] = []
         self.crash_argv: list[str] | None = None
         self.crash_after_add = False
@@ -127,11 +128,17 @@ class FakeHost:
         if rest == ["plugin", "marketplace", "remove", MARKET]:
             self.registered = False
             if self.remove_retires_plugin:
+                self.registration_hidden_version = self.installed_version
                 self.installed_version = None
             return completed(argv)
         if rest == ["plugin", "marketplace", "add", str(self.tmp / "artifact")]:
             self.registered = True
             self.market_root = str(self.tmp / "artifact")
+            # Native CLI 0.169 restores the existing install's visibility
+            # when the stable marketplace is registered again.
+            if self.registration_hidden_version is not None:
+                self.installed_version = self.registration_hidden_version
+                self.registration_hidden_version = None
             if self.crash_after_add:
                 raise OSError("simulated crash after the add landed")
             return completed(argv)
@@ -1871,7 +1878,12 @@ class TestBetweenTurnsMode(DailyUpgradeCase):
                 self.artifact = make_versioned_artifact(
                     self.tmp / ("artifact-" + name.replace(" ", "-")), TARGET)
                 self.plan_path = self.write_plan_v2()
-                mutate()
+                try:
+                    mutate()
+                except OSError as exc:
+                    if name in ("symlinked runtime file", "linked runtime section") and getattr(exc, "winerror", None) == 1314:
+                        self.skipTest("native symlink creation requires an unavailable Windows privilege")
+                    raise
                 if regenerate:
                     self.regenerate_manifest(self.artifact)
                 self.output = self.tmp / ("compat-" + name.replace(" ", "-"))
@@ -1921,6 +1933,47 @@ class TestBetweenTurnsMode(DailyUpgradeCase):
         self.assertEqual(self.main("--resume"), 0)
         self.assertEqual(self.fake.plugin_add_executed, 1)
         self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_official_add_landed_before_fact_recovers_without_duplicate(self):
+        self.seed_old_slot()
+        original = U._Journal.fact
+        def interrupted(journal, stage, *args, **kwargs):
+            if stage == "plugin_add":
+                raise OSError("fixture crash after official add before fact")
+            return original(journal, stage, *args, **kwargs)
+        with mock.patch.object(U._Journal, "fact", interrupted):
+            self.assertEqual(self.main("--resume"), 2)
+        self.assertEqual(self.fake.plugin_add_executed, 1)
+        self.assertFalse((self.cache_root / OLD).exists())
+        self.assertFalse((self.output / "apply.json").exists())
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.fake.plugin_add_executed, 1)
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_registration_gap_recovers_with_intact_old_cache(self):
+        self.seed_old_slot()
+        self.fake.remove_retires_plugin = True
+        self.fake.crash_argv = [str(self.tmp / "codex"), "plugin", "marketplace",
+                                "add", str(self.artifact)]
+        self.assertEqual(self.main("--resume"), 2)
+        self.assertFalse(self.fake.registered)
+        self.assertIsNone(self.fake.installed_version)
+        self.assertTrue((self.cache_root / OLD).is_dir())
+        self.fake.crash_argv = None
+        self.assertEqual(self.main("--resume"), 0)
+        self.assertEqual(self.fake.plugin_add_executed, 1)
+        self.assertEqual(self.read("verify.json")["status"], "passed")
+
+    def test_third_marketplace_root_after_interruption_is_refused(self):
+        self.seed_old_slot()
+        self.fake.crash_argv = [str(self.tmp / "codex"), "plugin", "add", ENTRY, "--json"]
+        self.assertEqual(self.main("--resume"), 2)
+        self.fake.crash_argv = None
+        self.fake.market_root = str(self.tmp / "unreviewed-third-source")
+        self.assertEqual(self.main("--resume"), 2)
+        self.assertIn("marketplace changed after", self.last_stderr())
+        self.assertEqual(self.fake.plugin_add_executed, 0)
+        self.assertTrue((self.cache_root / OLD).is_dir())
 
     def test_trust_pending_resume_never_duplicates_add(self):
         self.seed_old_slot()
@@ -2003,6 +2056,40 @@ class TestBetweenTurnsMode(DailyUpgradeCase):
         for before, after in cases:
             with self.subTest(before=before):
                 self.assertFalse(U._version_literal_swap(name, before, after, OLD, TARGET))
+
+    def test_target_drift_during_last_drain_refuses_before_add(self):
+        self.seed_old_slot()
+        polls = {"count": 0}
+        def observed(*args, **kwargs):
+            polls["count"] += 1
+            if polls["count"] == 2:
+                (self.artifact / "README.md").write_bytes(b"changed after last preflight")
+                self.regenerate_manifest(self.artifact)
+            return {"status": "clear", "candidates": []}
+        with mock.patch.object(U, "_runtime_activity", side_effect=observed):
+            self.assertEqual(self.main("--resume"), 2)
+        self.assertIn("target artifact drifted", self.last_stderr())
+        self.assertEqual(self.plugin_add_calls(), [])
+        self.assertTrue((self.cache_root / OLD).is_dir())
+
+    def test_expanded_artifact_extras_are_refused_before_mutation(self):
+        self.seed_old_slot()
+        for relative in ("extra-root.txt", "__pycache__/unreviewed.pyc"):
+            with self.subTest(relative=relative):
+                path = self.artifact / relative
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(b"unreviewed extra bytes")
+                self.assertEqual(self.main("--prepare"), 2)
+                self.assertIn("outside the reviewed distribution manifest", self.last_stderr())
+                self.assertEqual(self.plugin_add_calls(), [])
+                path.unlink()
+                if path.parent != self.artifact:
+                    path.parent.rmdir()
+        path = self.old_artifact / "extra-old.txt"
+        path.write_bytes(b"unreviewed retained source")
+        self.assertEqual(self.main("--prepare"), 2)
+        self.assertIn("outside the reviewed distribution manifest", self.last_stderr())
+        self.assertEqual(self.plugin_add_calls(), [])
 
     def test_compatibility_does_not_normalize_line_endings(self):
         self.seed_old_slot()

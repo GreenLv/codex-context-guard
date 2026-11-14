@@ -4,20 +4,11 @@ The newest section describes the current release. Older version sections retain
 their original compatibility and acceptance boundaries; a pending item in a
 historical section describes that point in time.
 
-## 0.17.4 — 2026-11-15
+## 0.18.0 — source candidate (unreleased)
 
-The compatible operator-tool patch keeps the 0.17.3 task-state, Hook and cleanup
-behavior. The tool runs from the source checkout on Python 3.10+, through
-POSIX sh or PowerShell 5.1/7. Native results are bound in the
-[acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.4/context-guard-0.17.4-acceptance.json).
+The optional between-turns route is intended for a compatible existing stable-entry installation. The tool compares the installed old files with a retained verified old artifact and checks the new runtime. Pause starting new operations after the current turn ends and keep that pause through the switch. The official plugin add may remove the old cache; compatibility, a stable identity and an unchanged data root do not alone prove that an existing task continued.
 
-Replacing an existing installation still requires the actual Desktop host to
-be observed stopped. Bounded waiting can bridge that pause; it does not prove
-old-task continuity or remove normal Hook review. Rebind only covers a same-path,
-verified signing-source update before apply; a different path or Windows signer
-certificate needs a new batch. See the [upgrade guide](UPGRADE_0_17_4.md).
-A fresh-client Hook inventory and an existing Desktop's loaded runtime remain
-separate observations.
+The stopped-host route remains available. Hook review may be needed through the normal official interface. A fresh CLI Hook inventory, successful execution in the old task, actual new-task Hook execution and Desktop GUI loading are separate observations. Native macOS and Windows acceptance of this candidate and its exact package remains pending. See the [candidate upgrade guide](UPGRADE_0_18_0.md).
 
 ## 0.17.3 — 2026-11-14
 

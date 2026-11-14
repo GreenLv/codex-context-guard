@@ -4,6 +4,7 @@
 
 - [Install and try Context Guard](../README.md) · [简体中文](../README.zh-CN.md)
 - [Upgrade to 0.17.3](UPGRADE_0_17_3.md) · [简体中文](UPGRADE_0_17_3.zh-CN.md). For versions before 0.17.2 or other marketplace entries, start with the [0.17.2 upgrade guide](UPGRADE_0_17_2.md) · [简体中文](UPGRADE_0_17_2.zh-CN.md).
+- [Upgrade to the unreleased 0.18.0 candidate](UPGRADE_0_18_0.md) · [简体中文](UPGRADE_0_18_0.zh-CN.md). The optional between-turns route has additional compatibility and pause requirements.
 - [Session storage and cleanup](SESSION_STORAGE.md) explains where records live, how to preview cleanup, and how to keep an old task working.
 - [Privacy](PRIVACY.md) explains what stays on your machine and what a redacted export can contain.
 - [Compatibility](COMPATIBILITY.md) records which combinations of version, platform and installation have been checked.
@@ -15,6 +16,7 @@
 - [Evaluation storage](EVALUATION_STORAGE_NEXT.md) and [versioning](VERSIONING.md) explain state and protocol changes.
 - [Contributing](../CONTRIBUTING.md) and [CI policy](CI_POLICY.md) explain which checks to run.
 - [Local acceptance](LOCAL_ACCEPTANCE.md) distinguishes source tests, installed behavior, performance and results for published packages.
+- [Between-turns native acceptance](../tools/validation/NATIVE_BETWEEN_TURNS_ACCEPTANCE.md) describes the candidate's live CLI-task and Hook evidence and its Desktop GUI boundary.
 - Shared protocol references include [core alignment](CORE_ALIGNMENT_CONTRACT_V2.md), [wire semantics](CORE_V2_WIRE.md), and [host capabilities](CORE_V2_HOST_CAPABILITIES.md).
 
 ## Look up an older decision or release

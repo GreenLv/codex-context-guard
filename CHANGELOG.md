@@ -4,23 +4,21 @@
 
 Versions are listed newest first. See [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) for published versions and [local acceptance](docs/LOCAL_ACCEPTANCE.md) for test results and platform limits. The [original detailed changelog](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.md) preserves the earlier implementation and validation notes.
 
-## 0.17.4 — 2026-11-15
+## 0.18.0 — Unreleased
 
 ### Highlights
 
-- Continue a prepared daily upgrade with the same command. From an external terminal, the tool can wait for Desktop to exit within a time limit, then continue installation. Normal Hook review stays in the official interface. [Daily upgrade tool](https://github.com/GreenLv/codex-context-guard/blob/v0.17.4/tools/validation/DAILY_UPGRADE.md)
-- Rebind an unstarted batch after a same-path Desktop update only when the signing source is verified and matches the prepared host. Saved records stay intact. An interrupted audit write can be recovered; missing or modified evidence blocks the batch and requires a new preparation.
-- Candidate CI can reuse a successful full run for the exact same commit. Missing or mismatched evidence makes the ordinary checks run instead. [CI policy](https://github.com/GreenLv/codex-context-guard/blob/v0.17.4/docs/CI_POLICY.md)
+- For a compatible stable-entry installation, prepare an upgrade and switch between turns while Codex stays open. Pause new operations until the switch finishes; an active or uncertain old runtime keeps the upgrade waiting. [Upgrade guide](docs/UPGRADE_0_18_0.md)
 
 ### Changes
 
-- The operator tool comes from the source checkout, outside the release ZIP and plugin cache. Hook behavior, task-state format and cleanup settings remain those of 0.17.3. Existing users need no urgent runtime update; finish or safely hand off tasks that still need the old Hook before switching. [Upgrade guide](https://github.com/GreenLv/codex-context-guard/blob/v0.17.4/docs/UPGRADE_0_17_4.md)
-- Portable native-acceptance results now identify the ZIP filename and source commit in the standard result shape. Success, failure and cleanup results use bytes captured before temporary-file cleanup. Older reports keep their original identity.
-- Version metadata and packaged documents change, so 0.17.4 has its own distribution manifest, runtime-tree digest and release artifact. Consumed caches remain immutable.
+- The tool checks the installed old files against a retained verified release and compares the new runtime before taking this route. Official installation may remove the old cache; the stable plugin identity and existing data root remain in use. The stopped-host route remains available, and normal Hook review may still be needed.
+- The source-checkout operator tool continues interrupted batches without repeating a completed installation. The stopped-host route can wait a limited time for the host to exit and can verify the signing source of a same-path host update. The tool is not included in the plugin ZIP.
+- Candidate CI can reuse a successful full run only for the exact same commit; otherwise the selected checks run normally. Portable native-acceptance results identify their ZIP and source commit while preserving earlier reports' original identities.
 
 ### Validation
 
-- The [release acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.4/context-guard-0.17.4-acceptance.json) identifies source checks, the exact ZIP and native-platform results. Daily Desktop adoption is recorded separately.
+- Source, the exact package, native macOS and Windows behavior, and daily Desktop adoption are separate subjects. This candidate's required results remain pending.
 
 ## 0.17.3 — 2026-11-14
 

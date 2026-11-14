@@ -7,8 +7,9 @@
 # passthrough arguments, so either shell starts exactly one Python process and
 # stdout/stderr/stdin keep the tool wire contract.
 #
-# Usage: run_native_acceptance.ps1 -Target {upgrade|acceptance|retention|scheduler} [-Arguments @("-preflight", ...)]
+# Usage: run_native_acceptance.ps1 -Target {upgrade|between-turns|acceptance|retention|scheduler} [-Arguments @("-preflight", ...)]
 #   upgrade    tools/validation/native_upgrade_acceptance.py
+#   between-turns tools/validation/native_between_turns_acceptance.py
 #   acceptance tools/validation/native_acceptance.py (host/retention/scheduler batches)
 #   retention  tools/validation/windows_retention_native.py
 #   scheduler  tools/validation/native_scheduler_batch.py
@@ -19,7 +20,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("upgrade", "acceptance", "retention", "scheduler",
+    [ValidateSet("upgrade", "between-turns", "acceptance", "retention", "scheduler",
                  "print-argv")]
     [string]$Target,
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -37,6 +38,7 @@ if ($Target -eq "print-argv") {
 }
 $targets = @{
     upgrade    = "native_upgrade_acceptance.py"
+    "between-turns" = "native_between_turns_acceptance.py"
     acceptance = "native_acceptance.py"
     retention  = "windows_retention_native.py"
     scheduler  = "native_scheduler_batch.py"

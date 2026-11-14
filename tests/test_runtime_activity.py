@@ -20,6 +20,11 @@ def hooks():
 
 
 class Classification(unittest.TestCase):
+    def observe(self, *args, **kwargs):
+        # These fixtures patch POSIX snapshots on every host; native Windows
+        # queries are exercised separately against the real PowerShell helper.
+        return activity.observe(*args, platform_name="darwin", **kwargs)
+
     def setUp(self):
         self.slot = "/synthetic/profile/plugins/cache/codex-context-guard/context-guard/0.17.3"
         self.path = self.slot + "/scripts/cg_hook.py"
@@ -63,7 +68,7 @@ class Classification(unittest.TestCase):
         self.assertEqual(activity._parse_ps(line.encode(), set(), [self.slot], self.inline)[10]["category"], "runtime_python")
 
     def test_missing_verified_hooks_is_unknown(self):
-        result = activity.observe(Path('/unavailable/profile'), '0.17.3', {'ps': {'path': '/bin/ps'}})
+        result = self.observe(Path('/unavailable/profile'), '0.17.3', {'ps': {'path': '/bin/ps'}})
         self.assertEqual(result['status'], 'unknown')
 
     def test_local_slot_is_selected_and_missing_slot_is_unknown(self):
@@ -72,15 +77,15 @@ class Classification(unittest.TestCase):
             base = home / 'plugins/cache/codex-context-guard/context-guard'
             (base / 'local').mkdir(parents=True)
             with mock.patch.object(activity, '_ps_snapshot', return_value={}) as query:
-                result = activity.observe(home, '0.17.3', {'ps': {'path': '/bin/ps'}}, hooks=hooks())
+                result = self.observe(home, '0.17.3', {'ps': {'path': '/bin/ps'}}, hooks=hooks())
             self.assertEqual(result['status'], 'clear')
             self.assertEqual(query.call_args.args[1], [str(base / 'local')])
             (base / 'local').rmdir()
-            self.assertEqual(activity.observe(home, '0.17.3', {'ps': {'path': '/bin/ps'}}, hooks=hooks())['status'], 'unknown')
+            self.assertEqual(self.observe(home, '0.17.3', {'ps': {'path': '/bin/ps'}}, hooks=hooks())['status'], 'unknown')
 
     def test_query_failure_and_malformed_output_unknown(self):
         with mock.patch.object(activity, '_ps_snapshot', side_effect=activity.ObservationError('failed')):
-            self.assertEqual(activity.observe(Path('/unavailable/profile'), '0.17.3', {'ps': {'path': '/bin/ps'}}, hooks=hooks())['status'], 'unknown')
+            self.assertEqual(self.observe(Path('/unavailable/profile'), '0.17.3', {'ps': {'path': '/bin/ps'}}, hooks=hooks())['status'], 'unknown')
         with self.assertRaises(activity.ObservationError):
             activity._parse_ps(b'not a snapshot\n', set(), [self.slot], self.inline)
 
@@ -97,18 +102,23 @@ class Classification(unittest.TestCase):
             slot = home / 'plugins/cache/codex-context-guard/context-guard/0.17.3'
             args = {'ps': {'path': '/bin/ps'}}
             with mock.patch.object(activity, '_ps_snapshot', return_value={}) as query:
-                self.assertEqual(activity.observe(home, '0.17.3', args, hooks=hooks(), slots=[slot])['status'], 'unknown')
-                self.assertEqual(activity.observe(home, '0.17.3', args, hooks=hooks(), allow_absent=True)['status'], 'unknown')
-                self.assertEqual(activity.observe(home, '0.17.3', args, hooks=hooks(), slots=[], allow_absent=True)['status'], 'unknown')
-                self.assertEqual(activity.observe(home, '0.17.3', args, hooks=hooks(), slots=[home / 'other'], allow_absent=True)['status'], 'unknown')
-                self.assertEqual(activity.observe(home, '0.17.3', args, hooks=hooks(), slots=[slot], allow_absent=True)['status'], 'clear')
+                self.assertEqual(self.observe(home, '0.17.3', args, hooks=hooks(), slots=[slot])['status'], 'unknown')
+                self.assertEqual(self.observe(home, '0.17.3', args, hooks=hooks(), allow_absent=True)['status'], 'unknown')
+                self.assertEqual(self.observe(home, '0.17.3', args, hooks=hooks(), slots=[], allow_absent=True)['status'], 'unknown')
+                self.assertEqual(self.observe(home, '0.17.3', args, hooks=hooks(), slots=[home / 'other'], allow_absent=True)['status'], 'unknown')
+                self.assertEqual(self.observe(home, '0.17.3', args, hooks=hooks(), slots=[slot], allow_absent=True)['status'], 'clear')
                 self.assertEqual(query.call_args.args[1], [str(slot)])
                 slot.parent.mkdir(parents=True)
-                slot.symlink_to(home, target_is_directory=True)
-                self.assertEqual(activity.observe(home, '0.17.3', args, hooks=hooks(), slots=[slot], allow_absent=True)['status'], 'unknown')
-                slot.unlink()
                 with mock.patch.object(Path, 'lstat', side_effect=PermissionError):
-                    self.assertEqual(activity.observe(home, '0.17.3', args, hooks=hooks(), slots=[slot], allow_absent=True)['status'], 'unknown')
+                    self.assertEqual(self.observe(home, '0.17.3', args, hooks=hooks(), slots=[slot], allow_absent=True)['status'], 'unknown')
+                try:
+                    slot.symlink_to(home, target_is_directory=True)
+                except OSError as exc:
+                    if getattr(exc, 'winerror', None) == 1314:
+                        self.skipTest('native symlink creation requires an unavailable Windows privilege')
+                    raise
+                self.assertEqual(self.observe(home, '0.17.3', args, hooks=hooks(), slots=[slot], allow_absent=True)['status'], 'unknown')
+                slot.unlink()
 
     def test_query_timeout_unconfirmed_cleanup_is_explicit(self):
         child = mock.Mock(pid=321, returncode=None)
@@ -125,7 +135,7 @@ class Classification(unittest.TestCase):
             home = Path(tmp).resolve()
             slot = home / 'plugins/cache/codex-context-guard/context-guard/0.17.3'
             with mock.patch.object(activity, '_ps_snapshot', side_effect=raised.exception):
-                result = activity.observe(home, '0.17.3', {'ps': {'path': '/bin/ps'}},
+                result = self.observe(home, '0.17.3', {'ps': {'path': '/bin/ps'}},
                                           hooks=hooks(), slots=[slot], allow_absent=True)
             self.assertEqual(result['status'], 'unknown')
             self.assertEqual(result['query_cleanup'], 'unconfirmed')
@@ -141,7 +151,7 @@ class Classification(unittest.TestCase):
                     return SimpleNamespace(st_mode=stat.S_IFDIR, st_reparse_tag=0, st_file_attributes=0x400)
                 return original(path, *args, **kwargs)
             with mock.patch.object(Path, 'lstat', metadata), mock.patch.object(activity, '_ps_snapshot') as query:
-                result = activity.observe(home, '0.17.3', {'ps': {'path': '/bin/ps'}},
+                result = self.observe(home, '0.17.3', {'ps': {'path': '/bin/ps'}},
                                           hooks=hooks(), slots=[slot], allow_absent=True)
             self.assertEqual(result['status'], 'unknown')
             query.assert_not_called()
