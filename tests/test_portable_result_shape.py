@@ -49,7 +49,8 @@ def portable_document(archive: Path, files: dict[str, str]) -> dict:
                               "HOME; local marketplace source retained only during this "
                               "isolated gate, no long-term refresh or startup claim")]
     return native.finish_portable_result(
-        status="passed", gates=gates, archive_path=archive, files=files,
+        status="passed", gates=gates, archive_path=archive,
+        zip_bytes=archive.read_bytes(), files=files,
         digest=DIGEST, source_commit=COMMIT,
         repository_url="https://github.com/GreenLv/codex-context-guard",
         toolchain={"python": "3.12.2", "codex": "0.169.0"},

@@ -629,6 +629,8 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
     status, cleanup = "failed", "passed"
     retain_temporary = False
     codex_version = "unavailable"
+    archive_path = release_zip
+    zip_bytes = None
     temporary = Path(tempfile.mkdtemp(prefix="ccg-official-marketplace-")).resolve()
     try:
         names = ("home", "os-home", "userprofile", "host-temp", "xdg-config", "xdg-data", "xdg-cache", "xdg-state")
@@ -648,7 +650,6 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
             XDG_CACHE_HOME=str(locations["xdg-cache"]), XDG_STATE_HOME=str(locations["xdg-state"]),
             PYTHONDONTWRITEBYTECODE="1")
         codex_version = run(root, codex, "--version", env=environment).stdout.strip()
-        archive_path = release_zip
         if archive_path is None:
             archive_path = temporary / "release.zip"
             run(root, sys.executable, "scripts/build_release_artifact.py", "--output", str(archive_path), env=environment)
@@ -705,13 +706,13 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
         if temporary.exists():
             cleanup, status = "failed", "failed"
     return finish_portable_result(status=status, gates=gates,
-        archive_path=archive_path, files=files, digest=digest,
+        archive_path=archive_path, zip_bytes=zip_bytes, files=files, digest=digest,
         source_commit=source_commit, repository_url=repository_url,
         toolchain={"python": platform.python_version(), "codex": codex_version},
         cleanup=cleanup, started=started, finished=timestamp(), run_url=run_url)
 
 
-def result_document(*, status: str, gates: list[dict[str, Any]], artifact: dict[str, Any],
+def result_document(*, status: str, gates: list[dict[str, Any]], artifact: dict[str, Any] | None,
                     digest: str, source_commit: str, repository_url: str,
                     toolchain: dict[str, str], cleanup: str, started: str,
                     finished: str, run_url: str | None) -> dict[str, Any]:
@@ -735,18 +736,21 @@ def result_document(*, status: str, gates: list[dict[str, Any]], artifact: dict[
 
 
 def finish_portable_result(*, status: str, gates: list[dict[str, Any]],
-                           archive_path: Path, files: dict[str, str],
+                           archive_path: Path | None, zip_bytes: bytes | None,
+                           files: dict[str, str],
                            digest: str, source_commit: str, repository_url: str,
                            toolchain: dict[str, str], cleanup: str, started: str,
                            finished: str, run_url: str | None) -> dict[str, Any]:
     """Bind the real release ZIP bytes into the standard portable result.
 
     This is the portable producer's only result assembly point: the artifact
-    record is derived from the actual archive bytes (name, digest, size) and
-    the reviewed manifest inventory, so consumers can cite the exact object.
+    record uses the exact bytes captured before cleanup, including on failure.
+    A failure before the ZIP is read has no artifact identity. Result assembly
+    never reopens disposable inputs that cleanup has already removed.
     """
-    zip_bytes = archive_path.read_bytes()
-    artifact = {"filename": archive_path.name,
+    artifact = None
+    if zip_bytes is not None and archive_path is not None:
+        artifact = {"filename": archive_path.name,
                 "sha256": hashlib.sha256(zip_bytes).hexdigest(),
                 "size_bytes": len(zip_bytes), "file_count": len(files),
                 "git_head": source_commit}

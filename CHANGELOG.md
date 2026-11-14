@@ -4,19 +4,23 @@
 
 Versions are listed newest first. See [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) for published versions and [local acceptance](docs/LOCAL_ACCEPTANCE.md) for test results and platform limits. The [original detailed changelog](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.md) preserves the earlier implementation and validation notes.
 
-## Unreleased
+## 0.17.4 — 2026-11-15
 
 ### Highlights
 
-- A daily upgrade batch now continues with one same command. The maintained tool derives the next pending stage from the batch's saved receipts, so prepare → apply → verify no longer needs per-stage retyping; with `--wait` the command can also hold a bounded, read-only pause until the Desktop host has actually exited and then continue the swap itself. [Daily upgrade tool](https://github.com/GreenLv/codex-context-guard/blob/main/tools/validation/DAILY_UPGRADE.md)
-- When a host auto-update changes the Desktop executable bytes after preparation, a controlled rebind re-identifies that same-path executable, keeps every prior receipt untouched, and writes the next numbered prepare receipt bound to the new host identity — but only when both the prepared and the changed bytes carry a verified, trust-anchored signature from the same publisher. Any unverifiable signature, publisher change, or other input change (CLI, artifact, plan, helper closure) refuses with its own category and needs a fresh reviewed batch.
+- Continue a prepared daily upgrade with the same command. From an external terminal, the tool can wait for Desktop to exit within a time limit, then continue installation. Normal Hook review stays in the official interface. [Daily upgrade tool](https://github.com/GreenLv/codex-context-guard/blob/v0.17.4/tools/validation/DAILY_UPGRADE.md)
+- Rebind an unstarted batch after a same-path Desktop update only when the signing source is verified and matches the prepared host. Saved records stay intact. An interrupted audit write can be recovered; missing or modified evidence blocks the batch and requires a new preparation.
+- Candidate CI can reuse a successful full run for the exact same commit. Missing or mismatched evidence makes the ordinary checks run instead. [CI policy](https://github.com/GreenLv/codex-context-guard/blob/v0.17.4/docs/CI_POLICY.md)
 
 ### Changes
 
-- Candidate CI consumes an already passed full run on the exact commit. A new reuse job re-derives the prior run's full-coverage job evidence through the official Actions API, verifies the escrow artifact receipt against this checkout when it exists, and uploads a `cg-ci-reuse-evidence/v1` receipt; the required summary still demands classification, the static gate and the reuse evidence, and any failed job anywhere still fails the summary. Missing or mismatched evidence falls back to the ordinary lanes. [CI policy](https://github.com/GreenLv/codex-context-guard/blob/main/docs/CI_POLICY.md)
-- Future portable native-acceptance results use the standard closed shape — the artifact record carries its filename and git head, and capability boundaries move into gate notes — so generic product-neutral consumers can validate them directly. Historical receipts keep their original identity.
-- These are source-checkout operator and CI changes. The nine Hooks, state schema, public protocols, runtime bytes and installed behavior are unchanged, and existing 0.17.3 installations need no action.
+- The operator tool comes from the source checkout, outside the release ZIP and plugin cache. Hook behavior, task-state format and cleanup settings remain those of 0.17.3. Existing users need no urgent runtime update; finish or safely hand off tasks that still need the old Hook before switching. [Upgrade guide](https://github.com/GreenLv/codex-context-guard/blob/v0.17.4/docs/UPGRADE_0_17_4.md)
+- Portable native-acceptance results now identify the ZIP filename and source commit in the standard result shape. Success, failure and cleanup results use bytes captured before temporary-file cleanup. Older reports keep their original identity.
+- Version metadata and packaged documents change, so 0.17.4 has its own distribution manifest, runtime-tree digest and release artifact. Consumed caches remain immutable.
 
+### Validation
+
+- The [release acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.4/context-guard-0.17.4-acceptance.json) identifies source checks, the exact ZIP and native-platform results. Daily Desktop adoption is recorded separately.
 
 ## 0.17.3 — 2026-11-14
 

@@ -5,6 +5,16 @@ Earlier candidate sections retain their original pending gates and failures;
 later outcomes do not retroactively change those observations. For the public
 release identity, follow the version's GitHub Release separately.
 
+## 0.17.4 — release-source evidence (2026-11-15)
+
+The [acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.4/context-guard-0.17.4-acceptance.json)
+binds source checks, operator-tool controls and native installation to their
+exact source or ZIP subjects. The report distinguishes signed-component and
+finite-process fixture controls from a real Desktop update or continuity of
+an old task. Normal Hook review, daily switching and
+actual Desktop loading have separate postpublication records. Older results
+retain their original identities and outcomes.
+
 ## 0.17.3 — release-source evidence (2026-11-14)
 
 The [acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.3/context-guard-0.17.3-acceptance.json) binds source checks, the release ZIP and platform results to their exact inputs. Operator-tool tests and read-only probes of an existing 0.17.2 installation are separate from isolated installation of the final ZIP. A fresh-client Hook inventory does not establish which runtime an existing Desktop process holds; real daily switching and subsequent Desktop loading have separate adoption records. Previous version records below retain their original subjects.

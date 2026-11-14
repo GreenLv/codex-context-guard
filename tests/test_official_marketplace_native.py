@@ -9,6 +9,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import types
 import unittest
@@ -262,12 +263,30 @@ class OfficialMarketplaceNativeTests(unittest.TestCase):
         result = self.exercise("prebuilt")
         self.assertEqual(result["status"], "passed")
         self.assertFalse(any("scripts/build_release_artifact.py" in args for args in self.commands))
-        self.assertEqual(result["artifact"]["kind"], "release_zip")
+        self.assertEqual(set(result["artifact"]),
+                         {"filename", "sha256", "size_bytes", "file_count", "git_head"})
+        self.assertEqual(result["artifact"]["git_head"], "a" * 40)
         self.assertEqual(len(result["artifact"]["sha256"]), 64)
         self.assertGreater(result["artifact"]["size_bytes"], 0)
         result = self.exercise("wrong_zip")
         self.assertEqual(result["status"], "failed")
         self.assertFalse(any("plugin" in args for args in self.commands))
+
+    @unittest.skipUnless(os.environ.get("CG_GENERIC_NATIVE_CONSUMER"),
+                         "generic consumer integration is explicitly configured")
+    def test_real_producer_success_and_failure_are_directly_consumable(self):
+        for failure in (None, "read_failure", "cleanup_unknown"):
+            with self.subTest(failure=failure):
+                result = self.exercise(failure)
+                with tempfile.TemporaryDirectory() as directory:
+                    report = Path(directory) / "native.json"
+                    report.write_text(json.dumps(result), encoding="utf-8")
+                    checked = subprocess.run(
+                        [sys.executable, "-B", os.environ["CG_GENERIC_NATIVE_CONSUMER"],
+                         str(report), "--json"], capture_output=True, timeout=60)
+                payload = json.loads(checked.stdout)
+                self.assertTrue(payload["valid"], payload)
+                self.assertEqual(payload["status"], result["status"])
 
     def test_wrong_identity_ambiguity_source_or_state_cannot_pass(self):
         for failure in ("wrong_version", "wrong_source", "disabled", "duplicate", "drift", "home_change", "old_object", "smoke", "mode", "directory_add", "directory_delete", "file_delete", "config", "registry", "read_failure"):

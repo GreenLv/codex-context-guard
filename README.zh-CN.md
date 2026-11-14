@@ -12,13 +12,13 @@ Context Guard 帮 Codex 在长任务里记住你交代过的要求。执行 `/co
 
 例如，你要求改一个文件并运行测试。读取文件成功，不能证明改过文件，也不能证明测试跑过。平时修改文件、提交和推送，仍按 Codex 的权限运行。
 
-**最新发布版是 0.17.3。** 如果已有任务依赖旧插件，请先完成这些任务。升级指南说明如何更新稳定入口并保留清理设置。[发布说明](docs/releases/v0.17.3.md) · [升级指南](docs/UPGRADE_0_17_3.zh-CN.md)
+**最新发布版是 0.17.4。** 如果已有任务依赖旧插件，请先完成这些任务。升级指南说明如何更新稳定入口并保留清理设置。[发布说明](docs/releases/v0.17.4.md) · [升级指南](docs/UPGRADE_0_17_4.zh-CN.md)
 
 ## 用 Codex 安装
 
-需要 Python 3.10 或更新版本，以及能加载插件和自动脚本（Hook）的 Codex 客户端。先运行 `codex plugin list --json`。如果列表里已有任何 Context Guard 入口，请按[升级指南](docs/UPGRADE_0_17_3.zh-CN.md)选择路线。下面是首次安装的步骤。
+需要 Python 3.10 或更新版本，以及能加载插件和自动脚本（Hook）的 Codex 客户端。先运行 `codex plugin list --json`。如果列表里已有任何 Context Guard 入口，请按[升级指南](docs/UPGRADE_0_17_4.zh-CN.md)选择路线。下面是首次安装的步骤。
 
-1. 从[发布附件](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.3)下载 `context-guard-0.17.3.zip`，核对发布页公布的 SHA-256。把 ZIP 解压到自己管理的目录，之后保留这个目录作为市场来源。发行 ZIP 带有核验用的文件清单。
+1. 从[发布附件](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.4)下载 `context-guard-0.17.4.zip`，核对发布页公布的 SHA-256。把 ZIP 解压到自己管理的目录，之后保留这个目录作为市场来源。发行 ZIP 带有核验用的文件清单。
 2. 在解压后的目录运行以下命令，注册市场并安装插件：
 
    ```shell
@@ -27,7 +27,7 @@ Context Guard 帮 Codex 在长任务里记住你交代过的要求。执行 `/co
    codex plugin list --json
    ```
 
-3. 核对列表里只有一条 `context-guard@codex-context-guard` 记录，版本是 `0.17.3`，已安装且已启用，市场来源指向刚才的解压目录。保存安装命令返回的 `installedPath`。核对已安装文件时，将下例双引号里的路径替换成该值。Windows 上用 `py -3` 代替 `python3`。
+3. 核对列表里只有一条 `context-guard@codex-context-guard` 记录，版本是 `0.17.4`，已安装且已启用，市场来源指向刚才的解压目录。保存安装命令返回的 `installedPath`。核对已安装文件时，将下例双引号里的路径替换成该值。Windows 上用 `py -3` 代替 `python3`。
 
    ```shell
    python3 scripts/artifact_identity.py --compare-to "/path/from/installedPath"
@@ -35,7 +35,7 @@ Context Guard 帮 Codex 在长任务里记住你交代过的要求。执行 `/co
 
 4. 用同一份 Codex 配置新开一个 CLI 任务，输入 `/hooks`。确认九项 Context Guard Hook 都来自 `<installedPath>/hooks/hooks.json`，再信任它们。条目缺失或来源不符时先检查安装。然后回到自己日常使用的客户端试用，Desktop 可能需要重启后才加载新入口。
 
-如果新任务找不到 Python，或仍加载旧版，请查[兼容性](docs/COMPATIBILITY.md)和[升级指南](docs/UPGRADE_0_17_3.zh-CN.md)。复查安装时，重新看列表和比较文件即可。重复运行 `plugin add` 可能重建缓存。
+如果新任务找不到 Python，或仍加载旧版，请查[兼容性](docs/COMPATIBILITY.md)和[升级指南](docs/UPGRADE_0_17_4.zh-CN.md)。复查安装时，重新看列表和比较文件即可。重复运行 `plugin add` 可能重建缓存。
 
 ## 试用
 
@@ -199,7 +199,7 @@ codex plugin marketplace remove codex-context-guard
 
 ## 文档
 
-- [升级到 0.17.3](docs/UPGRADE_0_17_3.zh-CN.md)
+- [升级到 0.17.4](docs/UPGRADE_0_17_4.zh-CN.md)
 - [会话存储与清理](docs/SESSION_STORAGE.md)
 - [文档索引](docs/README.md)
 - [更新日志](CHANGELOG.zh-CN.md)

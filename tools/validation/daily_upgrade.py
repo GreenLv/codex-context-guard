@@ -924,9 +924,13 @@ def _all_prepare_receipts(output: Path) -> list[Path]:
     walk), so a deleted middle receipt is never invisible behind a higher
     numbered one.
     """
-    found = [path for path in output.glob("prepare*.json")
-             if path.is_file() and not path.is_symlink()
-             and re.fullmatch(r"prepare(-\d+)?\.json", path.name)]
+    found = []
+    for path in output.glob("prepare*.json"):
+        if not re.fullmatch(r"prepare(-\d+)?\.json", path.name):
+            continue
+        require(path.is_file() and not path.is_symlink(),
+                "prepare receipt must be a regular file: " + path.name)
+        found.append(path)
     found.sort(key=_prepare_receipt_number)
     for earlier, later in zip(found, found[1:]):
         require(_prepare_receipt_number(later) == _prepare_receipt_number(earlier) + 1,
@@ -991,15 +995,9 @@ def _resolve_prepare_receipt(output: Path, *, strict: bool) -> Path | None:
     prev_name, prev_digest = initial.name, initial_value.get("subject_sha256")
     orphans: list[tuple[Path, str]] = []
     for receipt in receipts[1:]:
-        try:
-            value = _load_prepare_receipt(output, receipt)
-        except UpgradeError:
-            # A receipt whose content no longer matches its subject digest is
-            # modified evidence; it refuses everywhere and nothing past it is
-            # trusted, whether or not it sits at the chain end.
-            if strict:
-                raise
-            continue  # retained orphan evidence; never adopted
+        # Recovery may retain a valid receipt whose audit was not written.
+        # Modified content is an integrity failure for every entry point.
+        value = _load_prepare_receipt(output, receipt)
         rebound = value.get("rebound_from")
         linked = (isinstance(rebound, dict)
                   and rebound.get("receipt") == prev_name

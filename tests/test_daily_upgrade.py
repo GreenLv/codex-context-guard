@@ -1210,6 +1210,42 @@ class TestRebind(DailyUpgradeCase):
         self.assertIn("content does not match its subject digest",
                       self.last_stderr())
 
+    def test_default_rebind_never_skips_a_modified_receipt(self):
+        self.seed_target_cache()
+        self.assertEqual(self.main("--prepare"), 0)
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-host-v2")
+        self.assertEqual(self.rebind(), 0)
+        receipt = self.read("prepare-2.json")
+        receipt["subject"]["installed_before"]["installed"] = False
+        (self.output / "prepare-2.json").write_text(json.dumps(receipt),
+                                                    encoding="utf-8")
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-host-v3")
+        before = {path.name: path.read_bytes() for path in self.output.glob("*.json")}
+        self.assertEqual(self.rebind(), 2)
+        self.assertIn("content does not match its subject digest", self.last_stderr())
+        self.assertEqual({path.name: path.read_bytes()
+                          for path in self.output.glob("*.json")}, before)
+
+    def test_symlinked_numbered_receipt_cannot_restore_initial_authority(self):
+        self.seed_target_cache()
+        self.assertEqual(self.main("--prepare"), 0)
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ-host-v2")
+        self.assertEqual(self.rebind(), 0)
+        receipt = self.output / "prepare-2.json"
+        outside = self.tmp / "retained-prepare.json"
+        receipt.rename(outside)
+        try:
+            receipt.symlink_to(outside)
+        except OSError:
+            if os.name == "nt":
+                self.skipTest("native symlink creation is unavailable")
+            raise
+        (self.tmp / "CodexDesktop").write_bytes(b"MZ")
+        self.assertEqual(self.main("--apply", "--prepared-result",
+                                   str(self.output / "prepare.json")), 2)
+        self.assertFalse((self.output / "apply.json").exists())
+        self.assertTrue(receipt.is_symlink())
+
     def test_apply_refuses_stale_or_orphan_explicit_targets(self):
         self.seed_target_cache()
         self.main("--prepare")
@@ -1427,7 +1463,7 @@ class TestReceiptIntegrityFamily(DailyUpgradeCase):
             ("B stale explicit rebind source", self.scenario_b_stale_explicit_rebind_source,
              ("current adoptable prepare receipt", drifted), True),
             ("C modified receipt content", self.scenario_c_modified_receipt_content,
-             ("content does not match its subject digest",), True),
+             ("content does not match its subject digest",), False),
             ("D numbering gap", self.scenario_d_gap_behind_adopted_chain,
              ("was removed while",), False),
         ]

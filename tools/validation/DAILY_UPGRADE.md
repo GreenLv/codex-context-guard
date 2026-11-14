@@ -37,7 +37,7 @@ state (never commit it):
   "schema": "cg-daily-upgrade-plan/v1",
   "entry": "context-guard@codex-context-guard",
   "marketplace": "codex-context-guard",
-  "target_version": "0.17.3",
+  "target_version": "0.17.4",
   "artifact_dir": "/absolute/path/to/extracted-release",
   "cwd": "/absolute/path/to/an/existing/directory",
   "desktop_executable": "/absolute/path/to/the/Codex/Desktop/binary",
