@@ -273,7 +273,22 @@ def filtered_env(home):
     return env
 
 
-def provider_projection(response):
+def selected_backend(plan):
+    if platform.system() == "Windows":
+        require(plan.get("windows_backend") == "mxc", "Windows mxc selection required")
+        return "mxc"
+    require("windows_backend" not in plan, "Windows backend selection on non-Windows")
+    return None
+
+
+def app_server_argv(plan, cli):
+    backend = selected_backend(plan)
+    if backend == "mxc":
+        return [str(cli), "-c", 'windows.sandbox="mxc"', "app-server"]
+    return [str(cli), "app-server"]
+
+
+def provider_projection(response, *, backend=None):
     """Validate only official endpoint selection; retain no raw configuration."""
     require(
         isinstance(response, dict) and isinstance(response.get("config"), dict),
@@ -295,11 +310,19 @@ def provider_projection(response):
         and config.get("model_catalog_json") is None,
         "official provider endpoint or model catalog overridden",
     )
-    return {
+    projection = {
         "model_provider": config.get("model_provider"),
         "endpoint_policy": "official_default",
         "custom_catalog": False,
     }
+    if backend == "mxc":
+        require(isinstance(config.get("windows"), dict)
+                and config["windows"].get("sandbox") == "mxc",
+                "Windows mxc selection readback differs")
+        projection["windows_sandbox"] = "mxc"
+    else:
+        require(backend is None, "unsupported backend selection")
+    return projection
 
 
 def import_product(repo):
@@ -437,6 +460,9 @@ def preflight(plan, output, *, after=False):
         "witness_mode",
         "_native_plan_sha256",
     }
+    if platform.system() == "Windows":
+        required.add("windows_backend")
+    selected_backend(plan)
     require(
         required <= set(plan)
         and set(plan) <= required | {"trust_wait_seconds", "activity_wait_seconds"},
@@ -720,6 +746,8 @@ def preflight(plan, output, *, after=False):
         "wait": wait,
         "activity_wait": activity_wait,
         "expected_model": plan["expected_model"],
+        "app_server_argv": app_server_argv(plan, cli),
+        "windows_backend": selected_backend(plan),
         "read_file": read_file,
         "u": u,
         "host": host,
@@ -845,10 +873,10 @@ class DailyClientFactory:
                 try:
                     self.log = BoundedJournal(c["output"] / "rpc.jsonl")
                     self.err = open(os.devnull, "wb")
-                    cmd = [str(c["cli"])]
+                    self.launch_argv = list(c["app_server_argv"])
                     self.spawn_attempted = True
                     self.owned = host.OwnedProcess.spawn(
-                        [*cmd, "app-server"],
+                        self.launch_argv,
                         cwd=str(c["workspace"]),
                         env=filtered_env(c["home"]),
                         stdin=subprocess.PIPE,
@@ -1024,7 +1052,7 @@ class DailyClientFactory:
                     and request_method == "config/read"
                     and "result" in result
                 ):
-                    result["result"] = provider_projection(message.get("result"))
+                    result["result"] = provider_projection(message.get("result"), backend=c["windows_backend"])
                 if (
                     result is not None
                     and request_method == "thread/start"
@@ -1081,7 +1109,7 @@ class DailyClientFactory:
                     self.rpc(
                         "config/read",
                         {"cwd": str(c["workspace"]), "includeLayers": False},
-                    )
+                    ), backend=c["windows_backend"]
                 )
 
             def inventory_for(self, sources):
@@ -1897,6 +1925,18 @@ def independent_verify(ctx, plan, output):
             "evidence changed",
         )
     server = strict_read_json(output / "server.json")
+    expected_argv = app_server_argv(plan, ctx["cli"])
+    require(
+        ctx["app_server_argv"] == expected_argv
+        and ctx["windows_backend"] == selected_backend(plan)
+        and "windows_backend" in subject and "windows_backend" in server
+        and subject.get("app_server_argv") == expected_argv
+        and subject.get("windows_backend") == selected_backend(plan)
+        and server.get("argv") == expected_argv
+        and server.get("windows_backend") == selected_backend(plan)
+        and server.get("os_backend_observation") == "unobserved",
+        "app-server launch binding differs",
+    )
     boundary = strict_read_json(output / "between-turn-boundary.json")
     samples = boundary.get("runtime_activity_samples")
     require(
@@ -2155,12 +2195,16 @@ def independent_verify(ctx, plan, output):
             row.get("direction") == "response" and message.get("id") in config_requests
         ):
             config_requests.pop(message["id"])
+            expected_fields = {"model_provider", "endpoint_policy", "custom_catalog"}
+            if selected_backend(plan) == "mxc":
+                expected_fields.add("windows_sandbox")
             require(
                 isinstance(message.get("result"), dict)
                 and message["result"].get("model_provider") in (None, "openai")
-                and set(message["result"]) == {"model_provider", "endpoint_policy", "custom_catalog"}
+                and set(message["result"]) == expected_fields
                 and message["result"].get("endpoint_policy") == "official_default"
-                and message["result"].get("custom_catalog") is False,
+                and message["result"].get("custom_catalog") is False
+                and (selected_backend(plan) != "mxc" or message["result"].get("windows_sandbox") == "mxc"),
                 "provider readback differs",
             )
             provider_checks.append(index)
@@ -2325,6 +2369,9 @@ def run(
     sleeper=time.sleep,
 ):
     out = ctx["output"]
+    launch_argv = app_server_argv(plan, ctx["cli"])
+    require(ctx["app_server_argv"] == launch_argv
+            and ctx["windows_backend"] == selected_backend(plan), "app-server launch drift")
     ctx["u"]._mkdir_private_new(out)
     result = {
         "schema": REPORT,
@@ -2352,12 +2399,17 @@ def run(
         "cleanup": None,
     }
     c = None
+    result["subject"]["app_server_argv"] = launch_argv
+    result["subject"]["windows_backend"] = selected_backend(plan)
     stage = "startup"
     try:
         c = (client_factory or DailyClientFactory(ctx))()
+        require(c.launch_argv == launch_argv, "app-server launch differs")
         pid = c.owned.process.pid
         oldinv = dict(c.approved)
-        write(out / "server.json", {"pid": pid, "event": "owned_app_server_started"})
+        write(out / "server.json", {"pid": pid, "event": "owned_app_server_started",
+                                    "argv": launch_argv, "windows_backend": selected_backend(plan),
+                                    "os_backend_observation": "unobserved"})
         write(out / "old-trust.json", {"hooks": list(oldinv.values())})
         stage = "old_turn"
         thread = c.start()

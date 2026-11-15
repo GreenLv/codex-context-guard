@@ -860,7 +860,10 @@ def _approved_read_command(raw: Any, expected: str) -> bool:
         return False
     if raw == expected:
         return True
-    wrapper = re.fullmatch(r'"([^"\r\n]+)" -NoProfile -Command ' + re.escape(f"'{expected}'"), raw)
+    # Codex's reviewed Windows display can omit -NoProfile for the normal
+    # login-shell choice. Keep the executable and complete read script exact;
+    # accepting that display does not audit implicit PowerShell profile work.
+    wrapper = re.fullmatch(r'"([^"\r\n]+)" (?:-NoProfile )?-Command ' + re.escape(f"'{expected}'"), raw)
     if wrapper is None:
         return False
     shell_text = wrapper[1]

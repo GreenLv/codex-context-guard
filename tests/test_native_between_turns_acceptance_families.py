@@ -114,7 +114,7 @@ class FamilyTests(unittest.TestCase):
         with mock.patch.object(bt, "safe_bytes", side_effect=bt.Refused("record limit")):
             self.assertEqual(bt.sha(path), hashlib.sha256(path.read_bytes()).hexdigest())
 
-    def make_client(self, response, spawn_error=None):
+    def make_client(self, response, spawn_error=None, *, backend=None, config_windows=None):
         ctx = {
             "output": self.root,
             "old_root": self.root / "old",
@@ -122,6 +122,9 @@ class FamilyTests(unittest.TestCase):
             "home": self.root / "home",
             "workspace": self.root,
             "cli": self.root / "cli",
+            "app_server_argv": ([str(self.root / "cli"), "-c", 'windows.sandbox="mxc"', "app-server"]
+                                if backend else [str(self.root / "cli"), "app-server"]),
+            "windows_backend": backend,
             "expected_model": "test-model",
             "read_file": self.root / "README.md",
         }
@@ -134,9 +137,10 @@ class FamilyTests(unittest.TestCase):
                 if method == "thread/start":
                     return response
                 if method == "config/read":
-                    return {
-                        "config": {"model_provider": "openai", "model_providers": {}}
-                    }
+                    config = {"model_provider": "openai", "model_providers": {}}
+                    if config_windows is not None:
+                        config["windows"] = config_windows
+                    return {"config": config}
                 return {}
 
             def send(self, message):
@@ -145,6 +149,7 @@ class FamilyTests(unittest.TestCase):
         class Spawn:
             @staticmethod
             def spawn(*a, **k):
+                self.last_spawn = a[0]
                 if spawn_error:
                     raise spawn_error
                 return types.SimpleNamespace(
@@ -166,6 +171,41 @@ class FamilyTests(unittest.TestCase):
         ):
             client = bt.DailyClientFactory(ctx)()
         return client, requests, ctx
+
+    def test_windows_backend_plan_and_real_factory_argv(self):
+        with mock.patch.object(bt.platform, "system", return_value="Windows"):
+            for value in (None, "elevated", "mxc --extra", 1):
+                with self.subTest(value=value), self.assertRaises(bt.Refused):
+                    bt.app_server_argv({"windows_backend": value}, self.root / "cli")
+            with self.assertRaises(bt.Refused):
+                bt.app_server_argv({}, self.root / "cli")
+            expected = [str(self.root / "cli"), "-c", 'windows.sandbox="mxc"', "app-server"]
+            self.assertEqual(bt.app_server_argv({"windows_backend": "mxc"}, self.root / "cli"), expected)
+            client, _, _ = self.make_client({}, backend="mxc", config_windows={"sandbox": "mxc"})
+            try:
+                self.assertEqual(self.last_spawn, expected)
+                self.assertEqual(client.launch_argv, expected)
+            finally:
+                client.close()
+        with mock.patch.object(bt.platform, "system", return_value="Darwin"):
+            self.assertEqual(bt.app_server_argv({}, self.root / "cli"), [str(self.root / "cli"), "app-server"])
+            with self.assertRaises(bt.Refused):
+                bt.app_server_argv({"windows_backend": "mxc"}, self.root / "cli")
+
+    def test_windows_backend_readback_refuses_unknown_or_conflict(self):
+        base = {"model_provider": None, "model_providers": {}}
+        for windows in (None, {}, {"sandbox": "elevated"}, {"sandbox": None}, {"sandbox": "mxc --extra"}):
+            with self.subTest(windows=windows), self.assertRaises(bt.Refused):
+                bt.provider_projection({"config": {**base, "windows": windows}}, backend="mxc")
+        result = bt.provider_projection({"config": {**base, "windows": {"sandbox": "mxc"}}}, backend="mxc")
+        self.assertEqual(result["windows_sandbox"], "mxc")
+
+    def test_windows_wrong_effective_config_refuses_without_fallback(self):
+        with mock.patch.object(bt.platform, "system", return_value="Windows"):
+            with self.assertRaises(bt.Refused):
+                self.make_client({}, backend="mxc", config_windows={"sandbox": "elevated"})
+        self.assertEqual(self.last_spawn, [str(self.root / "cli"), "-c", 'windows.sandbox="mxc"', "app-server"])
+        self.assertTrue(self.last_ctx["startup_cleanup"]["client_cleanup_complete"])
 
     def test_real_client_thread_start_readonly_and_response_binding(self):
         response = {
@@ -446,6 +486,15 @@ class FamilyTests(unittest.TestCase):
             ctx = bt.preflight(plan, self.root / "result")
             self.assertEqual(ctx["files"], newfiles)
             self.assertFalse((self.root / "result").exists())
+            with mock.patch.object(bt.platform, "system", return_value="Windows"):
+                for wrong in ({}, {"windows_backend": None}, {"windows_backend": "elevated"},
+                              {"windows_backend": "mxc", "extra_cli_flags": ["--other"]}):
+                    with self.subTest(plan=wrong), self.assertRaises(bt.Refused):
+                        bt.preflight({**plan, **wrong}, self.root / "result")
+                winctx = bt.preflight({**plan, "windows_backend": "mxc"}, self.root / "result")
+                self.assertEqual(winctx["app_server_argv"], [str(cli), "-c", 'windows.sandbox="mxc"', "app-server"])
+                self.assertEqual(winctx["windows_backend"], "mxc")
+                self.assertFalse((self.root / "result").exists())
             with (
                 mock.patch.object(
                     bt, "producer_path", return_value=self.root / "foreign.py"
@@ -1319,7 +1368,8 @@ class FamilyTests(unittest.TestCase):
             def put(name, data):
                 (out / name).write_text(json.dumps(data))
 
-            put("server.json", {"pid": 42})
+            put("server.json", {"pid": 42, "argv": ctx["app_server_argv"],
+                                "windows_backend": None, "os_backend_observation": "unobserved"})
             put("old-trust.json", {"hooks": oldhooks})
             put("new-trust.json", {"hooks": newhooks})
             put("old-state.json", before)
@@ -1524,6 +1574,8 @@ class FamilyTests(unittest.TestCase):
                 native_plan_sha256=plan["_native_plan_sha256"],
                 producer_sha256=bt.sha(Path(bt.__file__).resolve()),
                 helper_closure_sha256=u.digest(ctx["daily"]._helper_identities()),
+                app_server_argv=ctx["app_server_argv"],
+                windows_backend=None,
             )
             result = {
                 "schema": bt.REPORT,
@@ -1578,6 +1630,60 @@ class FamilyTests(unittest.TestCase):
                 ),
             ):
                 self.assertTrue(bt.independent_verify(ctx, plan, out))
+                server_path, rpc_path = out / "server.json", out / "rpc.jsonl"
+                original_server, original_rpc = server_path.read_bytes(), rpc_path.read_bytes()
+                original_argv = ctx["app_server_argv"]
+                win_argv = [str(ctx["cli"]), "-c", 'windows.sandbox="mxc"', "app-server"]
+                win_rows = copy.deepcopy(rows)
+                for row in win_rows:
+                    response = row.get("message", {}).get("result", {})
+                    if "endpoint_policy" in response:
+                        response["windows_sandbox"] = "mxc"
+                    item = row.get("message", {}).get("params", {}).get("item", {})
+                    if item.get("type") == "commandExecution":
+                        item["command"] = "Get-Content -LiteralPath README.md"
+                win_result = copy.deepcopy(result)
+                win_result["platform"] = "Windows"
+                win_result["subject"]["app_server_argv"] = win_argv
+                win_result["subject"]["windows_backend"] = "mxc"
+                ctx["app_server_argv"] = win_argv
+                ctx["windows_backend"] = "mxc"
+                plan["windows_backend"] = "mxc"
+                put("server.json", {"pid": 42, "argv": win_argv, "windows_backend": "mxc", "os_backend_observation": "unobserved"})
+                rpc_path.write_text("".join(json.dumps(r) + "\n" for r in win_rows))
+                for name in ("server.json", "rpc.jsonl"):
+                    win_result["evidence"][name] = bt.sha(out / name)
+                put("result.json", win_result)
+                with (mock.patch.object(bt.platform, "system", return_value="Windows"),
+                      mock.patch.object(u, "_source_key", side_effect=lambda raw, sources: raw if raw in sources else None)):
+                    self.assertTrue(bt.independent_verify(ctx, plan, out))
+                    for wrong_server in (
+                        {"pid": 42, "argv": win_argv + ["--extra"], "windows_backend": "mxc", "os_backend_observation": "unobserved"},
+                        {"pid": 42, "argv": win_argv, "windows_backend": "elevated", "os_backend_observation": "unobserved"},
+                        {"pid": 42, "argv": win_argv, "windows_backend": "mxc", "os_backend_observation": "observed"},
+                    ):
+                        put("server.json", wrong_server)
+                        win_result["evidence"]["server.json"] = bt.sha(server_path)
+                        put("result.json", win_result)
+                        with self.assertRaises(bt.Refused):
+                            bt.independent_verify(ctx, plan, out)
+                    put("server.json", {"pid": 42, "argv": win_argv, "windows_backend": "mxc", "os_backend_observation": "unobserved"})
+                    win_result["evidence"]["server.json"] = bt.sha(server_path)
+                    for wrong in (None, "elevated", "mxc --extra"):
+                        changed = copy.deepcopy(win_rows)
+                        response = next(r["message"]["result"] for r in changed if "windows_sandbox" in r.get("message", {}).get("result", {}))
+                        response["windows_sandbox"] = wrong
+                        rpc_path.write_text("".join(json.dumps(r) + "\n" for r in changed))
+                        win_result["evidence"]["rpc.jsonl"] = bt.sha(rpc_path)
+                        put("result.json", win_result)
+                        with self.assertRaises(bt.Refused):
+                            bt.independent_verify(ctx, plan, out)
+                server_path.write_bytes(original_server)
+                rpc_path.write_bytes(original_rpc)
+                ctx["app_server_argv"] = original_argv
+                ctx["windows_backend"] = None
+                del plan["windows_backend"]
+                put("result.json", result)
                 for key, value in (
                     ("cleanup", None),
                     ("declared_pause", False),
@@ -1594,6 +1700,15 @@ class FamilyTests(unittest.TestCase):
                     tampered = copy.deepcopy(result)
                     tampered['cleanup']['reader_failure'] = failure
                     put('result.json', tampered)
+                    with self.assertRaises(bt.Refused):
+                        bt.independent_verify(ctx, plan, out)
+                tampered = copy.deepcopy(result)
+                del tampered["subject"]["windows_backend"]
+                put("result.json", tampered)
+                with self.assertRaises(bt.Refused):
+                    bt.independent_verify(ctx, plan, out)
+                put("result.json", result)
+                with mock.patch.object(ctx["daily"], "_helper_identities", return_value={"helper": "changed"}):
                     with self.assertRaises(bt.Refused):
                         bt.independent_verify(ctx, plan, out)
                 put("result.json", result)

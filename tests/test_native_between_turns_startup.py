@@ -55,6 +55,7 @@ class StartupAndCleanupTests(unittest.TestCase):
         ctx = {'u': types.SimpleNamespace(UpgradeClient=Base),
                'host': types.SimpleNamespace(OwnedProcess=Tree, Client=Base),
                'output': root, 'old_root': root, 'home': root, 'cli': root / 'cli',
+               'app_server_argv': [str(root / 'cli'), 'app-server'], 'windows_backend': None,
                'workspace': root, 'expected_model': 'test-model', 'read_file': root / 'README.md'}
         return ctx, process
 

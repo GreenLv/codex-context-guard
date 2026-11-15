@@ -49,6 +49,7 @@ private because they can contain local paths and process facts.
 | `old_source_sha256` | SHA-256 of `hooks/hooks.json` in the retained old extracted artifact. |
 | `read_file`, `native_read_sha256`, `read_file_safe_for_model` | The checkout's tracked, clean `README.md`, its lowercase SHA-256, and `true` to declare that its contents may be sent to the selected model. No other file is accepted as this fixture. |
 | `expected_cli_version`, `expected_model`, `witness_mode` | Exact output of the selected CLI's `--version`, the expected real OpenAI model name, and `unknown` for the current runtime-path witness. |
+| `windows_backend` | Required only on Windows: the literal `mxc`. Omit on macOS and other platforms. |
 | `trust_wait_seconds` | Optional integer 1–1200; default 300. This bounds the normal new-Hook review wait. |
 | `activity_wait_seconds` | Optional integer 1–900; default 120. This bounds the producer's observation of old runtime activity. The v2 daily plan has its own bounded drain. |
 
@@ -59,6 +60,19 @@ the producer checks that configuration and the model readback. It also binds its
 the maintained tool's helper closure, the artifact manifests, the selected
 CLI, model/provider readback and the retained plans and receipts. A changed
 bound input requires a fresh review and batch.
+
+On Windows the acceptance profile selects MXC, a native Windows process-isolation
+backend, so the standalone CLI's isolation choice is explicit for the controlled
+read-only task. This plan selection starts the owned CLI app-server with the fixed
+one-process override `-c 'windows.sandbox="mxc"'`; it does not change saved
+configuration. The producer checks that the effective `config/read` value is
+`windows.sandbox = "mxc"` in each observed phase and the independent reader
+rechecks that selection and the exact saved launch arguments. A missing or
+refused selection stops the run; there is no automatic fallback. This records
+the requested and effective configuration selection, not a direct observation
+of the operating system's sandbox backend. A Desktop client may use a different
+profile. The read-only sandbox and on-request approval requirements remain in
+effect.
 
 From the reviewed checkout, a verified Python 3.10+ interpreter can calculate
 the file SHA-256 and the repository's runtime-tree identity as follows. Replace
@@ -115,6 +129,9 @@ the returned settings. Its post-turn observation checks the requested read
 command and recorded tool events. Neither the sandbox setting nor the
 observation log is an execution-time allowlist of files: declaring README safe
 for the model does not itself prevent access to other readable files.
+The reviewed Windows command display may include or omit `-NoProfile`. The
+verifier still requires the known PowerShell executable wrapper and the exact
+read script; this does not inspect implicit PowerShell profile activity.
 
 ## Pending states, results and limits
 

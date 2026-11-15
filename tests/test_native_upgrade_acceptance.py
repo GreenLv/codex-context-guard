@@ -1082,11 +1082,17 @@ class UpgradeControls(unittest.TestCase):
                  r"_26.1104.709.0_x64__3k8sg7r9htsxt\dependencies\native\powershell\pwsh.exe")
         wrapper = f'"{shell}" -NoProfile -Command \'{expected}\''
         escaped = wrapper.replace(shell, shell.replace("\\", "\\\\"))
-        good = (expected, wrapper, escaped, wrapper.replace(shell, "\\\\?\\" + shell))
+        login_wrapper = wrapper.replace("-NoProfile ", "")
+        good = (expected, wrapper, escaped, wrapper.replace(shell, "\\\\?\\" + shell),
+                login_wrapper, login_wrapper.replace(shell, shell.replace("\\", "\\\\")))
         bad = (wrapper + " ; whoami", wrapper.replace("native-read.txt", "other.txt"),
                wrapper.replace("native-read.txt", "native-read.txt > output.txt"),
                wrapper.replace(shell, r"C:\temporary\pwsh.exe"),
-               f"powershell -Command '{expected}'", wrapper.replace("-NoProfile ", ""),
+               f"powershell -Command '{expected}'", login_wrapper + " ; whoami",
+               login_wrapper.replace("native-read.txt", "native-read.txt; whoami"),
+               wrapper.replace("-NoProfile ", "-NoProfile -NoProfile "),
+               wrapper.replace("-NoProfile ", "-NoLogo "),
+               login_wrapper.replace("-Command", "-EncodedCommand"),
                wrapper.replace("C:\\", "C:\\\\"))
         client = object.__new__(U.UpgradeClient)
         client.pending = {}

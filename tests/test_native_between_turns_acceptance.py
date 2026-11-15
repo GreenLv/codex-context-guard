@@ -1,6 +1,7 @@
 import copy
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import types
@@ -8,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+if os.environ.get("CG_SOURCE_REPO"):
+    sys.path.insert(0, os.environ["CG_SOURCE_REPO"])
 HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location(
     "bt", HERE.parent / "tools/validation/native_between_turns_acceptance.py"
@@ -62,6 +65,7 @@ def state(turn):
 class FakeClient:
     def __init__(self, ctx, trust=0):
         self.ctx = ctx
+        self.launch_argv = ctx["app_server_argv"]
         self.trust = trust
         self.calls = []
         self.rows = []
@@ -207,6 +211,8 @@ class Tests(unittest.TestCase):
             "data_root": self.home / "data",
             "repo": self.repo,
             "cli": self.p / "cli",
+            "app_server_argv": [str(self.p / "cli"), "app-server"],
+            "windows_backend": None,
             "tool": self.p / "tool",
             "maintained_plan": self.p / "plan",
             "artifact": self.artifact,
@@ -450,6 +456,26 @@ class Tests(unittest.TestCase):
         result = self.execute(apply=lambda *a, **k: {"exit_code": 2})
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["stage"], "apply")
+
+    def test_windows_runtime_refusal_has_no_backend_fallback(self):
+        self.plan["windows_backend"] = "mxc"
+        self.ctx["windows_backend"] = "mxc"
+        self.ctx["app_server_argv"] = [str(self.ctx["cli"]), "-c", 'windows.sandbox="mxc"', "app-server"]
+        self.client.launch_argv = list(self.ctx["app_server_argv"])
+        original = self.client.observed_turn
+
+        def refuse_fresh(thread, prompt):
+            if thread == "fresh":
+                raise bt.Refused("sandbox runtime refused")
+            return original(thread, prompt)
+
+        self.client.observed_turn = refuse_fresh
+        with mock.patch.object(bt.platform, "system", return_value="Windows"):
+            result = self.execute()
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["stage"], "fresh_turn")
+        self.assertEqual(result["subject"]["app_server_argv"], self.ctx["app_server_argv"])
+        self.assertEqual(self.calls, ["--resume"])
 
     def test_exit_one_without_expected_verify_receipt_is_failure(self):
         self.resume_status = "loaded_unknown"
