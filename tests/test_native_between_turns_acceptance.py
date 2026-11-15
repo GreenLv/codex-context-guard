@@ -85,11 +85,14 @@ class FakeClient:
         return ("t" + str(self.n), [])
 
     def check_provider(self):
-        return {
+        result = {
             "model_provider": "openai",
             "endpoint_policy": "official_default",
             "custom_catalog": False,
         }
+        if self.ctx["windows_backend"] == "mxc":
+            result["windows_sandbox"] = "mxc"
+        return result
 
     def inventory_for(self, sources):
         self.calls.append("inventory")
@@ -155,6 +158,8 @@ class Tests(unittest.TestCase):
             "native_read_sha256": bt.sha(self.work / "README.md"),
             "_native_plan_sha256": bt.sha(self.p / "plan"),
         }
+        if bt.platform.system() == "Windows":
+            self.plan["windows_backend"] = "mxc"
         self.u = types.SimpleNamespace(
             _private_directory=lambda p: None,
             _mkdir_private_new=lambda p: p.mkdir(mode=0o700),
@@ -211,8 +216,8 @@ class Tests(unittest.TestCase):
             "data_root": self.home / "data",
             "repo": self.repo,
             "cli": self.p / "cli",
-            "app_server_argv": [str(self.p / "cli"), "app-server"],
-            "windows_backend": None,
+            "app_server_argv": bt.app_server_argv(self.plan, self.p / "cli"),
+            "windows_backend": bt.selected_backend(self.plan),
             "tool": self.p / "tool",
             "maintained_plan": self.p / "plan",
             "artifact": self.artifact,

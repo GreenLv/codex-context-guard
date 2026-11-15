@@ -115,6 +115,9 @@ class FamilyTests(unittest.TestCase):
             self.assertEqual(bt.sha(path), hashlib.sha256(path.read_bytes()).hexdigest())
 
     def make_client(self, response, spawn_error=None, *, backend=None, config_windows=None):
+        if backend is None and bt.platform.system() == "Windows":
+            backend = "mxc"
+            config_windows = {"sandbox": "mxc"}
         ctx = {
             "output": self.root,
             "old_root": self.root / "old",
@@ -431,6 +434,8 @@ class FamilyTests(unittest.TestCase):
             "witness_mode": "unknown",
             "_native_plan_sha256": "c" * 64,
         }
+        if bt.platform.system() == "Windows":
+            plan["windows_backend"] = "mxc"
         called = []
         selected_version = ["0.17.3"]
 
@@ -487,10 +492,14 @@ class FamilyTests(unittest.TestCase):
             self.assertEqual(ctx["files"], newfiles)
             self.assertFalse((self.root / "result").exists())
             with mock.patch.object(bt.platform, "system", return_value="Windows"):
-                for wrong in ({}, {"windows_backend": None}, {"windows_backend": "elevated"},
-                              {"windows_backend": "mxc", "extra_cli_flags": ["--other"]}):
-                    with self.subTest(plan=wrong), self.assertRaises(bt.Refused):
-                        bt.preflight({**plan, **wrong}, self.root / "result")
+                missing = dict(plan)
+                missing.pop("windows_backend", None)
+                bad_plans = (missing, {**plan, "windows_backend": None},
+                             {**plan, "windows_backend": "elevated"},
+                             {**plan, "windows_backend": "mxc", "extra_cli_flags": ["--other"]})
+                for bad_plan in bad_plans:
+                    with self.subTest(plan=bad_plan), self.assertRaises(bt.Refused):
+                        bt.preflight(bad_plan, self.root / "result")
                 winctx = bt.preflight({**plan, "windows_backend": "mxc"}, self.root / "result")
                 self.assertEqual(winctx["app_server_argv"], [str(cli), "-c", 'windows.sandbox="mxc"', "app-server"])
                 self.assertEqual(winctx["windows_backend"], "mxc")
@@ -1369,7 +1378,7 @@ class FamilyTests(unittest.TestCase):
                 (out / name).write_text(json.dumps(data))
 
             put("server.json", {"pid": 42, "argv": ctx["app_server_argv"],
-                                "windows_backend": None, "os_backend_observation": "unobserved"})
+                                "windows_backend": ctx["windows_backend"], "os_backend_observation": "unobserved"})
             put("old-trust.json", {"hooks": oldhooks})
             put("new-trust.json", {"hooks": newhooks})
             put("old-state.json", before)
@@ -1452,14 +1461,14 @@ class FamilyTests(unittest.TestCase):
                     "config/read",
                     {"cwd": str(ctx["workspace"]), "includeLayers": False},
                 )
-                response(
-                    id,
-                    {
+                value = {
                         "model_provider": None,
                         "endpoint_policy": "official_default",
                         "custom_catalog": False,
-                    },
-                )
+                    }
+                if ctx["windows_backend"] == "mxc":
+                    value["windows_sandbox"] = "mxc"
+                response(id, value)
 
             def start(id, thread):
                 req(
@@ -1575,7 +1584,7 @@ class FamilyTests(unittest.TestCase):
                 producer_sha256=bt.sha(Path(bt.__file__).resolve()),
                 helper_closure_sha256=u.digest(ctx["daily"]._helper_identities()),
                 app_server_argv=ctx["app_server_argv"],
-                windows_backend=None,
+                windows_backend=ctx["windows_backend"],
             )
             result = {
                 "schema": bt.REPORT,
@@ -1633,6 +1642,8 @@ class FamilyTests(unittest.TestCase):
                 server_path, rpc_path = out / "server.json", out / "rpc.jsonl"
                 original_server, original_rpc = server_path.read_bytes(), rpc_path.read_bytes()
                 original_argv = ctx["app_server_argv"]
+                original_backend = ctx["windows_backend"]
+                original_plan_backend = plan.get("windows_backend")
                 win_argv = [str(ctx["cli"]), "-c", 'windows.sandbox="mxc"', "app-server"]
                 win_rows = copy.deepcopy(rows)
                 for row in win_rows:
@@ -1681,8 +1692,11 @@ class FamilyTests(unittest.TestCase):
                 server_path.write_bytes(original_server)
                 rpc_path.write_bytes(original_rpc)
                 ctx["app_server_argv"] = original_argv
-                ctx["windows_backend"] = None
-                del plan["windows_backend"]
+                ctx["windows_backend"] = original_backend
+                if original_plan_backend is None:
+                    del plan["windows_backend"]
+                else:
+                    plan["windows_backend"] = original_plan_backend
                 put("result.json", result)
                 for key, value in (
                     ("cleanup", None),

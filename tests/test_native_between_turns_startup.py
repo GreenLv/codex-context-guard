@@ -27,12 +27,16 @@ class StartupAndCleanupTests(unittest.TestCase):
                 bt.provider_projection({'config': config})
 
     def build(self, root, *, fail_rpc=False, spawn_exc=None, owned_receipt=None, close_exc=None):
+        windows = bt.platform.system() == "Windows"
         class Base:
             def rpc(self, method, params):
                 if fail_rpc:
                     raise RuntimeError('fixture')
                 if method == 'config/read':
-                    return {'config': {'model_provider': None, 'model_providers': {}}}
+                    config = {'model_provider': None, 'model_providers': {}}
+                    if windows:
+                        config['windows'] = {'sandbox': 'mxc'}
+                    return {'config': config}
                 return {}
             def send(self, message):
                 pass
@@ -55,7 +59,9 @@ class StartupAndCleanupTests(unittest.TestCase):
         ctx = {'u': types.SimpleNamespace(UpgradeClient=Base),
                'host': types.SimpleNamespace(OwnedProcess=Tree, Client=Base),
                'output': root, 'old_root': root, 'home': root, 'cli': root / 'cli',
-               'app_server_argv': [str(root / 'cli'), 'app-server'], 'windows_backend': None,
+               'app_server_argv': ([str(root / 'cli'), '-c', 'windows.sandbox="mxc"', 'app-server']
+                                   if windows else [str(root / 'cli'), 'app-server']),
+               'windows_backend': 'mxc' if windows else None,
                'workspace': root, 'expected_model': 'test-model', 'read_file': root / 'README.md'}
         return ctx, process
 
