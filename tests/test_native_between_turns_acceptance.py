@@ -95,6 +95,22 @@ class FakeClient:
             result["windows_sandbox"] = "mxc"
         return result
 
+    def refresh_config_for_thread(self, thread):
+        self.calls.append("config_refresh")
+        bt.write(self.ctx["output"] / "config-refresh-attempt.json", {"fixture": True})
+        bt.write(self.ctx["output"] / "config-refresh-outcome.json", {"fixture": True})
+        return {
+            "schema": "cg-user-config-refresh/v1",
+            "mode": bt.CONFIG_REFRESH,
+            "server_pid": 42,
+            "thread": thread,
+            "file": {},
+            "layer": {},
+            "resume_verified": True,
+            "loaded_before": True,
+            "loaded_after": True,
+        }
+
     def inventory_for(self, sources):
         self.calls.append("inventory")
         if self.trust:
@@ -145,6 +161,7 @@ class Tests(unittest.TestCase):
         self.normalized = {"mode": "between-turns", "old_artifact_dir": str(self.old)}
         self.plan = {
             "schema": bt.PLAN,
+            "config_refresh": bt.CONFIG_REFRESH,
             "transition_strategy": "between-turns",
             "declared_pause": True,
             "commit": "a" * 40,
@@ -158,7 +175,7 @@ class Tests(unittest.TestCase):
             "zip": str(self.p / "archive"),
             "native_read_sha256": bt.sha(self.work / "README.md"),
             "_native_plan_sha256": bt.sha(self.p / "plan"),
-            "expected_cli_version": "codex-cli 0.169.0",
+            "expected_cli_version": bt.REVIEWED_CLI_VERSION,
         }
         if bt.platform.system() == "Windows":
             self.plan["windows_backend"] = "mxc"
@@ -238,6 +255,7 @@ class Tests(unittest.TestCase):
             "native_plan_path": self.p / "plan",
             "helpers": {"helper": "ok"},
             "producer_sha256": bt.sha(Path(bt.__file__).resolve()),
+            "diagnostic_sha256": bt.sha(bt.diagnostic_path()),
             "old_zip": self.p / "archive",
             "old_files": {"a": "b"},
             "art": types.SimpleNamespace(
@@ -424,6 +442,7 @@ class Tests(unittest.TestCase):
             mock.patch.object(bt, "verify_read_tool"),
             mock.patch.object(bt, "independent_verify"),
             mock.patch.object(bt, "verify_zip"),
+            mock.patch.dict(bt.REVIEWED_CLI_SHA256, {"Darwin": self.plan["cli_sha256"], "Windows": self.plan["cli_sha256"], "Linux": self.plan["cli_sha256"]}),
             mock.patch.dict(
                 bt.OLD_RELEASES, {"0.17.3": {"zip_sha256": bt.sha(self.p / "archive")}}
             ),
@@ -472,7 +491,8 @@ class Tests(unittest.TestCase):
         result = self.execute()
         self.assertEqual(result["status"], "passed_cli_native")
         self.assertEqual(self.calls, ["--resume", "--verify"])
-        self.assertEqual(len(self.client.calls), 3)
+        self.assertEqual(self.client.calls.count("inventory"), 3)
+        self.assertEqual(self.client.calls.count("config_refresh"), 1)
         self.assertTrue(result["cleanup"]["cleanup_complete"])
 
     def test_trust_timeout_preserves_apply_without_repeat(self):

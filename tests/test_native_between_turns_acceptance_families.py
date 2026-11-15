@@ -363,6 +363,8 @@ class FamilyTests(unittest.TestCase):
         tool.write_text("tool")
         producer = repo / "tools/validation/native_between_turns_acceptance.py"
         producer.write_text("producer fixture")
+        diagnostic = repo / "tools/validation/hook_failure_diagnostics.py"
+        diagnostic.write_text("diagnostic fixture")
         cli = self.root / "codex"
         cli.write_text("cli")
         read = workspace / "README.md"
@@ -419,6 +421,7 @@ class FamilyTests(unittest.TestCase):
         )
         plan = {
             "schema": bt.PLAN,
+            "config_refresh": bt.CONFIG_REFRESH,
             "transition_strategy": "between-turns",
             "declared_pause": True,
             "read_file_safe_for_model": True,
@@ -444,7 +447,7 @@ class FamilyTests(unittest.TestCase):
             "old_zip": str(oldzip),
             "read_file": str(read),
             "old_source_sha256": bt.sha(oldroot / "hooks/hooks.json"),
-            "expected_cli_version": "codex-cli 0.169.0",
+            "expected_cli_version": bt.REVIEWED_CLI_VERSION,
             "expected_model": "model",
             "witness_mode": "unknown",
             "_native_plan_sha256": "c" * 64,
@@ -461,7 +464,7 @@ class FamilyTests(unittest.TestCase):
                 return types.SimpleNamespace(returncode=0, stdout=stdout)
             if argv[-1] == "--version":
                 return types.SimpleNamespace(
-                    returncode=0, stdout=b"codex-cli 0.169.0\n"
+                    returncode=0, stdout=(bt.REVIEWED_CLI_VERSION + "\n").encode()
                 )
             data = {
                 "installed": [
@@ -497,11 +500,16 @@ class FamilyTests(unittest.TestCase):
         with (
             mock.patch.object(u, "_private_directory", side_effect=private_fixture_directory),
             mock.patch.object(bt, "producer_path", return_value=producer),
+            mock.patch.object(bt, "diagnostic_path", return_value=diagnostic),
             mock.patch.object(bt, "import_product", return_value=(u, host, art, daily)),
             mock.patch.object(bt.subprocess, "run", side_effect=command),
             mock.patch.object(bt, "owned_read", side_effect=read),
             mock.patch.object(u, "source_files", side_effect=scan),
             mock.patch.dict(bt.OLD_RELEASES, {"0.17.3": pin}),
+            mock.patch.dict(
+                bt.REVIEWED_CLI_SHA256,
+                {"Darwin": bt.sha(cli), "Windows": bt.sha(cli), "Linux": bt.sha(cli)},
+            ),
         ):
             ctx = bt.preflight(plan, self.root / "result")
             self.assertEqual(ctx["files"], newfiles)
@@ -613,7 +621,7 @@ class FamilyTests(unittest.TestCase):
                 sidecar.write_text(
                     json.dumps(
                         {
-                            "schema": "cg-between-turn-independent/v1",
+                            "schema": "cg-between-turn-independent/v2",
                             "status": "passed",
                             "result_sha256": bt.sha(result),
                         }
@@ -645,7 +653,7 @@ class FamilyTests(unittest.TestCase):
         sidecar.write_text(
             json.dumps(
                 {
-                    "schema": "cg-between-turn-independent/v1",
+                    "schema": "cg-between-turn-independent/v2",
                     "status": "passed",
                     "result_sha256": "0" * 64,
                 }
@@ -1486,6 +1494,7 @@ class FamilyTests(unittest.TestCase):
         fixture = orig.Tests()
         fixture.setUp()
         try:
+            fixture.plan["expected_cli_version"] = bt.REVIEWED_CLI_VERSION
             fixture.write_receipts()
             ctx = fixture.ctx
             out = ctx["output"]
@@ -1494,7 +1503,8 @@ class FamilyTests(unittest.TestCase):
             ctx["native_plan_path"] = fixture.p / "plan"
             plan["_native_plan_sha256"] = bt.sha(ctx["native_plan_path"])
             plan["expected_model"] = "test-model"
-            plan["expected_cli_version"] = "codex-cli 0.169.0"
+            ctx["expected_model"] = "test-model"
+            plan["expected_cli_version"] = bt.REVIEWED_CLI_VERSION
             oldsrc = str(ctx["old_root"] / "hooks/hooks.json")
             newsrc = str(ctx["new_root"] / "hooks/hooks.json")
             oldhooks = orig.inv(oldsrc)["data"][0]["hooks"]
@@ -1523,6 +1533,61 @@ class FamilyTests(unittest.TestCase):
                                 "windows_backend": ctx["windows_backend"], "os_backend_observation": "unobserved"})
             put("old-trust.json", {"hooks": oldhooks})
             put("new-trust.json", {"hooks": newhooks})
+            (ctx["home"] / "config.toml").write_text("[hooks.state]\n")
+            file_projection = bt.config_file_projection(ctx["home"])
+            refresh_provider = {
+                "model_provider": None,
+                "endpoint_policy": "official_default",
+                "custom_catalog": False,
+            }
+            if ctx["windows_backend"] == "mxc":
+                refresh_provider["windows_sandbox"] = "mxc"
+            refresh_layer = {
+                "version": "opaque",
+                "shape": {
+                    "entries": 9,
+                    "tables": 9,
+                    "hash_strings": 9,
+                    "combined_hashes": 0,
+                },
+                "provider": refresh_provider,
+                "unique_active_base_user_layer": True,
+            }
+            put(
+                "config-refresh.json",
+                {
+                    "schema": "cg-user-config-refresh/v1",
+                    "mode": bt.CONFIG_REFRESH,
+                    "server_pid": 42,
+                    "thread": "old",
+                    "file": file_projection,
+                    "layer": refresh_layer,
+                    "resume_verified": True,
+                    "loaded_before": True,
+                    "loaded_after": True,
+                },
+            )
+            put(
+                "config-refresh-attempt.json",
+                {
+                    "schema": "cg-config-refresh-attempt/v1",
+                    "server_pid": 42,
+                    "thread": "old",
+                    "file_before": file_projection,
+                    "layer": refresh_layer,
+                },
+            )
+            put(
+                "config-refresh-outcome.json",
+                {
+                    "schema": "cg-config-refresh-outcome/v1",
+                    "server_pid": 42,
+                    "thread": "old",
+                    "batch_send_attempted": True,
+                    "file_after": file_projection,
+                    "file_state": "unchanged",
+                },
+            )
             put("old-state.json", before)
             put("old-after.json", after)
             put(
@@ -1665,6 +1730,45 @@ class FamilyTests(unittest.TestCase):
             marker("old_turn_complete", 10)
             marker("apply_started", 20)
             marker("apply_finished", 40)
+            req(104, "hooks/list", {"cwds": [str(ctx["workspace"])]})
+            response(104, orig.inv(newsrc))
+            marker("new_trust_confirmed", 41)
+            for ident in (105, 106):
+                req(ident, "config/read", {"cwd": None, "includeLayers": True})
+                response(ident, refresh_layer)
+            req(
+                107,
+                "config/batchWrite",
+                {"edits": [], "expectedVersion": "opaque", "reloadUserConfig": True},
+            )
+            response(
+                107,
+                {
+                    "status": "ok",
+                    "version": "opaque",
+                    "file_matches": True,
+                    "overridden": False,
+                },
+            )
+            req(108, "config/read", {"cwd": None, "includeLayers": True})
+            response(108, refresh_layer)
+            req(110, "thread/loaded/list", {})
+            response(110, {"controlled_thread_loaded": True, "complete": True})
+            req(109, "thread/resume", {"threadId": "old"})
+            response(
+                109,
+                {
+                    "thread": {"id": "old"},
+                    "model": "test-model",
+                    "modelProvider": "openai",
+                    "approvalPolicy": "on-request",
+                    "sandbox": {"type": "readOnly"},
+                    "cwd_matches": True,
+                },
+            )
+            req(111, "thread/loaded/list", {})
+            response(111, {"controlled_thread_loaded": True, "complete": True})
+            marker("config_refresh_completed", 45)
             config(102)
             req(12, "turn/start", {"threadId": "old"})
             response(12, {"turn": {"id": "t2"}})
@@ -1704,6 +1808,9 @@ class FamilyTests(unittest.TestCase):
                 "between-turn-boundary.json",
                 "maintained-call.json",
                 "official-readback.json",
+                "config-refresh.json",
+                "config-refresh-attempt.json",
+                "config-refresh-outcome.json",
                 "maintained/prepare.json",
                 "maintained/apply.json",
                 "maintained/verify.json",
@@ -1724,12 +1831,14 @@ class FamilyTests(unittest.TestCase):
             subject.update(
                 native_plan_sha256=plan["_native_plan_sha256"],
                 producer_sha256=bt.sha(Path(bt.__file__).resolve()),
+                diagnostic_sha256=ctx["diagnostic_sha256"],
                 helper_closure_sha256=u.digest(ctx["daily"]._helper_identities()),
                 app_server_argv=ctx["app_server_argv"],
                 windows_backend=ctx["windows_backend"],
             )
             result = {
                 "schema": bt.REPORT,
+                "config_refresh": bt.CONFIG_REFRESH,
                 "status": "provisional_cli_native",
                 "declared_pause": True,
                 "login_budget": 0,
@@ -1769,6 +1878,7 @@ class FamilyTests(unittest.TestCase):
                     },
                     "new_trust": {"status": "passed", "count": 9},
                     "maintained_apply": {"status": "passed"},
+                    "config_refresh": {"status": "passed"},
                 },
             }
             put("result.json", result)
@@ -1776,13 +1886,28 @@ class FamilyTests(unittest.TestCase):
                 mock.patch.object(
                     bt, "snapshot", return_value={"root": "data", "sha256": "2" * 64}
                 ),
+                mock.patch.dict(
+                    bt.REVIEWED_CLI_SHA256,
+                    {
+                        "Darwin": plan["cli_sha256"],
+                        "Windows": plan["cli_sha256"],
+                        "Linux": plan["cli_sha256"],
+                    },
+                ),
                 mock.patch.object(
                     bt, "final_subject_readback", return_value={"installed": True}
                 ),
             ):
                 self.assertTrue(bt.independent_verify(ctx, plan, out))
                 server_path, rpc_path = out / "server.json", out / "rpc.jsonl"
-                original_server, original_rpc = server_path.read_bytes(), rpc_path.read_bytes()
+                original_server, original_rpc = (
+                    server_path.read_bytes(),
+                    rpc_path.read_bytes(),
+                )
+                refresh_path = out / "config-refresh.json"
+                original_refresh = refresh_path.read_bytes()
+                attempt_path = out / "config-refresh-attempt.json"
+                original_attempt = attempt_path.read_bytes()
                 original_argv = ctx["app_server_argv"]
                 original_backend = ctx["windows_backend"]
                 original_plan_backend = plan.get("windows_backend")
@@ -1792,6 +1917,8 @@ class FamilyTests(unittest.TestCase):
                     response = row.get("message", {}).get("result", {})
                     if "endpoint_policy" in response:
                         response["windows_sandbox"] = "mxc"
+                    if response.get("unique_active_base_user_layer") is True:
+                        response["provider"]["windows_sandbox"] = "mxc"
                     item = row.get("message", {}).get("params", {}).get("item", {})
                     if item.get("type") == "commandExecution":
                         item["command"] = "Get-Content -LiteralPath README.md"
@@ -1802,9 +1929,28 @@ class FamilyTests(unittest.TestCase):
                 ctx["app_server_argv"] = win_argv
                 ctx["windows_backend"] = "mxc"
                 plan["windows_backend"] = "mxc"
-                put("server.json", {"pid": 42, "argv": win_argv, "windows_backend": "mxc", "os_backend_observation": "unobserved"})
+                put(
+                    "server.json",
+                    {
+                        "pid": 42,
+                        "argv": win_argv,
+                        "windows_backend": "mxc",
+                        "os_backend_observation": "unobserved",
+                    },
+                )
+                win_refresh = json.loads(original_refresh)
+                win_refresh["layer"]["provider"]["windows_sandbox"] = "mxc"
+                put("config-refresh.json", win_refresh)
+                win_attempt = json.loads(original_attempt)
+                win_attempt["layer"]["provider"]["windows_sandbox"] = "mxc"
+                put("config-refresh-attempt.json", win_attempt)
                 rpc_path.write_text("".join(json.dumps(r) + "\n" for r in win_rows))
-                for name in ("server.json", "rpc.jsonl"):
+                for name in (
+                    "server.json",
+                    "rpc.jsonl",
+                    "config-refresh.json",
+                    "config-refresh-attempt.json",
+                ):
                     win_result["evidence"][name] = bt.sha(out / name)
                 put("result.json", win_result)
                 with (mock.patch.object(bt.platform, "system", return_value="Windows"),
@@ -1834,6 +1980,8 @@ class FamilyTests(unittest.TestCase):
                             bt.independent_verify(ctx, plan, out)
                 server_path.write_bytes(original_server)
                 rpc_path.write_bytes(original_rpc)
+                refresh_path.write_bytes(original_refresh)
+                attempt_path.write_bytes(original_attempt)
                 ctx["app_server_argv"] = original_argv
                 ctx["windows_backend"] = original_backend
                 if original_plan_backend is None:

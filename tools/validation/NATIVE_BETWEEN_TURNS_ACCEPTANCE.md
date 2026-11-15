@@ -26,6 +26,13 @@ the old ZIP is checked against the producer's published-release pin and the
 retained old artifact. The installed old cache must match that artifact. The
 new version cache must not already exist at preflight.
 
+Before `--run`, enable and normally review all nine Context Guard Hooks for
+the installed old version in the selected Codex configuration. Open `/hooks`
+in the CLI, or **Review hooks** / **Settings > Hooks** in Desktop; see the
+[official Hook review instructions](https://learn.chatgpt.com/docs/hooks).
+The old Hooks must already be trusted when the run starts. The producer's
+bounded review wait applies to the newly installed version.
+
 The native plan is a private JSON file with exactly the fields below and the
 optional waits. All paths are absolute; files must be regular, single-link
 inputs and paths must not traverse links or reparse points. `repo`,
@@ -38,7 +45,8 @@ private because they can contain local paths and process facts.
 
 | Fields | Value to provide |
 | --- | --- |
-| `schema`, `transition_strategy`, `declared_pause` | `cg-between-turn-native-plan/v1`, `between-turns`, and `true`. The declaration records the operator's between-turn pause; it cannot enforce it for other clients. |
+| `schema`, `transition_strategy`, `declared_pause` | `cg-between-turn-native-plan/v2`, `between-turns`, and `true`. The declaration records the operator's between-turn pause; it cannot enforce it for other clients. |
+| `config_refresh` | The literal `reload-user-config-empty-batch`. After normal Hook review, the owned app-server performs one version-bound empty configuration batch and verifies that the user configuration file remains unchanged. |
 | `old_version`, `target_version` | `0.17.3` and the reviewed target version, `0.18.0` for this version. |
 | `repo`, `workspace`, `codex_home`, `data_root` | The exact reviewed checkout, the same checkout as workspace, the daily Codex configuration directory, and its existing Context Guard data root. |
 | `cli`, `maintained_tool`, `maintained_plan` | Exact Codex CLI, the checkout's `tools/validation/daily_upgrade.py`, and the private v2 between-turns plan. Its target artifact and CLI must match the native plan. |
@@ -74,6 +82,10 @@ of the operating system's sandbox backend. A Desktop client may use a different
 profile. The read-only sandbox and on-request approval requirements remain in
 effect.
 
+This refresh mode is limited to the reviewed `codex-cli 0.169.0-alpha.11.1`
+macOS and Windows binaries pinned by the producer. A different binary or CLI
+version is refused; matching this pin does not prove how that binary was built.
+
 From the reviewed checkout, a verified Python 3.10+ interpreter can calculate
 the file SHA-256 and the repository's runtime-tree identity as follows. Replace
 the placeholders with absolute paths; on Windows use the selected Python
@@ -88,19 +100,27 @@ python3 -c 'import pathlib, sys; from tools.validation.stop_host_acceptance impo
 
 Run a launcher from the checkout. Replace `PLAN` and `OUTPUT` with absolute
 private paths; the same fresh `OUTPUT` can be used for preflight and run
-because preflight does not create it.
+because preflight does not create it. Each phase below starts only if the
+previous phase exits with code `0`; on any other result, inspect the retained
+records before taking another action.
 
 ```sh
-tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUTPUT --preflight
-tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUTPUT --run
+tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUTPUT --preflight && \
+tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUTPUT --run && \
 tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUTPUT --verify-result
 ```
 
 ```powershell
-$entry = '.\tools\validation\run_native_acceptance.ps1'
-& $entry -Target between-turns -Arguments @('--plan', 'PLAN', '--output', 'OUTPUT', '--preflight')
-& $entry -Target between-turns -Arguments @('--plan', 'PLAN', '--output', 'OUTPUT', '--run')
-& $entry -Target between-turns -Arguments @('--plan', 'PLAN', '--output', 'OUTPUT', '--verify-result')
+& {
+    $ErrorActionPreference = 'Stop'
+    $nativeAcceptanceEntry = '.\tools\validation\run_native_acceptance.ps1'
+    & $nativeAcceptanceEntry -Target between-turns -Arguments @('--plan', 'PLAN', '--output', 'OUTPUT', '--preflight')
+    if ($LASTEXITCODE -ne 0) { throw 'Preflight stopped; inspect its result.' }
+    & $nativeAcceptanceEntry -Target between-turns -Arguments @('--plan', 'PLAN', '--output', 'OUTPUT', '--run')
+    if ($LASTEXITCODE -ne 0) { throw 'Run stopped; retain and inspect the batch.' }
+    & $nativeAcceptanceEntry -Target between-turns -Arguments @('--plan', 'PLAN', '--output', 'OUTPUT', '--verify-result')
+    if ($LASTEXITCODE -ne 0) { throw 'Verification stopped; inspect its result.' }
+}
 ```
 
 1. `--preflight` only reads inputs and official installation state. It checks
@@ -112,14 +132,30 @@ $entry = '.\tools\validation\run_native_acceptance.ps1'
    waits for the turn boundary and old runtime activity, then invokes the
    maintained daily upgrade. The official plugin add may remove the old cache.
    Keep new operations paused throughout the switch.
-3. If the new Hooks need normal review, use the official Hook interface while
-   the bounded wait is active. When installation already landed, the producer
+3. If the new Hooks need normal review, review all nine for the target version
+   through `/hooks` or Desktop's **Review hooks** / **Settings > Hooks**, using
+   the same Codex configuration while the bounded wait is active.
+   When installation already landed, the producer
    continues with verification after review; it does not repeat plugin add.
-   After trust is observed, the same old thread continues on the same server and
+   After trust is observed, the producer reads the active base user layer,
+   requires exactly one active base user layer and no combined `trusted_hash`
+   values awaiting automatic splitting. If these conditions are unmet, it stops
+   and preserves the batch; do not hand-edit trust fields to pass this check.
+   It sends one empty batch bound to that layer's version, verifies unchanged
+   file identity and bytes, then
+   checks that the old thread is loaded before and after reattaching the
+   existing subscription, then reads back its model and permissions. These
+   observations are not a lock. Conflicts or unknown results stop the run
+   without a retry. The same old thread then continues on the same server and
    its state and data root are checked. A fresh thread then reads the tracked
    `README.md` using `cat README.md` on macOS or
    `Get-Content -LiteralPath README.md` on Windows. Its real prompt, tool and
    stop Hook pairs are checked against the new definition and bundle.
+   The producer saves private attempt and outcome receipts with the file digest,
+   identity digest and layer version, including after a failed or uncertain
+   request. The producer syncs each receipt file; on POSIX it also syncs the
+   containing directory, while Windows directory durability is not established.
+   A failed request is never automatically repeated.
 4. `--verify-result` reads the existing output and current installed state,
    independently re-derives the evidence bindings and does not start a model
    or repeat installation. It requires the same plan and the existing output.
@@ -160,3 +196,11 @@ fallback conditions, not presented as an observed operating-system path.
 This evidence does not establish Desktop GUI loading or an unrelated task's
 continuity. Treat source checks, CI, native results, artifact identity and
 publication as separate facts.
+
+For a failed Hook on a controlled thread and active turn, the private RPC
+journal may retain a bounded diagnostic containing entry types, lengths,
+digests and text-pattern classifications; it does not retain entry text.
+Treat these digests as sensitive evidence. A pattern does not authenticate the
+message source or establish the cause. Early events before the thread or turn
+is registered may retain only metadata. A failure diagnostic never counts as
+a completed Hook.

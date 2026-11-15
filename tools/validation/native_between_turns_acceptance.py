@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify one between-turns upgrade using an owned app-server and real turns.
 
-The v1 native plan binds the reviewed source, artifacts and maintained daily
+The v2 native plan binds the reviewed source, artifacts and maintained daily
 v2 tool. Preflight is read-only; run uses the normal account and Hook review.
 The independent verify-result action rechecks saved evidence and final installed
 state without starting a model or repeating installation. CLI observations do
@@ -28,11 +28,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from tools.validation import hook_failure_diagnostics  # noqa: E402
 from tools.validation import native_acceptance as native_io  # noqa: E402
 from tools.validation import native_upgrade_acceptance as native_identity  # noqa: E402
 
-PLAN = "cg-between-turn-native-plan/v1"
-REPORT = "cg-between-turn-native-result/v1"
+PLAN = "cg-between-turn-native-plan/v2"
+REPORT = "cg-between-turn-native-result/v2"
+CONFIG_REFRESH = "reload-user-config-empty-batch"
+REVIEWED_CLI_VERSION = "codex-cli 0.169.0-alpha.11.1"
+REVIEWED_CLI_SHA256 = {
+    "Darwin": "3ea20787e106af94573d3d6c19480aed93a1334b0dd32b6b04e2f780ce82cf4b",
+    "Windows": "094d4db493de22025712cc5963854e7654b7c97f4cee795e3e986270a0f4f6b4",
+}
 ENTRY = "context-guard@codex-context-guard"
 OLD_RELEASES = {
     "0.17.3": {
@@ -67,6 +74,15 @@ class Pending(Exception):
 def require(condition, message):
     if not condition:
         raise Refused(message)
+
+
+def require_reviewed_cli(plan):
+    require(
+        platform.system() in REVIEWED_CLI_SHA256
+        and plan.get("expected_cli_version") == REVIEWED_CLI_VERSION
+        and plan.get("cli_sha256") == REVIEWED_CLI_SHA256.get(platform.system()),
+        "config refresh requires the reviewed CLI version and platform binary",
+    )
 
 
 _SENSITIVE = re.compile(
@@ -206,6 +222,10 @@ def producer_path():
     return Path(__file__).resolve()
 
 
+def diagnostic_path():
+    return Path(hook_failure_diagnostics.__file__).resolve()
+
+
 def sha(path):
     # Executable identities can exceed the bounded record-reader limit.
     # Reuse the streaming no-follow identity verifier, including its separate
@@ -326,6 +346,111 @@ def provider_projection(response, *, backend=None):
     return projection
 
 
+def config_file_projection(home):
+    """Read only the file identity and digest; never persist configuration bytes."""
+    path = regular(home / "config.toml")
+    before = path.lstat()
+    data = safe_bytes(path, 8 * 1024 * 1024)
+    after = path.lstat()
+    require(
+        _safe_stat_identity(before) == _safe_stat_identity(after), "config file changed"
+    )
+    return {
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "identity_sha256": hashlib.sha256(
+            json.dumps(_safe_stat_identity(after)).encode()
+        ).hexdigest(),
+    }
+
+
+def config_layer_projection(response, c):
+    provider = provider_projection(response, backend=c["windows_backend"])
+    layers = response.get("layers")
+    require(
+        isinstance(layers, list)
+        and all(
+            isinstance(x, dict) and isinstance(x.get("name"), dict) for x in layers
+        ),
+        "config layers unavailable",
+    )
+    users = [x for x in layers if x["name"].get("type") == "user"]
+    require(len(users) == 1, "unique user layer required")
+    layer = users[0]
+    name = layer["name"]
+    require(
+        isinstance(name.get("file"), str)
+        and c["daily"]._same_path(name["file"], str(c["home"] / "config.toml"))
+        and name.get("profile") is None
+        and layer.get("disabledReason") is None,
+        "active base user layer differs",
+    )
+    version = layer.get("version")
+    require(
+        isinstance(version, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,256}", version),
+        "user layer version unavailable",
+    )
+    config = layer.get("config")
+    hooks = config.get("hooks") if isinstance(config, dict) else None
+    states = hooks.get("state") if isinstance(hooks, dict) else None
+    require(isinstance(states, dict), "user Hook state unavailable")
+    tables = [x for x in states.values() if isinstance(x, dict)]
+    hashes = [
+        x.get("trusted_hash") for x in tables if isinstance(x.get("trusted_hash"), str)
+    ]
+    counts = {
+        "entries": len(states),
+        "tables": len(tables),
+        "hash_strings": len(hashes),
+        "combined_hashes": sum("/" in x for x in hashes),
+    }
+    require(counts["combined_hashes"] == 0, "user Hook trust migration would write")
+    return {
+        "version": version,
+        "shape": counts,
+        "provider": provider,
+        "unique_active_base_user_layer": True,
+    }
+
+
+def resume_projection(response, c, thread):
+    require(
+        isinstance(response, dict)
+        and isinstance(response.get("thread"), dict)
+        and response["thread"].get("id") == thread
+        and response.get("model") == c["expected_model"]
+        and response.get("modelProvider") == "openai"
+        and response.get("approvalPolicy") == "on-request"
+        and isinstance(response.get("sandbox"), dict)
+        and response["sandbox"].get("type") == "readOnly"
+        and isinstance(response.get("cwd"), str)
+        and c["daily"]._same_path(response["cwd"], str(c["workspace"])),
+        "loaded thread policy readback differs",
+    )
+    return {
+        "thread": {"id": thread},
+        "model": response["model"],
+        "modelProvider": "openai",
+        "approvalPolicy": "on-request",
+        "sandbox": {"type": "readOnly"},
+        "cwd_matches": True,
+    }
+
+
+def durable_private_receipt(path, value):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(value, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    if os.name == "posix":
+        directory_fd = os.open(Path(path).parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+
 def import_product(repo):
     sys.path.insert(0, str(repo))
     from scripts import artifact_identity as art
@@ -426,12 +551,15 @@ def preflight(plan, output, *, after=False):
         plan.get("transition_strategy") == "between-turns",
         "unsupported transition strategy",
     )
+    require(plan.get("config_refresh") == CONFIG_REFRESH, "unsupported config refresh")
+    require_reviewed_cli(plan)
     require(
         plan.get("declared_pause") is True, "user-declared between-turn pause required"
     )
     required = {
         "schema",
         "transition_strategy",
+        "config_refresh",
         "declared_pause",
         "read_file_safe_for_model",
         "old_version",
@@ -536,6 +664,10 @@ def preflight(plan, output, *, after=False):
         producer_path() == repo / "tools/validation/native_between_turns_acceptance.py",
         "native producer must be repository owned",
     )
+    require(
+        diagnostic_path() == repo / "tools/validation/hook_failure_diagnostics.py",
+        "Hook diagnostic helper must be repository owned",
+    )
     tracked_producer = subprocess.run(
         [
             "git",
@@ -545,12 +677,13 @@ def preflight(plan, output, *, after=False):
             "--error-unmatch",
             "--",
             "tools/validation/native_between_turns_acceptance.py",
+            "tools/validation/hook_failure_diagnostics.py",
         ],
         capture_output=True,
         text=True,
         timeout=20,
     )
-    require(tracked_producer.returncode == 0, "native producer must be tracked")
+    require(tracked_producer.returncode == 0, "native producer and Hook diagnostic helper must be tracked")
     for key, path in [
         ("tool_sha256", tool),
         ("cli_sha256", cli),
@@ -765,6 +898,7 @@ def preflight(plan, output, *, after=False):
         "old_files": old_files,
         "helpers": daily._helper_identities(),
         "producer_sha256": sha(producer_path()),
+        "diagnostic_sha256": sha(diagnostic_path()),
     }
 
 
@@ -899,6 +1033,15 @@ class DailyClientFactory:
                 self.reader_failure = None
                 self.spawn_attempted = False
                 self._client_cleanup = None
+                self.layer_ids = set()
+                self.refresh_version = None
+                self.refresh_sent = False
+                self.resume_thread = None
+                self.resume_sent = False
+                self.loaded_thread = None
+                self.controlled_threads = set()
+                self.turn_request_threads = {}
+                self.active_diagnostic_turn = None
                 try:
                     self.log = BoundedJournal(c["output"] / "rpc.jsonl")
                     self.err = open(os.devnull, "wb")
@@ -1071,17 +1214,84 @@ class DailyClientFactory:
                     and response.get("sandbox", {}).get("type") == "readOnly",
                     "model/provider readback mismatch",
                 )
-                return response["thread"]["id"]
+                thread = response.get("thread", {}).get("id")
+                require(isinstance(thread, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", thread),
+                        "invalid controlled thread identity")
+                self.controlled_threads.add(thread)
+                return thread
 
             def _projection(self, message):
                 request_method = self.pending.get(message.get("id"))
+                is_layer = message.get("id") in self.layer_ids
                 result = super()._projection(message)
                 if (
                     result is not None
                     and request_method == "config/read"
                     and "result" in result
                 ):
-                    result["result"] = provider_projection(message.get("result"), backend=c["windows_backend"])
+                    result["result"] = (
+                        config_layer_projection(message.get("result"), c)
+                        if is_layer
+                        else provider_projection(
+                            message.get("result"), backend=c["windows_backend"]
+                        )
+                    )
+                    self.layer_ids.discard(message.get("id"))
+                if (
+                    result is not None
+                    and request_method == "config/batchWrite"
+                    and "result" in result
+                ):
+                    raw = message.get("result")
+                    require(
+                        isinstance(raw, dict)
+                        and raw.get("status") == "ok"
+                        and raw.get("version") == self.refresh_version
+                        and isinstance(raw.get("filePath"), str)
+                        and c["daily"]._same_path(
+                            raw["filePath"], str(c["home"] / "config.toml")
+                        )
+                        and raw.get("overriddenMetadata") is None,
+                        "config refresh response differs",
+                    )
+                    result["result"] = {
+                        "status": "ok",
+                        "version": self.refresh_version,
+                        "file_matches": True,
+                        "overridden": False,
+                    }
+                if (
+                    result is not None
+                    and request_method == "thread/resume"
+                    and "result" in result
+                ):
+                    result["result"] = resume_projection(
+                        message.get("result"), c, self.resume_thread
+                    )
+                if result is not None and request_method == "turn/start" and "result" in result:
+                    thread = self.turn_request_threads.pop(message.get("id"), None)
+                    turn = message.get("result", {}).get("turn", {}).get("id")
+                    require(thread in self.controlled_threads and isinstance(turn, str)
+                            and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", turn), "controlled turn identity differs")
+                    self.active_diagnostic_turn = (thread, turn)
+                if (
+                    result is not None
+                    and request_method == "thread/loaded/list"
+                    and "result" in result
+                ):
+                    raw = message.get("result")
+                    require(
+                        isinstance(raw, dict)
+                        and isinstance(raw.get("data"), list)
+                        and all(isinstance(x, str) for x in raw["data"])
+                        and raw["data"].count(self.loaded_thread) == 1
+                        and raw.get("nextCursor") is None,
+                        "loaded old thread unavailable",
+                    )
+                    result["result"] = {
+                        "controlled_thread_loaded": True,
+                        "complete": True,
+                    }
                 if (
                     result is not None
                     and request_method == "thread/start"
@@ -1111,6 +1321,24 @@ class DailyClientFactory:
                             if approved_read(u, raw.get("command"), command)
                             else "<unapproved>"
                         )
+                params = message.get("params", {})
+                if (result is not None and message.get("method") == "hook/completed"
+                        and params.get("threadId") in self.controlled_threads
+                        and ((params.get("threadId"), params.get("turnId")) == self.active_diagnostic_turn
+                             or "turnId" in params and params.get("turnId") is None
+                             and params.get("run", {}).get("eventName") in {"sessionStart", "sessionEnd"})):
+                    inventory = (
+                        self.observation_inventory
+                        if message.get("params", {}).get("threadId")
+                        == self.observation_thread
+                        and self.observation_inventory is not None
+                        else self.approved
+                    )
+                    diagnostic = hook_failure_diagnostics.project_failed(
+                        message, inventory, u._source_key
+                    )
+                    if diagnostic is not None:
+                        result["params"]["run"]["failure_diagnostic"] = diagnostic
                 return result
 
             def send(self, message):
@@ -1122,16 +1350,166 @@ class DailyClientFactory:
                         "hooks/list",
                         "turn/start",
                         "thread/start",
-                        "thread/unsubscribe",
                         "config/read",
+                        "config/batchWrite",
+                        "thread/resume",
+                        "thread/loaded/list",
                     },
                     "forbidden RPC method",
                 )
                 if message.get("method") == "config/read":
+                    params = message.get("params")
+                    require(
+                        params
+                        in (
+                            {"cwd": str(c["workspace"]), "includeLayers": False},
+                            {"cwd": None, "includeLayers": True},
+                        ),
+                        "config read request differs",
+                    )
                     if type(message.get("id")) is int:
                         self.pending[message["id"]] = "config/read"
+                        if params["includeLayers"]:
+                            self.layer_ids.add(message["id"])
                     return host.Client.send(self, message)
+                if message.get("method") == "config/batchWrite":
+                    require(
+                        not self.refresh_sent
+                        and isinstance(self.refresh_version, str)
+                        and message.get("params")
+                        == {
+                            "edits": [],
+                            "expectedVersion": self.refresh_version,
+                            "reloadUserConfig": True,
+                        },
+                        "config refresh request differs",
+                    )
+                    self.refresh_sent = True
+                    self.pending[message["id"]] = "config/batchWrite"
+                    return host.Client.send(self, message)
+                if message.get("method") == "thread/resume":
+                    require(
+                        not self.resume_sent
+                        and self.resume_thread in self.controlled_threads
+                        and message.get("params") == {"threadId": self.resume_thread},
+                        "loaded thread resume differs",
+                    )
+                    self.resume_sent = True
+                    self.pending[message["id"]] = "thread/resume"
+                    return host.Client.send(self, message)
+                if message.get("method") == "thread/loaded/list":
+                    require(
+                        self.loaded_thread in self.controlled_threads
+                        and message.get("params") == {},
+                        "loaded thread request differs",
+                    )
+                    self.pending[message["id"]] = "thread/loaded/list"
+                    return host.Client.send(self, message)
+                if message.get("method") == "turn/start":
+                    thread = message.get("params", {}).get("threadId")
+                    require(thread in self.controlled_threads and type(message.get("id")) is int,
+                            "turn start is outside controlled threads")
+                    self.turn_request_threads[message["id"]] = thread
                 return super().send(message)
+
+            def observed_turn(self, thread, prompt):
+                try:
+                    return super().observed_turn(thread, prompt)
+                finally:
+                    self.active_diagnostic_turn = None
+
+            def refresh_config_for_thread(self, thread):
+                require(not self.refresh_sent and thread in self.controlled_threads,
+                        "config refresh already attempted or thread not controlled")
+                file_before = config_file_projection(c["home"])
+                observations = []
+                for _ in range(2):
+                    raw = self.rpc("config/read", {"cwd": None, "includeLayers": True})
+                    observations.append(config_layer_projection(raw, c))
+                    del raw
+                require(
+                    observations[0] == observations[1]
+                    and file_before == config_file_projection(c["home"]),
+                    "config changed before refresh",
+                )
+                self.refresh_version = observations[0]["version"]
+                durable_private_receipt(
+                    c["output"] / "config-refresh-attempt.json",
+                    {
+                        "schema": "cg-config-refresh-attempt/v1",
+                        "server_pid": self.owned.process.pid,
+                        "thread": thread,
+                        "file_before": file_before,
+                        "layer": observations[0],
+                    },
+                )
+                primary = None
+                final = None
+                try:
+                    self.rpc(
+                        "config/batchWrite",
+                        {
+                            "edits": [],
+                            "expectedVersion": self.refresh_version,
+                            "reloadUserConfig": True,
+                        },
+                    )
+                    raw = self.rpc("config/read", {"cwd": None, "includeLayers": True})
+                    final = config_layer_projection(raw, c)
+                    del raw
+                    require(
+                        final == observations[0]
+                        and config_file_projection(c["home"]) == file_before,
+                        "config changed after refresh",
+                    )
+                    self.resume_thread = thread
+                    self.loaded_thread = thread
+                    self.rpc("thread/loaded/list", {})
+                    resumed = self.rpc("thread/resume", {"threadId": thread})
+                    resume_projection(resumed, c, thread)
+                    self.rpc("thread/loaded/list", {})
+                except BaseException as exc:
+                    primary = exc
+                try:
+                    file_after = config_file_projection(c["home"])
+                    file_state = "unchanged" if file_after == file_before else "changed"
+                except BaseException as exc:
+                    file_after = None
+                    file_state = "unknown"
+                    if primary is None:
+                        primary = exc
+                try:
+                    durable_private_receipt(
+                        c["output"] / "config-refresh-outcome.json",
+                        {
+                            "schema": "cg-config-refresh-outcome/v1",
+                            "server_pid": self.owned.process.pid,
+                            "thread": thread,
+                            "batch_send_attempted": self.refresh_sent,
+                            "file_after": file_after,
+                            "file_state": file_state,
+                        },
+                    )
+                except BaseException as exc:
+                    if primary is None:
+                        primary = exc
+                if primary is not None:
+                    raise primary
+                require(
+                    self.refresh_sent and file_state == "unchanged",
+                    "config refresh file outcome differs",
+                )
+                return {
+                    "schema": "cg-user-config-refresh/v1",
+                    "mode": CONFIG_REFRESH,
+                    "server_pid": self.owned.process.pid,
+                    "thread": thread,
+                    "file": file_before,
+                    "layer": final,
+                    "resume_verified": True,
+                    "loaded_before": True,
+                    "loaded_after": True,
+                }
 
             def check_provider(self):
                 return provider_projection(
@@ -1167,6 +1545,11 @@ class DailyClientFactory:
                         or ("method" in message and "id" in message)
                     ),
                     "unexpected app-server input",
+                )
+                require(
+                    message.get("method")
+                    not in {"thread/closed", "thread/unloaded", "thread/archived"},
+                    "controlled thread closed or unloaded",
                 )
                 if message.get("method") in ("hook/started", "hook/completed"):
                     path = (
@@ -1955,11 +2338,281 @@ def final_subject_readback(ctx, plan):
     return official_list(ctx, plan["target_version"], ctx["artifact"])
 
 
+def validate_config_refresh_journal(
+    ctx, rows, receipt, attempt, outcome, server_pid, thread, lower, upper, newinv
+):
+    require(
+        isinstance(receipt, dict)
+        and set(receipt)
+        == {
+            "schema",
+            "mode",
+            "server_pid",
+            "thread",
+            "file",
+            "layer",
+            "resume_verified",
+            "loaded_before",
+            "loaded_after",
+        }
+        and receipt["schema"] == "cg-user-config-refresh/v1"
+        and receipt["mode"] == CONFIG_REFRESH
+        and receipt["server_pid"] == server_pid
+        and receipt["thread"] == thread
+        and receipt["resume_verified"] is True
+        and receipt["loaded_before"] is True
+        and receipt["loaded_after"] is True,
+        "config refresh receipt differs",
+    )
+    require(
+        receipt["file"] == config_file_projection(ctx["home"]),
+        "config file evidence changed",
+    )
+    layer = receipt["layer"]
+    require(
+        attempt
+        == {
+            "schema": "cg-config-refresh-attempt/v1",
+            "server_pid": server_pid,
+            "thread": thread,
+            "file_before": receipt["file"],
+            "layer": layer,
+        }
+        and outcome
+        == {
+            "schema": "cg-config-refresh-outcome/v1",
+            "server_pid": server_pid,
+            "thread": thread,
+            "batch_send_attempted": True,
+            "file_after": receipt["file"],
+            "file_state": "unchanged",
+        },
+        "config refresh attempt/outcome differs",
+    )
+    require(
+        isinstance(layer, dict)
+        and set(layer)
+        == {"version", "shape", "provider", "unique_active_base_user_layer"}
+        and layer["unique_active_base_user_layer"] is True
+        and isinstance(layer["version"], str)
+        and re.fullmatch(r"[A-Za-z0-9_.:-]{1,256}", layer["version"]),
+        "config layer evidence malformed",
+    )
+    shape = layer["shape"]
+    require(
+        isinstance(shape, dict)
+        and set(shape) == {"entries", "tables", "hash_strings", "combined_hashes"}
+        and all(type(x) is int and x >= 0 for x in shape.values())
+        and shape["combined_hashes"] == 0
+        and shape["hash_strings"] <= shape["tables"] <= shape["entries"],
+        "config shape evidence differs",
+    )
+    provider = layer["provider"]
+    provider_fields = {"model_provider", "endpoint_policy", "custom_catalog"}
+    if ctx["windows_backend"] == "mxc":
+        provider_fields.add("windows_sandbox")
+    require(
+        isinstance(provider, dict)
+        and set(provider) == provider_fields
+        and provider["model_provider"] in (None, "openai")
+        and provider["endpoint_policy"] == "official_default"
+        and provider["custom_catalog"] is False
+        and (ctx["windows_backend"] != "mxc" or provider["windows_sandbox"] == "mxc"),
+        "config layer provider evidence differs",
+    )
+    requests = {}
+    paired = []
+    allowed = {
+        "initialize",
+        "initialized",
+        "hooks/list",
+        "config/read",
+        "config/batchWrite",
+        "thread/start",
+        "thread/resume",
+        "thread/loaded/list",
+        "turn/start",
+    }
+    seen_ids = set()
+    for index, row in enumerate(rows):
+        msg = row.get("message", {})
+        require(
+            not (
+                row.get("direction") == "response"
+                and isinstance(msg, dict)
+                and msg.get("method")
+                in {"thread/closed", "thread/unloaded", "thread/archived"}
+            ),
+            "controlled thread closed or unloaded",
+        )
+        if row.get("direction") == "request":
+            require(
+                isinstance(msg, dict) and msg.get("method") in allowed,
+                "unexpected RPC request",
+            )
+            if "id" in msg:
+                ident = msg["id"]
+                require(
+                    type(ident) is int and ident not in seen_ids,
+                    "duplicate RPC request id",
+                )
+                seen_ids.add(ident)
+                requests[ident] = (index, msg)
+            else:
+                require(msg.get("method") == "initialized", "unexpected notification")
+        elif (
+            row.get("direction") == "response" and isinstance(msg, dict) and "id" in msg
+        ):
+            ident = msg["id"]
+            require(type(ident) is int and ident in requests, "unmatched RPC response")
+            start, request = requests.pop(ident)
+            require("result" in msg and "error" not in msg, "RPC response failed")
+            paired.append((start, index, request, msg["result"]))
+    require(not requests, "unanswered RPC request")
+    markers = {}
+    for name in ("new_trust_confirmed", "config_refresh_completed"):
+        found = [
+            (i, r)
+            for i, r in enumerate(rows)
+            if r.get("direction") == "local" and r.get("event") == name
+        ]
+        require(
+            len(found) == 1
+            and found[0][1].get("pid") == server_pid
+            and type(found[0][1].get("monotonic_ns")) is int,
+            "config refresh marker differs",
+        )
+        markers[name] = found[0][0]
+    trust, done = markers["new_trust_confirmed"], markers["config_refresh_completed"]
+    require(lower < trust < done < upper, "config refresh phase differs")
+    require(
+        rows[lower]["monotonic_ns"]
+        <= rows[trust]["monotonic_ns"]
+        <= rows[done]["monotonic_ns"]
+        <= rows[upper]["monotonic_ns"],
+        "config refresh timing differs",
+    )
+    target_inventories = []
+    for start, end, req, result in paired:
+        if req.get("method") == "hooks/list" and lower < start < end < trust:
+            try:
+                found = product_inventory(
+                    ctx["u"],
+                    result,
+                    ctx["home"] / "plugins/cache/codex-context-guard/context-guard",
+                    [ctx["new_root"] / "hooks/hooks.json"],
+                )
+                if found == newinv:
+                    target_inventories.append(end)
+            except (Pending, Refused, ValueError, KeyError, TypeError):
+                pass
+    require(target_inventories, "trusted target inventory missing before refresh")
+    layer_reads = [
+        x
+        for x in paired
+        if x[2].get("method") == "config/read"
+        and x[2].get("params") == {"cwd": None, "includeLayers": True}
+    ]
+    batches = [x for x in paired if x[2].get("method") == "config/batchWrite"]
+    resumes = [x for x in paired if x[2].get("method") == "thread/resume"]
+    loaded = [x for x in paired if x[2].get("method") == "thread/loaded/list"]
+    require(
+        len(layer_reads) == 3
+        and len(batches) == 1
+        and len(resumes) == 1
+        and len(loaded) == 2,
+        "config refresh RPC count differs",
+    )
+    a, b, post = layer_reads
+    batch, resume = batches[0], resumes[0]
+    first_loaded, last_loaded = loaded
+    require(
+        trust
+        < a[0]
+        < a[1]
+        < b[0]
+        < b[1]
+        < batch[0]
+        < batch[1]
+        < post[0]
+        < post[1]
+        < first_loaded[0]
+        < first_loaded[1]
+        < resume[0]
+        < resume[1]
+        < last_loaded[0]
+        < last_loaded[1]
+        < done,
+        "config refresh RPC sequence differs",
+    )
+    require(all(x[3] == layer for x in layer_reads), "config layer readback differs")
+    require(
+        batch[2].get("params")
+        == {"edits": [], "expectedVersion": layer["version"], "reloadUserConfig": True}
+        and batch[3]
+        == {
+            "status": "ok",
+            "version": layer["version"],
+            "file_matches": True,
+            "overridden": False,
+        },
+        "config batch evidence differs",
+    )
+    require(
+        resume[2].get("params") == {"threadId": thread}
+        and resume[3]
+        == {
+            "thread": {"id": thread},
+            "model": ctx["expected_model"],
+            "modelProvider": "openai",
+            "approvalPolicy": "on-request",
+            "sandbox": {"type": "readOnly"},
+            "cwd_matches": True,
+        },
+        "loaded thread policy evidence differs",
+    )
+    require(
+        all(
+            x[2].get("params") == {}
+            and x[3] == {"controlled_thread_loaded": True, "complete": True}
+            for x in loaded
+        ),
+        "loaded thread evidence differs",
+    )
+
+
+def validate_turn_request_scope(rows, old, fresh):
+    markers = {}
+    for name in ("old_turn_complete", "config_refresh_completed", "old_continuation_complete", "fresh_turn_complete"):
+        found = [i for i, row in enumerate(rows) if row.get("direction") == "local" and row.get("event") == name]
+        require(len(found) == 1, "turn scope marker differs")
+        markers[name] = found[0]
+    requests = [(i, row["message"]) for i, row in enumerate(rows)
+                if row.get("direction") == "request" and row.get("message", {}).get("method") == "turn/start"]
+    require(len(requests) == 3, "unexpected turn request")
+    wanted = [(old["thread"], old["old_turn"]), (old["thread"], old["new_turn"]),
+              (fresh["thread"], fresh["turn"])]
+    bounds = [(0, markers["old_turn_complete"]),
+              (markers["config_refresh_completed"], markers["old_continuation_complete"]),
+              (markers["old_continuation_complete"], markers["fresh_turn_complete"])]
+    for (index, request), (thread, turn), (lower, upper) in zip(requests, wanted, bounds):
+        responses = [(i, row["message"]) for i, row in enumerate(rows)
+                     if row.get("direction") == "response" and row.get("message", {}).get("id") == request.get("id")]
+        require(lower < index < upper and request.get("params", {}).get("threadId") == thread
+                and len(responses) == 1 and index < responses[0][0] < upper
+                and responses[0][1].get("result", {}).get("turn", {}).get("id") == turn,
+                "turn request scope differs")
+
+
 def independent_verify(ctx, plan, output):
     """Re-read immutable evidence and re-derive same-server Hook/state facts."""
+    require_reviewed_cli(plan)
     result = strict_read_json(output / "result.json")
     require(
         result.get("schema") == REPORT
+        and result.get("config_refresh") == CONFIG_REFRESH
+        and plan.get("schema") == PLAN
+        and plan.get("config_refresh") == CONFIG_REFRESH
         and result.get("status") in ("provisional_cli_native", "passed_cli_native"),
         "result schema/status differs",
     )
@@ -1978,7 +2631,13 @@ def independent_verify(ctx, plan, output):
     require(
         all(
             isinstance(gates.get(k), dict) and gates[k].get("status") == "passed"
-            for k in ("old_model", "fresh_model", "new_trust", "maintained_apply")
+            for k in (
+                "old_model",
+                "fresh_model",
+                "new_trust",
+                "maintained_apply",
+                "config_refresh",
+            )
         )
         and gates["new_trust"].get("count") == 9,
         "result gates differ",
@@ -1998,6 +2657,12 @@ def independent_verify(ctx, plan, output):
         == sha(ctx["native_plan_path"])
         and subject.get("producer_sha256") == sha(producer_path()),
         "native producer/plan binding differs",
+    )
+    require(
+        subject.get("diagnostic_sha256")
+        == ctx["diagnostic_sha256"]
+        == sha(diagnostic_path()),
+        "Hook diagnostic helper binding differs",
     )
     require(
         subject.get("helper_closure_sha256")
@@ -2020,6 +2685,9 @@ def independent_verify(ctx, plan, output):
         "maintained/apply.json",
         "maintained/verify.json",
         "maintained/apply-events.jsonl",
+        "config-refresh.json",
+        "config-refresh-attempt.json",
+        "config-refresh-outcome.json",
     }
     optional = {"maintained/verify-after-trust.json", "maintained-verify-call.json"}
     require(
@@ -2163,6 +2831,19 @@ def independent_verify(ctx, plan, output):
         == sorted(r["monotonic_ns"] for _, r in marks),
         "phase order differs",
     )
+    validate_config_refresh_journal(
+        ctx,
+        rows,
+        strict_read_json(output / "config-refresh.json"),
+        strict_read_json(output / "config-refresh-attempt.json"),
+        strict_read_json(output / "config-refresh-outcome.json"),
+        server["pid"],
+        old["thread"],
+        marks[2][0],
+        marks[3][0],
+        newinv,
+    )
+    validate_turn_request_scope(rows, old, fresh)
     call = strict_read_json(output / "maintained-call.json")
     require(
         marks[1][1]["monotonic_ns"]
@@ -2297,14 +2978,19 @@ def independent_verify(ctx, plan, output):
         if row.get("direction") == "request" and message.get("method") == "config/read":
             require(
                 message.get("params")
-                == {"cwd": str(ctx["workspace"]), "includeLayers": False},
+                in (
+                    {"cwd": str(ctx["workspace"]), "includeLayers": False},
+                    {"cwd": None, "includeLayers": True},
+                ),
                 "provider read request differs",
             )
-            config_requests[message.get("id")] = True
+            config_requests[message.get("id")] = message["params"]["includeLayers"]
         elif (
             row.get("direction") == "response" and message.get("id") in config_requests
         ):
-            config_requests.pop(message["id"])
+            is_layer = config_requests.pop(message["id"])
+            if is_layer:
+                continue
             expected_fields = {"model_provider", "endpoint_policy", "custom_catalog"}
             if selected_backend(plan) == "mxc":
                 expected_fields.add("windows_sandbox")
@@ -2478,6 +3164,9 @@ def run(
     clock=time.monotonic,
     sleeper=time.sleep,
 ):
+    require(plan.get("schema") == PLAN and plan.get("config_refresh") == CONFIG_REFRESH,
+            "native plan does not authorize config refresh")
+    require_reviewed_cli(plan)
     out = ctx["output"]
     launch_argv = app_server_argv(plan, ctx["cli"])
     require(ctx["app_server_argv"] == launch_argv
@@ -2485,6 +3174,7 @@ def run(
     ctx["u"]._mkdir_private_new(out)
     result = {
         "schema": REPORT,
+        "config_refresh": CONFIG_REFRESH,
         "status": "pending",
         "subject": {
             k: plan[k]
@@ -2578,6 +3268,10 @@ def run(
         require(
             sha(producer_path()) == ctx["producer_sha256"],
             "producer drift before apply",
+        )
+        require(
+            sha(diagnostic_path()) == ctx["diagnostic_sha256"],
+            "Hook diagnostic helper drift before apply",
         )
         for key, path in [
             ("tool_sha256", ctx["tool"]),
@@ -2715,6 +3409,17 @@ def run(
             out / "new-trust.json",
             {"count": len(newinv), "hooks": list(newinv.values())},
         )
+        log_marker(c, "new_trust_confirmed")
+        stage = "config_refresh"
+        require(
+            sha(producer_path()) == ctx["producer_sha256"]
+            and sha(diagnostic_path()) == ctx["diagnostic_sha256"],
+            "native code drift before config refresh",
+        )
+        refresh_receipt = c.refresh_config_for_thread(thread)
+        write(out / "config-refresh.json", refresh_receipt)
+        result["gates"]["config_refresh"] = {"status": "passed"}
+        log_marker(c, "config_refresh_completed")
         stage = "old_continuation"
         c.check_provider()
         turn2, rows2 = c.observed_turn(
@@ -2843,6 +3548,9 @@ def run(
                 "between-turn-boundary.json",
                 "maintained-call.json",
                 "official-readback.json",
+                "config-refresh.json",
+                "config-refresh-attempt.json",
+                "config-refresh-outcome.json",
             ]
             try:
                 result["evidence"] = {name: sha(out / name) for name in names}
@@ -2865,6 +3573,7 @@ def run(
                     )
                 result["subject"]["native_plan_sha256"] = plan["_native_plan_sha256"]
                 result["subject"]["producer_sha256"] = ctx["producer_sha256"]
+                result["subject"]["diagnostic_sha256"] = ctx["diagnostic_sha256"]
                 result["subject"]["helper_closure_sha256"] = ctx["u"].digest(
                     ctx["helpers"]
                 )
@@ -2879,7 +3588,7 @@ def run(
                 write(
                     out / "independent-verification.json",
                     {
-                        "schema": "cg-between-turn-independent/v1",
+                        "schema": "cg-between-turn-independent/v2",
                         "status": "passed",
                         "result_sha256": sha(out / "result.json"),
                     },
@@ -2889,7 +3598,7 @@ def run(
                 write(
                     out / "independent-verification.json",
                     {
-                        "schema": "cg-between-turn-independent/v1",
+                        "schema": "cg-between-turn-independent/v2",
                         "status": "failed",
                         "reason": type(exc).__name__,
                         "result_sha256": sha(out / "result.json"),
@@ -2921,7 +3630,7 @@ def main():
         if saved.get("status") == "provisional_cli_native" or sidecar_path.exists():
             sidecar = strict_read_json(sidecar_path)
             require(
-                sidecar.get("schema") == "cg-between-turn-independent/v1"
+                sidecar.get("schema") == "cg-between-turn-independent/v2"
                 and sidecar.get("status") == "passed"
                 and sidecar.get("result_sha256") == result_sha,
                 "independent result receipt missing or mismatched",
@@ -2930,7 +3639,7 @@ def main():
         print(
             json.dumps(
                 {
-                    "schema": "cg-between-turn-independent/v1",
+                    "schema": "cg-between-turn-independent/v2",
                     "status": "reverified_read_only",
                     "result_sha256": result_sha,
                 }

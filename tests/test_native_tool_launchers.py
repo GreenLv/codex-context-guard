@@ -8,9 +8,11 @@ syntax stays 5.1/7 compatible.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -28,6 +30,53 @@ DISPATCH = {
 
 
 class LauncherWire(unittest.TestCase):
+    def _check_documented_phase_recipe(self, language, shell, stub):
+        text = (ROOT / "tools/validation/NATIVE_BETWEEN_TURNS_ACCEPTANCE.md").read_text(encoding="utf-8")
+        section = text.split("## Run the phases", 1)[1]
+        recipes = re.findall(r"```" + language + r"\n(.*?)```", section, re.S)
+        self.assertEqual(len(recipes), 1)
+        phases = ["--preflight", "--run", "--verify-result"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launchers = root / "tools/validation"
+            launchers.mkdir(parents=True)
+            launcher = launchers / ("run_native_acceptance.sh" if language == "sh" else "run_native_acceptance.ps1")
+            launcher.write_text(stub)
+            launcher.chmod(0o700)
+            trace = root / "trace.txt"
+            for failure in ["", *phases]:
+                with self.subTest(language=language, failure=failure):
+                    trace.write_text("")
+                    result = subprocess.run(
+                        [*shell, recipes[0]], cwd=root,
+                        env={**os.environ, "CG_DOC_TRACE": trace.name, "CG_DOC_FAIL": failure},
+                        capture_output=True, text=True, timeout=20,
+                    )
+                    expected = phases if not failure else phases[:phases.index(failure) + 1]
+                    self.assertEqual(trace.read_text().splitlines(), expected)
+                    self.assertEqual(result.returncode == 0, not failure, result.stderr)
+
+    @unittest.skipUnless(shutil.which("sh"), "POSIX sh unavailable")
+    def test_documented_shell_phases_stop_after_first_failure(self):
+        self._check_documented_phase_recipe("sh", ["sh", "-c"], """#!/bin/sh
+for cg_doc_phase do :; done
+printf '%s\\n' "$cg_doc_phase" >> "$CG_DOC_TRACE"
+[ "$cg_doc_phase" != "$CG_DOC_FAIL" ] || exit 7
+""")
+
+    def test_documented_powershell_phases_stop_after_first_failure(self):
+        shell = shutil.which("pwsh") or shutil.which("powershell")
+        if shell is None:
+            self.skipTest("no PowerShell executable on PATH")
+        self._check_documented_phase_recipe(
+            "powershell", [shell, "-NoProfile", "-NonInteractive", "-Command"], """
+param([string]$Target, [string[]]$Arguments)
+$cgDocPhase = $Arguments[-1]
+[IO.File]::AppendAllText($env:CG_DOC_TRACE, $cgDocPhase + [Environment]::NewLine)
+if ($cgDocPhase -eq $env:CG_DOC_FAIL) { exit 7 }
+exit 0
+""")
+
     def test_launcher_files_exist_and_declare_their_runtime(self):
         self.assertTrue(SH.is_file())
         self.assertTrue(PS1.is_file())
