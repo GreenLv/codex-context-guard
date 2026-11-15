@@ -142,36 +142,26 @@ class FamilyTests(unittest.TestCase):
             def send(self, message):
                 return None
 
-            def reader(self):
-                pass
-
-            def close(self):
-                self.log.close()
-                self.err.close()
-                return (
-                    {
+        class Spawn:
+            @staticmethod
+            def spawn(*a, **k):
+                if spawn_error:
+                    raise spawn_error
+                return types.SimpleNamespace(
+                    process=types.SimpleNamespace(pid=12, stdin=io.StringIO(), stdout=io.StringIO()),
+                    close=lambda timeout: {
                         "cleanup_complete": True,
                         "owned_process_exited": True,
                         "owned_tree_no_running_members": True,
                         "process_group_cleanup_error": None,
                         "job_close_confirmed": True,
                         "job_assignment_confirmed": True,
-                    }
-                    if self.owned
-                    else None
+                    },
                 )
-
-        class Spawn:
-            @staticmethod
-            def spawn(*a, **k):
-                if spawn_error:
-                    raise spawn_error
-                return types.SimpleNamespace(process=types.SimpleNamespace(pid=12))
 
         ctx["u"] = types.SimpleNamespace(UpgradeClient=Base)
         ctx["host"] = types.SimpleNamespace(OwnedProcess=Spawn, Client=Base)
         with (
-            mock.patch.object(bt.threading.Thread, "start"),
             mock.patch.object(bt, "product_inventory", return_value={}),
         ):
             client = bt.DailyClientFactory(ctx)()
@@ -1415,7 +1405,7 @@ class FamilyTests(unittest.TestCase):
                 response(
                     id,
                     {
-                        "model_provider": "openai",
+                        "model_provider": None,
                         "endpoint_policy": "official_default",
                         "custom_catalog": False,
                     },
@@ -1554,6 +1544,11 @@ class FamilyTests(unittest.TestCase):
                     "cleanup_complete": True,
                     "job_close_confirmed": True,
                     "job_assignment_confirmed": True,
+                    "client_cleanup_complete": True,
+                    "reader_started": True,
+                    "reader_stopped": True,
+                    "reader_failure": None,
+                    "io_closed": {"stdin": True, "stdout": True, "log": True, "err": True},
                 },
                 "gates": {
                     "old_model": {
@@ -1595,6 +1590,29 @@ class FamilyTests(unittest.TestCase):
                     put("result.json", tampered)
                     with self.assertRaises(bt.Refused):
                         bt.independent_verify(ctx, plan, out)
+                for failure in ('queue_full', 'ValueError'):
+                    tampered = copy.deepcopy(result)
+                    tampered['cleanup']['reader_failure'] = failure
+                    put('result.json', tampered)
+                    with self.assertRaises(bt.Refused):
+                        bt.independent_verify(ctx, plan, out)
+                put("result.json", result)
+                # A default selector still requires both actual thread starts
+                # to report the official provider and the selected model.
+                rpc_path = out / "rpc.jsonl"
+                original_rpc = rpc_path.read_bytes()
+                for thread in ("old", "fresh"):
+                    for field, value in (("modelProvider", "other"), ("model", "other")):
+                        altered = copy.deepcopy(rows)
+                        row = next(r for r in altered if r.get("message", {}).get("result", {}).get("thread", {}).get("id") == thread)
+                        row["message"]["result"][field] = value
+                        rpc_path.write_text("".join(json.dumps(r) + "\n" for r in altered))
+                        result["evidence"]["rpc.jsonl"] = bt.sha(rpc_path)
+                        put("result.json", result)
+                        with self.assertRaises(bt.Refused):
+                            bt.independent_verify(ctx, plan, out)
+                rpc_path.write_bytes(original_rpc)
+                result["evidence"]["rpc.jsonl"] = bt.sha(rpc_path)
                 put("result.json", result)
                 for name in (
                     "rpc.jsonl",

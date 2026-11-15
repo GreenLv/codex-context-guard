@@ -282,7 +282,8 @@ def provider_projection(response):
     config = response["config"]
     providers = config.get("model_providers")
     require(
-        config.get("model_provider") == "openai"
+        "model_provider" in config
+        and config.get("model_provider") in (None, "openai")
         and isinstance(providers, dict)
         and "openai" not in providers,
         "official model provider overridden",
@@ -295,7 +296,7 @@ def provider_projection(response):
         "official provider endpoint or model catalog overridden",
     )
     return {
-        "model_provider": "openai",
+        "model_provider": config.get("model_provider"),
         "endpoint_policy": "official_default",
         "custom_catalog": False,
     }
@@ -836,12 +837,16 @@ class DailyClientFactory:
                 self.log = None
                 self.err = None
                 self.owned = None
-                spawn_attempted = False
+                self.reader_thread = None
+                self.reader_started = False
+                self.reader_failure = None
+                self.spawn_attempted = False
+                self._client_cleanup = None
                 try:
                     self.log = BoundedJournal(c["output"] / "rpc.jsonl")
                     self.err = open(os.devnull, "wb")
                     cmd = [str(c["cli"])]
-                    spawn_attempted = True
+                    self.spawn_attempted = True
                     self.owned = host.OwnedProcess.spawn(
                         [*cmd, "app-server"],
                         cwd=str(c["workspace"]),
@@ -852,7 +857,9 @@ class DailyClientFactory:
                         text=True,
                         encoding="utf8",
                     )
-                    threading.Thread(target=self.reader, daemon=True).start()
+                    self.reader_thread = threading.Thread(target=self.reader, daemon=True)
+                    self.reader_thread.start()
+                    self.reader_started = True
                     self.rpc(
                         "initialize",
                         {
@@ -870,32 +877,124 @@ class DailyClientFactory:
                     self.initial_approved = dict(self.approved)
                     self.check_provider()
                 except BaseException as exc:
-                    startup_cleanup = getattr(exc, "cleanup", None)
+                    if self.reader_thread is not None and self.reader_thread.is_alive():
+                        self.reader_started = True
                     try:
-                        if self.log is not None and self.err is not None:
-                            closed = self.close()
-                            if isinstance(closed, dict):
-                                startup_cleanup = closed
-                        else:
-                            for stream in (self.log, self.err):
-                                if stream is not None:
-                                    stream.close()
-                            if not spawn_attempted:
-                                startup_cleanup = {
-                                    "cleanup_complete": True,
-                                    "process_created": False,
-                                }
+                        startup_cleanup = self.close(getattr(exc, "cleanup", None))
+                    except (KeyboardInterrupt, SystemExit) as cancel:
+                        c["startup_cleanup"] = getattr(cancel, "cleanup", None) or {
+                            "client_cleanup_complete": False,
+                            "reason": "startup_cleanup_interrupted",
+                        }
+                        raise
                     except BaseException as close_exc:
                         startup_cleanup = getattr(close_exc, "cleanup", None) or {
-                            "cleanup_complete": False,
+                            "client_cleanup_complete": False,
                             "reason": "startup_cleanup_unknown",
                         }
                     c["startup_cleanup"] = (
                         startup_cleanup
                         if isinstance(startup_cleanup, dict)
-                        else {"cleanup_complete": False, "reason": "startup_unobserved"}
+                        else {"client_cleanup_complete": False, "reason": "startup_unobserved"}
                     )
                     raise
+
+            def reader(self):
+                try:
+                    for line in self.owned.process.stdout:
+                        if len(line) > 2 * 1024 * 1024:
+                            raise ValueError("oversized RPC line")
+                        try:
+                            self.q.put(json.loads(line), timeout=1)
+                        except queue.Full:
+                            self.reader_failure = "queue_full"
+                            return
+                except Exception as exc:
+                    self.reader_failure = type(exc).__name__
+
+            def close(self, startup_receipt=None):
+                if self._client_cleanup is not None:
+                    return dict(self._client_cleanup)
+                cancellation = None
+                if self.owned is not None:
+                    try:
+                        owned_result = self.owned.close(12)
+                    except BaseException as exc:
+                        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                            cancellation = exc
+                        owned_result = getattr(exc, "cleanup", None) or {"cleanup_complete": False}
+                elif not self.spawn_attempted:
+                    owned_result = {"process_created": False, "cleanup_complete": True}
+                else:
+                    owned_result = startup_receipt if isinstance(startup_receipt, dict) else {"process_creation_unknown": True, "cleanup_complete": False}
+                if not isinstance(owned_result, dict):
+                    owned_result = {"cleanup_complete": False}
+                if self.reader_started:
+                    try:
+                        self.reader_thread.join(timeout=3)
+                    except (KeyboardInterrupt, SystemExit) as exc:
+                        cancellation = cancellation or exc
+                reader_stopped = not self.reader_started or not self.reader_thread.is_alive()
+                proc = self.owned.process if self.owned is not None else None
+                streams = {
+                    "stdin": getattr(proc, "stdin", None),
+                    "stdout": getattr(proc, "stdout", None),
+                    "log": self.log,
+                    "err": self.err,
+                }
+                io_closed = {}
+                for name, stream in streams.items():
+                    if (name in ("stdin", "stdout") and self.owned is None
+                            and self.spawn_attempted and owned_result.get("process_created") is not False):
+                        io_closed[name] = None  # Process may have owned inaccessible pipes.
+                        continue
+                    try:
+                        if stream is not None and (
+                            name not in ("stdin", "stdout")
+                            or (owned_result.get("owned_process_exited") is True and reader_stopped)
+                        ):
+                            stream.close()
+                        io_closed[name] = stream is None or (stream.stream.closed if name == "log" else stream.closed)
+                    except BaseException as exc:
+                        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                            cancellation = cancellation or exc
+                        io_closed[name] = False
+                if not self.spawn_attempted:
+                    owned_ok = owned_result == {"process_created": False, "cleanup_complete": True}
+                elif self.owned is not None:
+                    owned_ok = cleanup_confirmed(owned_result)
+                else:
+                    # Windows startup may fail before assignment; its initial
+                    # thread is still suspended. Require the actual Job and
+                    # process cleanup receipt, not an assumed no-process case.
+                    receipt_ok = (
+                        platform.system() == "Windows"
+                        and owned_result.get("cleanup_complete") is True
+                        and ("process_creation_unknown" not in owned_result or owned_result["process_creation_unknown"] is False)
+                        and owned_result.get("process_group_cleanup_error", "missing") is None
+                        and owned_result.get("cleanup_errors") == []
+                        and owned_result.get("job_close_confirmed") is True
+                        and owned_result.get("process_group_signal_denied") is False
+                        and owned_result.get("process_group_query_denied") is False
+                        and type(owned_result.get("process_created")) is bool
+                        and type(owned_result.get("job_assignment_confirmed")) is bool
+                    )
+                    no_process = owned_result.get("process_created") is False and owned_result.get("job_assignment_confirmed") is False
+                    stopped_process = (
+                        owned_result.get("process_created") is True
+                        and owned_result.get("owned_process_exited") is True
+                        and owned_result.get("owned_tree_no_running_members") is True
+                    )
+                    owned_ok = receipt_ok and (no_process or stopped_process)
+                complete = owned_ok and reader_stopped and all(io_closed.values())
+                self._client_cleanup = {**owned_result, "reader_started": self.reader_started,
+                                        "reader_stopped": reader_stopped, "reader_failure": self.reader_failure,
+                                        "io_closed": io_closed,
+                                        "client_cleanup_complete": complete}
+                if cancellation is not None:
+                    cancellation.cleanup = dict(self._client_cleanup)
+                    raise cancellation
+                return dict(self._client_cleanup)
 
             def start(self, instructions=""):
                 params = {
@@ -996,6 +1095,7 @@ class DailyClientFactory:
 
             def receive(self, deadline):
                 require(len(self.rows) < 10000, "RPC row limit")
+                require(self.reader_failure is None, "RPC reader failed")
                 # Other products may emit Hooks. Do not apply CCG's inventory
                 # to them or persist their content; unknown CCG sources fail.
                 try:
@@ -1180,7 +1280,9 @@ def cleanup_confirmed(value):
     if not isinstance(value, dict):
         return False
     clean = (
-        value.get("owned_process_exited") is True
+        ("cleanup_complete" not in value or value["cleanup_complete"] is True)
+        and ("process_creation_unknown" not in value or value["process_creation_unknown"] is False)
+        and value.get("owned_process_exited") is True
         and value.get("owned_tree_no_running_members") is True
         and "process_group_cleanup_error" in value
         and value["process_group_cleanup_error"] is None
@@ -1193,6 +1295,18 @@ def cleanup_confirmed(value):
             and value.get("job_assignment_confirmed") is True
         )
     return clean
+
+
+def client_cleanup_confirmed(value):
+    return (
+        cleanup_confirmed(value)
+        and value.get("client_cleanup_complete") is True
+        and value.get("reader_started") is True
+        and value.get("reader_stopped") is True
+        and isinstance(value.get("io_closed"), dict)
+        and set(value["io_closed"]) == {"stdin", "stdout", "log", "err"}
+        and all(v is True for v in value["io_closed"].values())
+    )
 
 
 def owned_execute(c, argv, timeout):
@@ -1732,7 +1846,12 @@ def independent_verify(ctx, plan, output):
         "result gates differ",
     )
     require(
-        cleanup_confirmed(result.get("cleanup")), "owned app-server cleanup unconfirmed"
+        client_cleanup_confirmed(result.get("cleanup")),
+        "owned app-server cleanup unconfirmed",
+    )
+    require(
+        "reader_failure" in result["cleanup"] and result["cleanup"]["reader_failure"] is None,
+        "RPC reader evidence incomplete",
     )
     subject = result.get("subject", {})
     require(
@@ -2037,12 +2156,11 @@ def independent_verify(ctx, plan, output):
         ):
             config_requests.pop(message["id"])
             require(
-                message.get("result")
-                == {
-                    "model_provider": "openai",
-                    "endpoint_policy": "official_default",
-                    "custom_catalog": False,
-                },
+                isinstance(message.get("result"), dict)
+                and message["result"].get("model_provider") in (None, "openai")
+                and set(message["result"]) == {"model_provider", "endpoint_policy", "custom_catalog"}
+                and message["result"].get("endpoint_policy") == "official_default"
+                and message["result"].get("custom_catalog") is False,
                 "provider readback differs",
             )
             provider_checks.append(index)
@@ -2207,8 +2325,7 @@ def run(
     sleeper=time.sleep,
 ):
     out = ctx["output"]
-    out.mkdir(mode=0o700)
-    ctx["u"]._private_directory(out)
+    ctx["u"]._mkdir_private_new(out)
     result = {
         "schema": REPORT,
         "status": "pending",
@@ -2539,13 +2656,17 @@ def run(
     finally:
         if c is None and "startup_cleanup" in ctx:
             result["cleanup"] = ctx["startup_cleanup"]
-            if ctx["startup_cleanup"].get("cleanup_complete") is not True:
+            if ctx["startup_cleanup"].get("client_cleanup_complete") is not True:
                 result["status"] = "failed_cleanup"
         if c is not None:
             try:
                 result["cleanup"] = c.close()
-                if not cleanup_confirmed(result["cleanup"]):
+                if not client_cleanup_confirmed(result["cleanup"]):
                     result["status"] = "failed_cleanup"
+                elif result["cleanup"].get("reader_failure", "missing") is not None:
+                    result["status"] = "failed"
+                    result["stage"] = "reader"
+                    result["reason"] = "RPC reader evidence incomplete"
             except Exception as e:
                 result["cleanup"] = {"cleanup_unknown": type(e).__name__}
                 result["status"] = "failed_cleanup"

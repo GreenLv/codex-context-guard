@@ -429,6 +429,37 @@ def _private_directory(parent: Path) -> None:
         require(driver.private_parent(parent), "Windows directory is not private")
 
 
+def _mkdir_private_new(path: Path) -> None:
+    """Create exclusively, auditing privacy before writing any private bytes.
+
+    Windows inherits the reviewed parent's DACL; CPython's special 0700
+    descriptor includes principals that this tool intentionally refuses.
+    Existing objects are never repaired. A failed child audit leaves the
+    newly created empty directory available for inspection.
+    """
+    require(path.is_absolute(), "absolute new private directory required")
+    _no_link_ancestors(path.parent)
+    require(path.parent.is_dir(), "private directory parent unavailable")
+    _private_directory(path.parent)
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        require(False, "private directory target already exists")
+    if os.name == "nt":
+        path.mkdir(exist_ok=False)
+    else:
+        path.mkdir(mode=0o700, exist_ok=False)
+    created = path.lstat()
+    require(stat.S_ISDIR(created.st_mode), "created private object is not a directory")
+    _no_link_ancestors(path)
+    _private_directory(path)
+    _no_link_ancestors(path)
+    require(_stat_identity(created) == _stat_identity(path.lstat()),
+            "new private directory identity changed during audit")
+
+
 def _data_candidate(home: Path, value: Any, label: str) -> Path:
     require(isinstance(value, str) and Path(value).is_absolute(), label + " must be absolute")
     path = Path(value)

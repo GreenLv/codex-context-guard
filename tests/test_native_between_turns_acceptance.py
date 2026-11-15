@@ -104,6 +104,11 @@ class FakeClient:
             "process_group_cleanup_error": None,
             "job_close_confirmed": True,
             "job_assignment_confirmed": True,
+            "client_cleanup_complete": True,
+            "reader_started": True,
+            "reader_stopped": True,
+            "reader_failure": None,
+            "io_closed": {"stdin": True, "stdout": True, "log": True, "err": True},
         }
 
 
@@ -148,6 +153,7 @@ class Tests(unittest.TestCase):
         }
         self.u = types.SimpleNamespace(
             _private_directory=lambda p: None,
+            _mkdir_private_new=lambda p: p.mkdir(mode=0o700),
             source_files=lambda p: {"a": "b"},
             _pending=u._pending,
             _state_projection=u._state_projection,

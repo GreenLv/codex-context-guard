@@ -1087,7 +1087,7 @@ def _check_hot_journal(plan: dict[str, Any], subject: dict[str, Any],
 def preflight_action(plan: dict[str, Any], output: Path) -> None:
     subject = _preflight_checks(plan)
     _claim_output(subject, output)
-    output.mkdir(mode=0o700)
+    base._mkdir_private_new(output)
     base._write_new(output / PREFLIGHT_NAME,
                     {"schema": _report_schema(plan["mode"]), "stage": "preflight", "status": "observed",
                      "subject": subject, "subject_sha256": base.digest(subject)})
@@ -1240,7 +1240,7 @@ def _prepare_result(plan: dict[str, Any], subject: dict[str, Any]) -> dict[str, 
 def prepare(plan: dict[str, Any], output: Path) -> dict[str, Any]:
     subject = _preflight_checks(plan)
     _claim_output(subject, output)
-    output.mkdir(mode=0o700)
+    base._mkdir_private_new(output)
     result = _prepare_result(plan, subject)
     base._write_new(output / PREPARE_NAME, result)
     print(json.dumps({"status": result["status"], "stage": "prepare",
@@ -2084,7 +2084,7 @@ def _loaded_probe(cli: Path, cwd: Path, journal_dir: Path,
                               "cleanup": None, "reason": None}
     client = None
     try:
-        os.mkdir(journal_dir, 0o700)
+        base._mkdir_private_new(journal_dir)
         client = _ProbeClient(cli, cwd, journal_dir, env)
         data = client.hooks_raw.get("data") if isinstance(client.hooks_raw, dict) else None
         require(isinstance(data, list) and len(data) == 1
@@ -2232,7 +2232,13 @@ def verify(plan: dict[str, Any], output: Path, prepared_path: Path,
         _old_slot_outcome(plan, subject["compatibility"])
     # Fresh-client loaded-version probe under an exclusive attempt index.
     probe_root = output / "probe" / "loaded"
-    probe_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    for private_dir in (probe_root.parent, probe_root):
+        if private_dir.exists() or private_dir.is_symlink():
+            base._no_link_ancestors(private_dir)
+            require(private_dir.is_dir(), "probe output must be a directory")
+            base._private_directory(private_dir)
+        else:
+            base._mkdir_private_new(private_dir)
     index = 1
     while (probe_root / f"loaded-{index}").exists():
         index += 1
