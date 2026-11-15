@@ -140,15 +140,26 @@ class TransitionTests(unittest.TestCase):
 
 
 class ReaderTests(unittest.TestCase):
-    def test_safe_read_nested_and_symlink_refusal(self):
+    def test_safe_read_nested(self):
         with tempfile.TemporaryDirectory() as t:
             root = Path(t).resolve()
             nested = root / "maintained/prepare.json"
             nested.parent.mkdir()
             nested.write_bytes(b"{}")
             self.assertEqual(supplement.safe_bytes(nested), b"{}")
+
+    def test_safe_read_symlink_refusal_when_platform_capable(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t).resolve()
+            nested = root / "data.json"
+            nested.write_bytes(b"{}")
             link = root / "link"
-            link.symlink_to(nested)
+            try:
+                link.symlink_to(nested)
+            except OSError as exc:
+                if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("native symlink creation requires an unavailable Windows privilege")
+                raise
             with self.assertRaises(supplement.Refused):
                 supplement.safe_bytes(link)
 
@@ -244,6 +255,7 @@ class ReaderTests(unittest.TestCase):
 
     def test_original_git_binding_precedes_use_and_rejects_dirty_or_changed(self):
         calls = []
+        repo = Path(tempfile.gettempdir()).resolve() / "synthetic-repo"
 
         def git(repo, *args):
             calls.append(args)
@@ -260,7 +272,7 @@ class ReaderTests(unittest.TestCase):
             ),
         ):
             supplement.verify_original_checkout(
-                Path("/fake/repo"), "a" * 40, {"scripts/a.py": "1"}
+                repo, "a" * 40, {"scripts/a.py": "1"}
             )
         self.assertEqual(
             [call[0] for call in calls], ["rev-parse", "status", "ls-files"]
@@ -278,9 +290,9 @@ class ReaderTests(unittest.TestCase):
                 mock.patch.object(supplement, "readonly_git", side_effect=invalid),
                 self.assertRaises(supplement.Refused),
             ):
-                supplement.verify_original_checkout(Path("/fake/repo"), "a" * 40, {})
+                supplement.verify_original_checkout(repo, "a" * 40, {})
         with self.assertRaises(supplement.Refused):
-            supplement.verify_original_checkout(Path("/fake/.ssh/repo"), "a" * 40, {})
+            supplement.verify_original_checkout(repo.parent / ".ssh" / "repo", "a" * 40, {})
 
     def test_final_live_drift_cannot_create_receipt(self):
         digest = hashlib.sha256(b"bound").hexdigest()

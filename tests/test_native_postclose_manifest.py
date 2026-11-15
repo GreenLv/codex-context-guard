@@ -19,7 +19,7 @@ class RecipeTests(unittest.TestCase):
         recipe = (
             Path(__file__).resolve().parents[1]
             / "tools/validation/NATIVE_BETWEEN_TURNS_ACCEPTANCE.md"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         source = recipe.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
         with tempfile.TemporaryDirectory() as t:
             root = Path(t).resolve()
