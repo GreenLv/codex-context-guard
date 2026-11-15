@@ -51,16 +51,19 @@ class LauncherWire(unittest.TestCase):
                     result = subprocess.run(
                         [*shell, recipes[0]], cwd=root,
                         env={**os.environ, "CG_DOC_TRACE": trace.name, "CG_DOC_FAIL": failure},
-                        capture_output=True, text=True, timeout=20,
+                        capture_output=True, timeout=20,
                     )
                     expected = phases if not failure else phases[:phases.index(failure) + 1]
-                    self.assertEqual(trace.read_text().splitlines(), expected)
+                    self.assertIsInstance(result.stderr, bytes)
+                    self.assertIn(b"\xff", result.stderr)
+                    self.assertEqual(trace.read_text(encoding="utf-8").splitlines(), expected)
                     self.assertEqual(result.returncode == 0, not failure, result.stderr)
 
     @unittest.skipUnless(shutil.which("sh"), "POSIX sh unavailable")
     def test_documented_shell_phases_stop_after_first_failure(self):
         self._check_documented_phase_recipe("sh", ["sh", "-c"], """#!/bin/sh
 for cg_doc_phase do :; done
+printf '\\377' >&2
 printf '%s\\n' "$cg_doc_phase" >> "$CG_DOC_TRACE"
 [ "$cg_doc_phase" != "$CG_DOC_FAIL" ] || exit 7
 """)
@@ -72,6 +75,7 @@ printf '%s\\n' "$cg_doc_phase" >> "$CG_DOC_TRACE"
         self._check_documented_phase_recipe(
             "powershell", [shell, "-NoProfile", "-NonInteractive", "-Command"], """
 param([string]$Target, [string[]]$Arguments)
+[Console]::OpenStandardError().WriteByte(255)
 $cgDocPhase = $Arguments[-1]
 [IO.File]::AppendAllText($env:CG_DOC_TRACE, $cgDocPhase + [Environment]::NewLine)
 if ($cgDocPhase -eq $env:CG_DOC_FAIL) { exit 7 }
