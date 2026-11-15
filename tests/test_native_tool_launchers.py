@@ -35,14 +35,15 @@ class LauncherWire(unittest.TestCase):
         section = text.split("## Run the phases", 1)[1]
         recipes = re.findall(r"```" + language + r"\n(.*?)```", section, re.S)
         self.assertEqual(len(recipes), 1)
-        phases = ["--preflight", "--run", "--verify-result"]
+        phases = ["--preflight-commands", "--preflight", "--run", "--verify-result"]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             launchers = root / "tools/validation"
             launchers.mkdir(parents=True)
-            launcher = launchers / ("run_native_acceptance.sh" if language == "sh" else "run_native_acceptance.ps1")
-            launcher.write_text(stub)
-            launcher.chmod(0o700)
+            for name in ("run_native_acceptance", "run_daily_upgrade"):
+                launcher = launchers / (name + (".sh" if language == "sh" else ".ps1"))
+                launcher.write_text(stub)
+                launcher.chmod(0o700)
             trace = root / "trace.txt"
             for failure in ["", *phases]:
                 with self.subTest(language=language, failure=failure):

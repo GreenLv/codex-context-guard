@@ -33,6 +33,14 @@ in the CLI, or **Review hooks** / **Settings > Hooks** in Desktop; see the
 The old Hooks must already be trusted when the run starts. The producer's
 bounded review wait applies to the newly installed version.
 
+Use the daily-upgrade guide for its v2 plan fields. For this native experiment,
+run only its read-only `--preflight-commands` check before the native phases,
+as shown below. Use the same future `OUTPUT` path; this check does not create
+it. The native `--run` creates its own batch at `OUTPUT/maintained` and invokes
+the maintained tool's `--resume`, which prepares, applies and verifies that
+batch. Do not separately run the standalone daily guide's `--prepare`,
+`--apply` or `--resume`, or create another daily batch for this experiment.
+
 The native plan is a private JSON file with exactly the fields below and the
 optional waits. All paths are absolute; files must be regular, single-link
 inputs and paths must not traverse links or reparse points. `repo`,
@@ -102,9 +110,18 @@ Run a launcher from the checkout. Replace `PLAN` and `OUTPUT` with absolute
 private paths; the same fresh `OUTPUT` can be used for preflight and run
 because preflight does not create it. Each phase below starts only if the
 previous phase exits with code `0`; on any other result, inspect the retained
-records before taking another action.
+records before taking another action. `MAINTAINED_PLAN` is the daily v2 plan
+referenced by the native `PLAN`.
+
+For this controlled experiment, keep other clients and tasks paused until the
+whole chain ends successfully: `--run` reports `passed_cli_native`, then
+`--verify-result` reports `reverified_read_only`, both with exit code `0`.
+Completing Hook review alone is not the signal to resume other operations.
+If the chain stops, keep the pause while the coordinator checks the installed
+state and retained batch; installation may already have occurred.
 
 ```sh
+tools/validation/run_daily_upgrade.sh daily --plan MAINTAINED_PLAN --output OUTPUT --preflight-commands && \
 tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUTPUT --preflight && \
 tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUTPUT --run && \
 tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUTPUT --verify-result
@@ -113,6 +130,9 @@ tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUT
 ```powershell
 & {
     $ErrorActionPreference = 'Stop'
+    $dailyUpgradeEntry = '.\tools\validation\run_daily_upgrade.ps1'
+    & $dailyUpgradeEntry -Target daily -Arguments @('--plan', 'MAINTAINED_PLAN', '--output', 'OUTPUT', '--preflight-commands')
+    if ($LASTEXITCODE -ne 0) { throw 'Command readiness stopped; inspect its result.' }
     $nativeAcceptanceEntry = '.\tools\validation\run_native_acceptance.ps1'
     & $nativeAcceptanceEntry -Target between-turns -Arguments @('--plan', 'PLAN', '--output', 'OUTPUT', '--preflight')
     if ($LASTEXITCODE -ne 0) { throw 'Preflight stopped; inspect its result.' }
