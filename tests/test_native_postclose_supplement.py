@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import importlib
 import importlib.util
 import os
 import py_compile
@@ -16,6 +17,16 @@ from tests.test_native_postclose_relation import raw, sealed
 from tools.validation import postclose_transition as transition
 from tools.validation import state_relation as relation
 from tools.validation import supplement_post_close as supplement
+
+
+class ImportIsolationTests(unittest.TestCase):
+    def test_package_import_preserves_caller_bytecode_policy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            caller_prefix = str(Path(temporary).resolve() / "caller-cache")
+            with mock.patch.object(sys, "pycache_prefix", caller_prefix), mock.patch.object(sys, "dont_write_bytecode", False):
+                importlib.reload(supplement)
+                self.assertEqual(sys.pycache_prefix, caller_prefix)
+                self.assertFalse(sys.dont_write_bytecode)
 
 
 class TransitionTests(unittest.TestCase):

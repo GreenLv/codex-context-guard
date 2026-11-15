@@ -57,11 +57,12 @@ def isolate_bytecode():
     sys.dont_write_bytecode = True
 
 
-# Apply before even the independently verified reader's first local import.
-isolate_bytecode()
+# Only the supported direct CLI owns a fresh interpreter. A library import
+# must preserve its caller's cache policy; prepare refuses preloaded products.
 if __package__:
     from . import shared_verify
 else:
+    isolate_bytecode()
     import shared_verify
 
 

@@ -100,8 +100,8 @@ the placeholders with absolute paths; on Windows use the selected Python
 interpreter in place of `python3`.
 
 ```sh
-python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' FILE
-python3 -c 'import pathlib, sys; from tools.validation.stop_host_acceptance import runtime; print(runtime(pathlib.Path(sys.argv[1])))' ARTIFACT_ROOT
+python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "FILE"
+python3 -c 'import pathlib, sys; from tools.validation.stop_host_acceptance import runtime; print(runtime(pathlib.Path(sys.argv[1])))' "ARTIFACT_ROOT"
 ```
 
 ## Run the phases
@@ -121,10 +121,10 @@ If the chain stops, keep the pause while the coordinator checks the installed
 state and retained batch; installation may already have occurred.
 
 ```sh
-tools/validation/run_daily_upgrade.sh daily --plan MAINTAINED_PLAN --output OUTPUT --preflight-commands && \
-tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUTPUT --preflight && \
-tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUTPUT --run && \
-tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUTPUT --verify-result
+tools/validation/run_daily_upgrade.sh daily --plan "MAINTAINED_PLAN" --output "OUTPUT" --preflight-commands && \
+tools/validation/run_native_acceptance.sh between-turns --plan "PLAN" --output "OUTPUT" --preflight && \
+tools/validation/run_native_acceptance.sh between-turns --plan "PLAN" --output "OUTPUT" --run && \
+tools/validation/run_native_acceptance.sh between-turns --plan "PLAN" --output "OUTPUT" --verify-result
 ```
 
 ```powershell
@@ -305,9 +305,9 @@ Use this section only for the explicit v2 supplementary check. Work from the cle
 For macOS, select a verified Python 3.10+ executable and set all three paths below to absolute paths:
 
 ```sh
-PYTHON=/absolute/path/to/verified/python
-READER_REPO=/absolute/path/to/clean-verifier-checkout
-MANIFEST=/absolute/path/to/private-reader-identity/reader-identity.json
+PYTHON='/absolute/path/to/verified/python'
+READER_REPO='/absolute/path/to/clean-verifier-checkout'
+MANIFEST='/absolute/path/to/private-reader-identity/reader-identity.json'
 "$PYTHON" - "$READER_REPO" "$MANIFEST" <<'PY'
 import ast, hashlib, json, os, re, stat, subprocess, sys
 from pathlib import Path
@@ -442,6 +442,14 @@ Record the original result and sidecar SHA-256 independently from their retained
 Run the reader twice with the same actual arguments: first `--preflight`, then, only after it succeeds, `--verify-retained`. Both run read-only local Git, Codex CLI and runtime-scope checks; neither starts a model nor installs a plugin. Stop on any refusal. For macOS:
 
 ```sh
+# Keep PYTHON, READER_REPO and MANIFEST from the reader-identity step.
+NATIVE_PLAN='/absolute/path/to/original-native-plan.json'
+ORIGINAL_OUTPUT='/absolute/path/to/original-native-output'
+FULL_PREIMAGE='/absolute/path/to/retained-preimage/state.json'
+NEW_RECEIPT='/absolute/path/to/new-private-receipt/supplement.json'
+ORIGINAL_RESULT_SHA256='<SHA-256 of ORIGINAL_OUTPUT/result.json>'
+ORIGINAL_SIDECAR_SHA256='<SHA-256 of ORIGINAL_OUTPUT/independent-verification.json>'
+READER_MANIFEST_SHA256='<reader_manifest_sha256 printed by the identity step>'
 "$PYTHON" "$READER_REPO/tools/validation/supplement_post_close.py" \
   --plan "$NATIVE_PLAN" --output "$ORIGINAL_OUTPUT" --preimage "$FULL_PREIMAGE" \
   --receipt "$NEW_RECEIPT" --result-sha256 "$ORIGINAL_RESULT_SHA256" \

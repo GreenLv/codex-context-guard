@@ -48,23 +48,35 @@ class LauncherWire(unittest.TestCase):
                 launcher.write_text(stub)
                 launcher.chmod(0o700)
             trace = root / "trace.txt"
+            arg_trace = root / "arguments.txt"
+            native_plan = str(root / "native plan with spaces.json")
+            maintained_plan = str(root / "maintained plan with spaces.json")
+            output_path = str(root / "output with spaces")
+            recipe = recipes[0].replace("MAINTAINED_PLAN", maintained_plan).replace("PLAN", native_plan).replace("OUTPUT", output_path)
             for failure in ["", *phases]:
                 with self.subTest(language=language, failure=failure):
                     trace.write_text("")
+                    arg_trace.write_text("")
                     result = subprocess.run(
-                        [*shell, recipes[0]], cwd=root,
-                        env={**os.environ, "CG_DOC_TRACE": trace.name, "CG_DOC_FAIL": failure},
+                        [*shell, recipe], cwd=root,
+                        env={**os.environ, "CG_DOC_TRACE": trace.name, "CG_DOC_FAIL": failure, "CG_DOC_ARG_TRACE": arg_trace.name},
                         capture_output=True, timeout=20,
                     )
                     expected = phases if not failure else phases[:phases.index(failure) + 1]
                     self.assertIsInstance(result.stderr, bytes)
                     self.assertIn(b"\xff", result.stderr)
                     self.assertEqual(trace.read_text(encoding="utf-8").splitlines(), expected)
+                    arguments = arg_trace.read_text(encoding="utf-8").splitlines()
+                    plans = [arguments[i + 1] for i, value in enumerate(arguments) if value == "--plan"]
+                    outputs = [arguments[i + 1] for i, value in enumerate(arguments) if value == "--output"]
+                    self.assertEqual(plans, [maintained_plan] + [native_plan] * (len(expected) - 1))
+                    self.assertEqual(outputs, [output_path] * len(expected))
                     self.assertEqual(result.returncode == 0, not failure, result.stderr)
 
     @unittest.skipUnless(shutil.which("sh"), "POSIX sh unavailable")
     def test_documented_shell_phases_stop_after_first_failure(self):
         self._check_documented_phase_recipe("sh", ["sh", "-c"], """#!/bin/sh
+for cg_doc_argument do printf '%s\\n' "$cg_doc_argument" >> "$CG_DOC_ARG_TRACE"; done
 for cg_doc_phase do :; done
 printf '\\377' >&2
 printf '%s\\n' "$cg_doc_phase" >> "$CG_DOC_TRACE"
@@ -79,6 +91,7 @@ printf '%s\\n' "$cg_doc_phase" >> "$CG_DOC_TRACE"
             "powershell", [shell, "-NoProfile", "-NonInteractive", "-Command"], """
 param([string]$Target, [string[]]$Arguments)
 [Console]::OpenStandardError().WriteByte(255)
+foreach ($cgDocArgument in $Arguments) { [IO.File]::AppendAllText($env:CG_DOC_ARG_TRACE, $cgDocArgument + [Environment]::NewLine) }
 $cgDocPhase = $Arguments[-1]
 [IO.File]::AppendAllText($env:CG_DOC_TRACE, $cgDocPhase + [Environment]::NewLine)
 if ($cgDocPhase -eq $env:CG_DOC_FAIL) { exit 7 }
