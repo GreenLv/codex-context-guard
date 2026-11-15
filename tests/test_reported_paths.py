@@ -4,13 +4,13 @@ import io
 import json
 import types
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest import mock
 
 from tests import test_native_between_turns_acceptance as orig
 
 bt, u = orig.bt, orig.u
-HOME = r'E:\Users\Example\.codex'
+HOME = r'E:\Fixture\Home\.codex'
 BASE = HOME + r'\plugins\cache\codex-context-guard\context-guard'
 SOURCE = BASE + r'\0.18.0\hooks\hooks.json'
 ARTIFACT = r'E:\Releases\Guard\artifact'
@@ -58,9 +58,10 @@ class ReportedPaths(unittest.TestCase):
             self.assertTrue(bt.reported_path_matches(unc, Path(unc)))
             self.assertFalse(bt.reported_path_matches(r'\\SERVER\share\artifact', Path(unc)))
             self.assertFalse(bt.reported_path_matches(r'\\?\UNC\server\share\artifact', Path(unc)))
-        with mock.patch.object(bt.platform, 'system', return_value='Darwin'):
-            self.assertTrue(bt.reported_path_matches('/tmp/artifact', Path('/tmp/artifact')))
-            self.assertFalse(bt.reported_path_matches('/tmp/other/../artifact', Path('/tmp/artifact')))
+        with (mock.patch.object(bt.platform, 'system', return_value='Darwin'),
+              mock.patch.object(bt, 'Path', PurePosixPath)):
+            self.assertTrue(bt.reported_path_matches('/tmp/artifact', '/tmp/artifact'))
+            self.assertFalse(bt.reported_path_matches('/tmp/other/../artifact', '/tmp/artifact'))
 
     def test_hook_inventory_matches_extended_and_rejects_unsafe_ccg_sources(self):
         rows = orig.inv(SOURCE)
@@ -184,7 +185,7 @@ class ReportedPaths(unittest.TestCase):
             out = fixture.ctx['tool_output']
             apply_path, verify_path = out / 'apply.json', out / 'verify.json'
             applied, verified = json.loads(apply_path.read_text()), json.loads(verify_path.read_text())
-            cache_expected = r'E:\Users\Example\.codex\plugins\cache\codex-context-guard\context-guard\0.18.0'
+            cache_expected = BASE + r'\0.18.0'
             applied['installed_after']['market_root'] = r'\\?\e:\releases\guard\artifact'
             applied['installed_after']['cache_path'] = r'\\?\e:' + cache_expected[2:].lower()
             verified['installed_after']['cache_path'] = r'\\?\e:' + cache_expected[2:].lower()
