@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -11,6 +12,9 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
+from tools.validation import state_relation
+from tools.validation.shared_verify import verify_core
+
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location(
     "orig", HERE / "test_native_between_turns_acceptance.py"
@@ -19,6 +23,76 @@ orig = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(orig)
 bt = orig.bt
 u = orig.u
+
+
+def check_v3_composition(case, fixture, ctx, plan, output, result, before, after, put):
+    """Exercise the v3 wrapper, shared core and relation with one full fixture."""
+    root = fixture.p / "synthetic-controlled-data"
+    live = root / "sessions-v2" / "old" / "state.json"
+    live.parent.mkdir(parents=True)
+    scope = {"current": ["R001"], "ancestor": []}
+    pre = orig.state("t2")
+    pre["prompts"] = [{"turn_id": "t1"}, {"turn_id": "t2"}]
+    pre["session"].update(ended_at=None, updated_at="2020-01-01T00:00:00Z")
+    pre["content_hash"] = hashlib.sha256(state_relation.canonical(pre)).hexdigest()
+    pre_raw = json.dumps(pre, ensure_ascii=False).encode()
+    (output / "old-after-full-state.json").write_bytes(pre_raw)
+    pre_snap = {"root": str(root), "sha256": hashlib.sha256(pre_raw).hexdigest(),
+                "state": pre, "scope": scope}
+    v3_before = copy.deepcopy(before)
+    v3_before["root"] = str(root)
+    put("old-state.json", v3_before)
+    put("old-after.json", bt.project(ctx, pre_snap))
+    v3_result = copy.deepcopy(result)
+    v3_result["subject"]["state_capture"] = bt.STATE_CAPTURE
+
+    def bind_current(value):
+        raw = json.dumps(value, ensure_ascii=False).encode()
+        live.write_bytes(raw)
+        (output / "post-close-full-state.json").write_bytes(raw)
+        current = {"root": str(root), "sha256": hashlib.sha256(raw).hexdigest(),
+                   "state": value, "scope": scope}
+        put("post-close.json", {"schema": bt.STATE_CAPTURE,
+                                "observed_at_utc": "2020-01-01T00:00:03Z",
+                                "snapshot": bt.project(ctx, current)})
+        for name in bt.CAPTURE_EVIDENCE | {"old-state.json", "old-after.json"}:
+            v3_result["evidence"][name] = bt.sha(output / name)
+        put("result.json", v3_result)
+        return current
+
+    post = copy.deepcopy(pre)
+    post["session"].update(ended_at="2020-01-01T00:00:01Z",
+                           updated_at="2020-01-01T00:00:02Z")
+    post.pop("content_hash")
+    post["content_hash"] = hashlib.sha256(state_relation.canonical(post)).hexdigest()
+    try:
+        # orig loads the candidate by spec without registering its module;
+        # normal script/package execution registers it in sys.modules.
+        with (mock.patch.object(u, "_old_scope", return_value=scope),
+              mock.patch.dict(sys.modules, {bt.__name__: bt})):
+            for name, value, relation in (("unchanged", pre, "exact_raw_match"),
+                                           ("post_close", post, "session_end_metadata_consistent")):
+                with case.subTest(v3_relation=name):
+                    current = bind_current(value)
+                    with mock.patch.object(bt, "snapshot", return_value=current):
+                        case.assertEqual(bt.independent_verify(ctx, plan, output)["relation"], relation)
+            changed = copy.deepcopy(post)
+            changed["unrelated_business_value"] = True
+            changed.pop("content_hash")
+            changed["content_hash"] = hashlib.sha256(state_relation.canonical(changed)).hexdigest()
+            current = bind_current(changed)
+            with mock.patch.object(bt, "snapshot", return_value=current):
+                with case.assertRaisesRegex(state_relation.Refused, "other_state_change"):
+                    bt.independent_verify(ctx, plan, output)
+            current = bind_current(post)
+            drift = dict(current, sha256="0" * 64)
+            with mock.patch.object(bt, "snapshot", side_effect=[current, current, drift]):
+                with case.assertRaisesRegex(bt.Refused, "live state drifted"):
+                    bt.independent_verify(ctx, plan, output)
+    finally:
+        put("old-state.json", before)
+        put("old-after.json", after)
+        put("result.json", result)
 
 
 class FamilyTests(unittest.TestCase):
@@ -621,7 +695,7 @@ class FamilyTests(unittest.TestCase):
                 sidecar.write_text(
                     json.dumps(
                         {
-                            "schema": "cg-between-turn-independent/v2",
+                            "schema": bt.INDEPENDENT,
                             "status": "passed",
                             "result_sha256": bt.sha(result),
                         }
@@ -653,7 +727,7 @@ class FamilyTests(unittest.TestCase):
         sidecar.write_text(
             json.dumps(
                 {
-                    "schema": "cg-between-turn-independent/v2",
+                    "schema": bt.INDEPENDENT,
                     "status": "passed",
                     "result_sha256": "0" * 64,
                 }
@@ -1898,7 +1972,8 @@ class FamilyTests(unittest.TestCase):
                     bt, "final_subject_readback", return_value={"installed": True}
                 ),
             ):
-                self.assertTrue(bt.independent_verify(ctx, plan, out))
+                self.assertTrue(verify_core(bt, ctx, plan, out))
+                check_v3_composition(self, fixture, ctx, plan, out, result, before, after, put)
                 server_path, rpc_path = out / "server.json", out / "rpc.jsonl"
                 original_server, original_rpc = (
                     server_path.read_bytes(),
@@ -1956,7 +2031,7 @@ class FamilyTests(unittest.TestCase):
                 with (mock.patch.object(bt.platform, "system", return_value="Windows"),
                       mock.patch.object(u, "_source_key", side_effect=lambda raw, sources: raw if raw in sources else None),
                       mock.patch.object(bt, "reported_path_matches", side_effect=lambda raw, trusted: raw == str(trusted))):
-                    self.assertTrue(bt.independent_verify(ctx, plan, out))
+                    self.assertTrue(verify_core(bt, ctx, plan, out))
                     for wrong_server in (
                         {"pid": 42, "argv": win_argv + ["--extra"], "windows_backend": "mxc", "os_backend_observation": "unobserved"},
                         {"pid": 42, "argv": win_argv, "windows_backend": "elevated", "os_backend_observation": "unobserved"},
@@ -1966,7 +2041,7 @@ class FamilyTests(unittest.TestCase):
                         win_result["evidence"]["server.json"] = bt.sha(server_path)
                         put("result.json", win_result)
                         with self.assertRaises(bt.Refused):
-                            bt.independent_verify(ctx, plan, out)
+                            verify_core(bt, ctx, plan, out)
                     put("server.json", {"pid": 42, "argv": win_argv, "windows_backend": "mxc", "os_backend_observation": "unobserved"})
                     win_result["evidence"]["server.json"] = bt.sha(server_path)
                     for wrong in (None, "elevated", "mxc --extra"):
@@ -1977,7 +2052,7 @@ class FamilyTests(unittest.TestCase):
                         win_result["evidence"]["rpc.jsonl"] = bt.sha(rpc_path)
                         put("result.json", win_result)
                         with self.assertRaises(bt.Refused):
-                            bt.independent_verify(ctx, plan, out)
+                            verify_core(bt, ctx, plan, out)
                 server_path.write_bytes(original_server)
                 rpc_path.write_bytes(original_rpc)
                 refresh_path.write_bytes(original_refresh)
@@ -2000,22 +2075,22 @@ class FamilyTests(unittest.TestCase):
                     tampered[key] = value
                     put("result.json", tampered)
                     with self.assertRaises(bt.Refused):
-                        bt.independent_verify(ctx, plan, out)
+                        verify_core(bt, ctx, plan, out)
                 for failure in ('queue_full', 'ValueError'):
                     tampered = copy.deepcopy(result)
                     tampered['cleanup']['reader_failure'] = failure
                     put('result.json', tampered)
                     with self.assertRaises(bt.Refused):
-                        bt.independent_verify(ctx, plan, out)
+                        verify_core(bt, ctx, plan, out)
                 tampered = copy.deepcopy(result)
                 del tampered["subject"]["windows_backend"]
                 put("result.json", tampered)
                 with self.assertRaises(bt.Refused):
-                    bt.independent_verify(ctx, plan, out)
+                    verify_core(bt, ctx, plan, out)
                 put("result.json", result)
                 with mock.patch.object(ctx["daily"], "_helper_identities", return_value={"helper": "changed"}):
                     with self.assertRaises(bt.Refused):
-                        bt.independent_verify(ctx, plan, out)
+                        verify_core(bt, ctx, plan, out)
                 put("result.json", result)
                 # A default selector still requires both actual thread starts
                 # to report the official provider and the selected model.
@@ -2030,7 +2105,7 @@ class FamilyTests(unittest.TestCase):
                         result["evidence"]["rpc.jsonl"] = bt.sha(rpc_path)
                         put("result.json", result)
                         with self.assertRaises(bt.Refused):
-                            bt.independent_verify(ctx, plan, out)
+                            verify_core(bt, ctx, plan, out)
                 rpc_path.write_bytes(original_rpc)
                 result["evidence"]["rpc.jsonl"] = bt.sha(rpc_path)
                 put("result.json", result)
@@ -2044,7 +2119,7 @@ class FamilyTests(unittest.TestCase):
                     original = path.read_bytes()
                     path.write_bytes(original + b" ")
                     with self.assertRaises(bt.Refused):
-                        bt.independent_verify(ctx, plan, out)
+                        verify_core(bt, ctx, plan, out)
                     path.write_bytes(original)
                 # Re-hashing corrupted evidence cannot make semantic drift pass.
                 rpc_path = out / "rpc.jsonl"
@@ -2059,7 +2134,7 @@ class FamilyTests(unittest.TestCase):
                 result["evidence"]["rpc.jsonl"] = bt.sha(rpc_path)
                 put("result.json", result)
                 with self.assertRaises(bt.Refused):
-                    bt.independent_verify(ctx, plan, out)
+                    verify_core(bt, ctx, plan, out)
                 rpc_path.write_bytes(original_rpc)
                 result["evidence"]["rpc.jsonl"] = bt.sha(rpc_path)
                 put("result.json", result)
@@ -2071,7 +2146,7 @@ class FamilyTests(unittest.TestCase):
                 result["evidence"]["old-after.json"] = bt.sha(after_path)
                 put("result.json", result)
                 with self.assertRaises(Exception):
-                    bt.independent_verify(ctx, plan, out)
+                    verify_core(bt, ctx, plan, out)
                 after_path.write_bytes(original_after)
                 result["evidence"]["old-after.json"] = bt.sha(after_path)
                 put("result.json", result)
@@ -2083,7 +2158,7 @@ class FamilyTests(unittest.TestCase):
                 result["evidence"]["official-readback.json"] = bt.sha(official_path)
                 put("result.json", result)
                 with self.assertRaises(bt.Refused):
-                    bt.independent_verify(ctx, plan, out)
+                    verify_core(bt, ctx, plan, out)
                 official_path.write_bytes(official_original)
                 result["evidence"]["official-readback.json"] = bt.sha(official_path)
                 put("result.json", result)
@@ -2113,7 +2188,7 @@ class FamilyTests(unittest.TestCase):
                     result["evidence"]["rpc.jsonl"] = bt.sha(rpc_path)
                     put("result.json", result)
                     with self.assertRaises(bt.Refused):
-                        bt.independent_verify(ctx, plan, out)
+                        verify_core(bt, ctx, plan, out)
                 rpc_path.write_bytes(original_rpc)
                 result["evidence"]["rpc.jsonl"] = bt.sha(rpc_path)
                 put("result.json", result)
@@ -2121,12 +2196,12 @@ class FamilyTests(unittest.TestCase):
                 original = nativeplan.read_bytes()
                 nativeplan.write_bytes(b"changed")
                 with self.assertRaises(bt.Refused):
-                    bt.independent_verify(ctx, plan, out)
+                    verify_core(bt, ctx, plan, out)
                 nativeplan.write_bytes(original)
                 result["gates"]["fresh_model"]["pid"] = 43
                 put("result.json", result)
                 with self.assertRaises(bt.Refused):
-                    bt.independent_verify(ctx, plan, out)
+                    verify_core(bt, ctx, plan, out)
         finally:
             fixture.tearDown()
 

@@ -167,7 +167,9 @@ tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUT
    existing subscription, then reads back its model and permissions. These
    observations are not a lock. Conflicts or unknown results stop the run
    without a retry. The same old thread then continues on the same server and
-   its state and data root are checked. A fresh thread then reads the tracked
+   its state and data root are checked. The producer keeps the exact complete
+   old-thread state at this point in the private `old-after-full-state.json`.
+   A fresh thread then reads the tracked
    `README.md` using `cat README.md` on macOS or
    `Get-Content -LiteralPath README.md` on Windows. Its real prompt, tool and
    stop Hook pairs are checked against the new definition and bundle.
@@ -176,9 +178,17 @@ tools/validation/run_native_acceptance.sh between-turns --plan PLAN --output OUT
    request. The producer syncs each receipt file; on POSIX it also syncs the
    containing directory, while Windows directory durability is not established.
    A failed request is never automatically repeated.
-4. `--verify-result` reads the existing output and current installed state,
+4. After the owned server has closed and its cleanup is confirmed, the producer
+   captures the complete old-thread state again in the private
+   `post-close-full-state.json` and records its identity and observation in
+   `post-close.json`. Both full-state files and this record are bound to the v3
+   result. A failed or uncertain capture is not a pass.
+5. `--verify-result` reads the existing output and current installed state,
    independently re-derives the evidence bindings and does not start a model
    or repeat installation. It requires the same plan and the existing output.
+   It checks the captured pre-close and post-close states and the current live
+   state, as well as the original continuity, Hook, model-turn, configuration,
+   cleanup, maintained-upgrade and official-readback checks.
 
 The producer requests a read-only sandbox and on-request approval and checks
 the returned settings. Its post-turn observation checks the requested read
@@ -199,6 +209,17 @@ to continue that same server or PID. A new continuity experiment may require a
 new reviewed starting installation and fresh output. Do not repeat a plugin
 add merely because verification or Hook review is pending.
 
+For v3, the complete preimage and current state must either match exactly or
+differ only in `/content_hash`, `/session/ended_at` and `/session/updated_at`.
+The latter route requires a null previous end time and ordered UTC end, update
+and observation times. Every other value, key, type and array order must remain
+unchanged. Both complete states require runtime integrity validation. This
+relation is consistent with a session-end save; it does not identify the writer
+or prove that a SessionEnd event was observed.
+
+The native plan remains `cg-between-turn-native-plan/v2`. For a new run,
+`result.json` uses `cg-between-turn-native-result/v3` and
+`independent-verification.json` uses `cg-between-turn-independent/v3`.
 On success, stdout reports `passed_cli_native`; `result.json` contains the
 provisional CLI-native result and `independent-verification.json` binds the
 independent pass to that file. A later successful `--verify-result` reports
@@ -216,6 +237,246 @@ fallback conditions, not presented as an observed operating-system path.
 This evidence does not establish Desktop GUI loading or an unrelated task's
 continuity. Treat source checks, CI, native results, artifact identity and
 publication as separate facts.
+
+## Supplementary check for a retained v2 run
+
+This route supports the v2 result and independent receipt produced by the known
+baseline verifier that used the reviewed CLI and configuration-refresh route
+above. The reader checks that verifier implementation by its exact function
+digest, then verifies the original commit, producer and complete helper set. It
+refuses other v2 implementations; a matching schema label alone is insufficient.
+
+The existing v2 independent reader keeps its strict rule: the current raw
+old-thread state SHA-256 must equal the state recorded after the old thread
+continued. For either a passed or failed original sidecar, preserve the
+original `result.json` and its independent-verification receipt. A separate
+versioned supplementary reader can check a narrowly defined post-close state
+relation while independently rechecking the other native evidence. It writes a
+new private receipt; it does not change or replace either original file.
+
+Provide the original native plan and retained output, the original result and
+sidecar identities, the supplementary reader identity manifest, and the exact
+complete state bytes recorded after the old thread continued. An independently
+recovered byte-for-byte copy can supply those earlier bytes, but its raw SHA-256
+must equal the value in the original `old-after.json`, which must itself match
+the digest recorded in the original result. The v2 `old-after.json` contains a
+projection and the raw digest, not the complete state bytes. A matching
+projection alone is insufficient. If the exact earlier bytes or their evidence
+binding are unavailable, stop; the supplementary check cannot establish this
+relation. Use a new private receipt path outside the original output and the
+repository; an existing receipt is not overwritten.
+
+The supplementary reader validates both complete states and their content
+hashes, checks the actual data root and thread identity, and rereads the live
+state to detect later changes. Exact raw equality remains acceptable. For the
+optional post-close relation, only `content_hash`, the session's `ended_at`,
+and its `updated_at` may differ. The earlier `ended_at` must be null; the
+later end time must be present, and the earlier update, end, later update and
+reader observation times must be valid UTC times in that order. Every other
+key, value, type and array order must match. Unknown, malformed, changed or
+inconsistent evidence refuses the check.
+
+The state relation is consistent with a session-end save. It does not by
+itself prove that a SessionEnd event was observed or that server shutdown
+caused the change. The reader also re-derives the original continuity, scope,
+model-turn, Hook, configuration, cleanup, maintained-upgrade and official
+readback checks. It binds the original run to its original producer, source
+commit, plan, helper and artifact identities and records the supplementary
+reader's own identity separately. The original v2 run is not relabeled as a run by the newer reader.
+
+The supplementary actions use read-only local Git, CLI and runtime-scope
+queries. They do not run a model or install a plugin. A refusal or uncertain
+cleanup stops the check; retain the original records and the new private result
+without retrying an installation. A supplementary pass does not change the
+original failed sidecar, establish Desktop GUI loading or unrelated task
+continuity, or automatically establish native acceptance for another source
+commit. Release-evidence reuse is a separate decision under the repository's
+validation rules.
+
+Keep the complete state bytes and private evidence in access-controlled storage
+outside the public repository. They may contain private task information and
+must not be included in a public annex. For new v3 runs, the two full-state
+files and `post-close.json` stay in that same private evidence boundary.
+
+### Freeze the separate reader identity for a retained v2 result
+
+Use this section only for the explicit v2 supplementary check. Work from the clean checkout containing the new reader commit. Prepare a new private directory outside the source checkout, both artifact trees, the ZIP directories, the native result directory, the native plan and preimage directories. Choose a new `reader-identity.json` in that directory. The supplement never overwrites it. The following command reads the current tracked reader bytes and commit, then creates this identity file exclusively and prints its SHA-256. Check the printed commit against the separately reviewed verifier commit; save the printed identity SHA for both commands below. A clean source check is required again by the reader. Both platform examples below use a verified Python 3.10+ executable and the same identity-freeze code.
+
+For macOS, select a verified Python 3.10+ executable and set all three paths below to absolute paths:
+
+```sh
+PYTHON=/absolute/path/to/verified/python
+READER_REPO=/absolute/path/to/clean-verifier-checkout
+MANIFEST=/absolute/path/to/private-reader-identity/reader-identity.json
+"$PYTHON" - "$READER_REPO" "$MANIFEST" <<'PY'
+import ast, hashlib, json, os, re, stat, subprocess, sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+out = Path(sys.argv[2])
+if not repo.is_absolute() or not out.is_absolute() or not out.parent.is_dir():
+    raise SystemExit('Absolute paths and an existing private output directory are required')
+repo = repo.resolve(strict=True)
+out = out.parent.resolve(strict=True) / out.name
+if out.is_relative_to(repo):
+    raise SystemExit('Place the identity file outside the checkout')
+names = ('supplement_post_close.py', 'shared_verify.py',
+         'postclose_transition.py', 'state_relation.py')
+paths = [repo / 'tools' / 'validation' / name for name in names]
+def run(*args):
+    p = subprocess.run(['git', '-C', str(repo), *args], capture_output=True, check=True)
+    return p.stdout
+commit = run('rev-parse', 'HEAD').decode('ascii').strip()
+if not re.fullmatch('[a-f0-9]{40}', commit) or run('status', '--porcelain'):
+    raise SystemExit('The reader checkout must be clean')
+run('ls-files', '--error-unmatch', '--', *[p.relative_to(repo).as_posix() for p in paths])
+def read(path):
+    for part in (path, *path.parents):
+        info = part.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise SystemExit('Linked input is not supported')
+    before = path.stat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 16 * 1024 * 1024:
+        raise SystemExit('Invalid reader file')
+    data = path.read_bytes()
+    after = path.stat()
+    if (before.st_dev, before.st_ino, before.st_nlink, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_nlink, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+        raise SystemExit('Reader file changed')
+    return data
+values = {name: read(path) for name, path in zip(names, paths)}
+constants = [node.value.value for node in ast.parse(values['shared_verify.py']).body
+             if isinstance(node, ast.Assign) and len(node.targets) == 1
+             and isinstance(node.targets[0], ast.Name)
+             and node.targets[0].id == 'BASELINE_FUNCTION_SHA256'
+             and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)]
+if len(constants) != 1 or not re.fullmatch('[a-f0-9]{64}', constants[0]):
+    raise SystemExit('Invalid baseline identity')
+if run('rev-parse', 'HEAD').decode('ascii').strip() != commit or run('status', '--porcelain'):
+    raise SystemExit('Reader identity changed')
+if any(read(path) != values[name] for name, path in zip(names, paths)):
+    raise SystemExit('Reader file changed')
+identity = {'schema': 'cg-post-close-reader-identity/v1', 'source_commit': commit,
+            'baseline_function_sha256': constants[0],
+            'files': {name: hashlib.sha256(data).hexdigest() for name, data in values.items()}}
+encoded = (json.dumps(identity, sort_keys=True, separators=(',', ':')) + '\n').encode('utf-8')
+fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'wb') as stream:
+    stream.write(encoded)
+    stream.flush()
+    os.fsync(stream.fileno())
+print('reader_commit=' + commit)
+print('reader_manifest_sha256=' + hashlib.sha256(encoded).hexdigest())
+PY
+```
+
+For Windows, set these three absolute paths and run the complete PowerShell block:
+
+```powershell
+$Python = 'C:\absolute\path\to\verified\python.exe'
+$ReaderRepo = 'C:\absolute\path\to\clean-verifier-checkout'
+$Manifest = 'E:\absolute\path\to\private-reader-identity\reader-identity.json'
+@'
+import ast, hashlib, json, os, re, stat, subprocess, sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+out = Path(sys.argv[2])
+if not repo.is_absolute() or not out.is_absolute() or not out.parent.is_dir():
+    raise SystemExit('Absolute paths and an existing private output directory are required')
+repo = repo.resolve(strict=True)
+out = out.parent.resolve(strict=True) / out.name
+if out.is_relative_to(repo):
+    raise SystemExit('Place the identity file outside the checkout')
+names = ('supplement_post_close.py', 'shared_verify.py',
+         'postclose_transition.py', 'state_relation.py')
+paths = [repo / 'tools' / 'validation' / name for name in names]
+def run(*args):
+    p = subprocess.run(['git', '-C', str(repo), *args], capture_output=True, check=True)
+    return p.stdout
+commit = run('rev-parse', 'HEAD').decode('ascii').strip()
+if not re.fullmatch('[a-f0-9]{40}', commit) or run('status', '--porcelain'):
+    raise SystemExit('The reader checkout must be clean')
+run('ls-files', '--error-unmatch', '--', *[p.relative_to(repo).as_posix() for p in paths])
+def read(path):
+    for part in (path, *path.parents):
+        info = part.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise SystemExit('Linked input is not supported')
+    before = path.stat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 16 * 1024 * 1024:
+        raise SystemExit('Invalid reader file')
+    data = path.read_bytes()
+    after = path.stat()
+    if (before.st_dev, before.st_ino, before.st_nlink, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_nlink, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+        raise SystemExit('Reader file changed')
+    return data
+values = {name: read(path) for name, path in zip(names, paths)}
+constants = [node.value.value for node in ast.parse(values['shared_verify.py']).body
+             if isinstance(node, ast.Assign) and len(node.targets) == 1
+             and isinstance(node.targets[0], ast.Name)
+             and node.targets[0].id == 'BASELINE_FUNCTION_SHA256'
+             and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)]
+if len(constants) != 1 or not re.fullmatch('[a-f0-9]{64}', constants[0]):
+    raise SystemExit('Invalid baseline identity')
+if run('rev-parse', 'HEAD').decode('ascii').strip() != commit or run('status', '--porcelain'):
+    raise SystemExit('Reader identity changed')
+if any(read(path) != values[name] for name, path in zip(names, paths)):
+    raise SystemExit('Reader file changed')
+identity = {'schema': 'cg-post-close-reader-identity/v1', 'source_commit': commit,
+            'baseline_function_sha256': constants[0],
+            'files': {name: hashlib.sha256(data).hexdigest() for name, data in values.items()}}
+encoded = (json.dumps(identity, sort_keys=True, separators=(',', ':')) + '\n').encode('utf-8')
+fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'wb') as stream:
+    stream.write(encoded)
+    stream.flush()
+    os.fsync(stream.fileno())
+print('reader_commit=' + commit)
+print('reader_manifest_sha256=' + hashlib.sha256(encoded).hexdigest())
+'@ | & $Python - $ReaderRepo $Manifest
+if ($LASTEXITCODE -ne 0) { throw 'Reader identity freeze failed' }
+```
+
+Record the original result and sidecar SHA-256 independently from their retained private files. Set absolute paths for the original native plan, its result directory, exact full preimage, the identity file, and a **new receipt in another existing private directory**. The receipt directory must be outside the reader and original checkouts, both artifact trees, both ZIP parent directories, the native result directory, and the parent directories of the plan, preimage and identity file. It must be access-controlled (owner-only on POSIX; an owner-private DACL on Windows). The check uses the original plan's original checkout and subject; do not edit that checkout to the new verifier commit.
+
+Run the reader twice with the same actual arguments: first `--preflight`, then, only after it succeeds, `--verify-retained`. Both run read-only local Git, Codex CLI and runtime-scope checks; neither starts a model nor installs a plugin. Stop on any refusal. For macOS:
+
+```sh
+"$PYTHON" "$READER_REPO/tools/validation/supplement_post_close.py" \
+  --plan "$NATIVE_PLAN" --output "$ORIGINAL_OUTPUT" --preimage "$FULL_PREIMAGE" \
+  --receipt "$NEW_RECEIPT" --result-sha256 "$ORIGINAL_RESULT_SHA256" \
+  --sidecar-sha256 "$ORIGINAL_SIDECAR_SHA256" --reader-manifest "$MANIFEST" \
+  --reader-manifest-sha256 "$READER_MANIFEST_SHA256" --preflight && \
+"$PYTHON" "$READER_REPO/tools/validation/supplement_post_close.py" \
+  --plan "$NATIVE_PLAN" --output "$ORIGINAL_OUTPUT" --preimage "$FULL_PREIMAGE" \
+  --receipt "$NEW_RECEIPT" --result-sha256 "$ORIGINAL_RESULT_SHA256" \
+  --sidecar-sha256 "$ORIGINAL_SIDECAR_SHA256" --reader-manifest "$MANIFEST" \
+  --reader-manifest-sha256 "$READER_MANIFEST_SHA256" --verify-retained
+```
+
+For PowerShell, keep `$Python`, `$ReaderRepo` and `$Manifest` from the identity step. Set the remaining absolute paths and digest strings below, then stop after a nonzero exit:
+
+```powershell
+& {
+$ErrorActionPreference = 'Stop'
+$NativePlan = 'E:\absolute\path\to\original-native-plan.json'
+$OriginalOutput = 'E:\absolute\path\to\original-native-output'
+$FullPreimage = 'E:\absolute\path\to\retained-preimage\state.json'
+$NewReceipt = 'E:\absolute\path\to\new-private-receipt\supplement.json'
+$OriginalResultSha256 = '<original result SHA-256>'
+$OriginalSidecarSha256 = '<original sidecar SHA-256>'
+$ReaderManifestSha256 = '<identity SHA-256 printed above>'
+$reader = Join-Path $ReaderRepo 'tools/validation/supplement_post_close.py'
+$common = @('--plan', $NativePlan, '--output', $OriginalOutput, '--preimage', $FullPreimage,
+  '--receipt', $NewReceipt, '--result-sha256', $OriginalResultSha256,
+  '--sidecar-sha256', $OriginalSidecarSha256, '--reader-manifest', $Manifest,
+  '--reader-manifest-sha256', $ReaderManifestSha256)
+& $Python $reader @common --preflight
+if ($LASTEXITCODE -ne 0) { throw 'Supplement preflight failed' }
+& $Python $reader @common --verify-retained
+if ($LASTEXITCODE -ne 0) { throw 'Supplement verification failed' }
+}
+```
 
 For a failed Hook on a controlled thread and active turn, the private RPC
 journal may retain a bounded diagnostic containing entry types, lengths,

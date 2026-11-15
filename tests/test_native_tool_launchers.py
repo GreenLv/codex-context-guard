@@ -34,6 +34,9 @@ class LauncherWire(unittest.TestCase):
         text = (ROOT / "tools/validation/NATIVE_BETWEEN_TURNS_ACCEPTANCE.md").read_text(encoding="utf-8")
         section = text.split("## Run the phases", 1)[1]
         recipes = re.findall(r"```" + language + r"\n(.*?)```", section, re.S)
+        # Select the maintained four-phase native recipe; the guide also has
+        # separate identity-freeze and retained-result commands.
+        recipes = [recipe for recipe in recipes if "--preflight-commands" in recipe]
         self.assertEqual(len(recipes), 1)
         phases = ["--preflight-commands", "--preflight", "--run", "--verify-result"]
         with tempfile.TemporaryDirectory() as temporary:

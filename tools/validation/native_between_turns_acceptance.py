@@ -11,6 +11,7 @@ not establish Desktop GUI loading or an execution-time file allowlist.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import ntpath
@@ -33,7 +34,10 @@ from tools.validation import native_acceptance as native_io  # noqa: E402
 from tools.validation import native_upgrade_acceptance as native_identity  # noqa: E402
 
 PLAN = "cg-between-turn-native-plan/v2"
-REPORT = "cg-between-turn-native-result/v2"
+REPORT = "cg-between-turn-native-result/v3"
+INDEPENDENT = "cg-between-turn-independent/v3"
+STATE_CAPTURE = "cg-between-turn-state-captures/v1"
+CAPTURE_EVIDENCE = frozenset({"old-after-full-state.json", "post-close-full-state.json", "post-close.json"})
 CONFIG_REFRESH = "reload-user-config-empty-batch"
 REVIEWED_CLI_VERSION = "codex-cli 0.169.0-alpha.11.1"
 REVIEWED_CLI_SHA256 = {
@@ -1611,6 +1615,44 @@ def snapshot(c, thread):
     return {"root": str(root), "sha256": digest, "state": state, "scope": scope}
 
 
+def capture_full_state(ctx, snap, thread, path):
+    """Persist only the owned controlled state, with its exact validated bytes."""
+    root = Path(snap["root"])
+    candidates = [root / name / thread / "state.json" for name in ("sessions-v2", "sessions")]
+    present = [item for item in candidates if item.exists() or item.is_symlink()]
+    require(len(present) == 1, "full state capture path ambiguous")
+    raw = safe_bytes(regular(present[0]), 16 * 1024 * 1024)
+    require(hashlib.sha256(raw).hexdigest() == snap["sha256"], "full state capture drift")
+    state = strict_json_bytes(raw)
+    require(isinstance(state.get("session"), dict) and state["session"].get("id") == thread,
+            "full state capture thread differs")
+    def canonical(value):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":"), allow_nan=False)
+    require(canonical(state) == canonical(snap["state"]), "full state capture projection differs")
+    destination = check_path(Path(path).absolute())
+    require(destination.parent == ctx["output"], "full state capture outside result")
+    # Private parent is created by the native runner. Never replace a capture.
+    fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    require(sha(destination) == snap["sha256"], "saved full state capture differs")
+    return snap["sha256"]
+
+
+def capture_post_close(ctx, thread):
+    """Capture after confirmed owned cleanup, without changing the live state."""
+    current = snapshot(ctx, thread)
+    capture_full_state(ctx, current, thread, ctx["output"] / "post-close-full-state.json")
+    write(ctx["output"] / "post-close.json", {
+        "schema": STATE_CAPTURE,
+        "observed_at_utc": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "snapshot": project(ctx, current),
+    })
+
+
 def project(c, snap):
     state = snap["state"]
     acceptance = []
@@ -2604,445 +2646,67 @@ def validate_turn_request_scope(rows, old, fresh):
                 "turn request scope differs")
 
 
+def _capture_time(value):
+    require(isinstance(value, str) and re.fullmatch(
+        r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z", value),
+        "capture UTC timestamp malformed")
+    try:
+        return dt.datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise Refused("capture UTC timestamp malformed") from exc
+
+
+def validate_state_captures(ctx, output):
+    """Bind v3 full captures to the evidence map and current validated state."""
+    saved = strict_read_json(output / "result.json")
+    require(saved.get("schema") == REPORT
+            and saved.get("subject", {}).get("state_capture") == STATE_CAPTURE,
+            "v3 state capture contract missing")
+    evidence = saved.get("evidence", {})
+    require(isinstance(evidence, dict), "capture evidence map missing")
+    for name in CAPTURE_EVIDENCE | {"old-after.json"}:
+        digest = evidence.get(name)
+        require(isinstance(digest, str) and HEX64.fullmatch(digest)
+                and sha(output / name) == digest, "capture evidence binding differs")
+    before = strict_read_json(output / "old-after.json")
+    preimage = output / "old-after-full-state.json"
+    require(sha(preimage) == before.get("sha256"), "capture preimage binding differs")
+    post = strict_read_json(output / "post-close.json")
+    require(set(post) == {"schema", "observed_at_utc", "snapshot"}
+            and post["schema"] == STATE_CAPTURE and isinstance(post["snapshot"], dict),
+            "post-close capture shape differs")
+    thread = saved.get("gates", {}).get("old_model", {}).get("thread")
+    require(isinstance(thread, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", thread),
+            "capture thread malformed")
+    current = snapshot(ctx, thread)
+    require(current["root"] == before.get("root")
+            and project(ctx, current) == post["snapshot"]
+            and sha(output / "post-close-full-state.json") == current["sha256"],
+            "post-close capture no longer matches current state")
+    state = strict_read_json(output / "post-close-full-state.json")
+    require(json.dumps(state, sort_keys=True, ensure_ascii=False, allow_nan=False)
+            == json.dumps(current["state"], sort_keys=True, ensure_ascii=False, allow_nan=False)
+            and state.get("session", {}).get("id") == thread,
+            "post-close full state differs")
+    observed = _capture_time(post["observed_at_utc"])
+    require(_capture_time(state["session"].get("updated_at")) <= observed
+            <= dt.datetime.now(dt.timezone.utc), "post-close observation time differs")
+    return preimage, thread, current, {name: evidence[name] for name in CAPTURE_EVIDENCE}
+
+
 def independent_verify(ctx, plan, output):
-    """Re-read immutable evidence and re-derive same-server Hook/state facts."""
-    require_reviewed_cli(plan)
-    result = strict_read_json(output / "result.json")
-    require(
-        result.get("schema") == REPORT
-        and result.get("config_refresh") == CONFIG_REFRESH
-        and plan.get("schema") == PLAN
-        and plan.get("config_refresh") == CONFIG_REFRESH
-        and result.get("status") in ("provisional_cli_native", "passed_cli_native"),
-        "result schema/status differs",
-    )
-    require(
-        result.get("declared_pause") is True
-        and type(result.get("login_budget")) is int
-        and result.get("login_budget") == 0
-        and result.get("platform") == platform.system()
-        and result.get("evidence_scope") == "owned app-server real-model CLI threads"
-        and result.get("gui") == "unobserved"
-        and result.get("cli_version") == plan.get("expected_cli_version")
-        and result.get("model") == plan.get("expected_model"),
-        "result scope or operator conditions differ",
-    )
-    gates = result.get("gates", {})
-    require(
-        all(
-            isinstance(gates.get(k), dict) and gates[k].get("status") == "passed"
-            for k in (
-                "old_model",
-                "fresh_model",
-                "new_trust",
-                "maintained_apply",
-                "config_refresh",
-            )
-        )
-        and gates["new_trust"].get("count") == 9,
-        "result gates differ",
-    )
-    require(
-        client_cleanup_confirmed(result.get("cleanup")),
-        "owned app-server cleanup unconfirmed",
-    )
-    require(
-        "reader_failure" in result["cleanup"] and result["cleanup"]["reader_failure"] is None,
-        "RPC reader evidence incomplete",
-    )
-    subject = result.get("subject", {})
-    require(
-        subject.get("native_plan_sha256")
-        == plan.get("_native_plan_sha256")
-        == sha(ctx["native_plan_path"])
-        and subject.get("producer_sha256") == sha(producer_path()),
-        "native producer/plan binding differs",
-    )
-    require(
-        subject.get("diagnostic_sha256")
-        == ctx["diagnostic_sha256"]
-        == sha(diagnostic_path()),
-        "Hook diagnostic helper binding differs",
-    )
-    require(
-        subject.get("helper_closure_sha256")
-        == ctx["u"].digest(ctx["daily"]._helper_identities()),
-        "helper closure drift",
-    )
-    evidence = result.get("evidence")
-    require(isinstance(evidence, dict), "evidence map missing")
-    required = {
-        "server.json",
-        "old-trust.json",
-        "old-state.json",
-        "old-after.json",
-        "new-trust.json",
-        "rpc.jsonl",
-        "between-turn-boundary.json",
-        "maintained-call.json",
-        "official-readback.json",
-        "maintained/prepare.json",
-        "maintained/apply.json",
-        "maintained/verify.json",
-        "maintained/apply-events.jsonl",
-        "config-refresh.json",
-        "config-refresh-attempt.json",
-        "config-refresh-outcome.json",
-    }
-    optional = {"maintained/verify-after-trust.json", "maintained-verify-call.json"}
-    require(
-        required <= set(evidence) and set(evidence) <= required | optional,
-        "evidence set incomplete",
-    )
-    for name, expected in evidence.items():
-        relative = Path(name)
-        require(
-            not relative.is_absolute()
-            and ".." not in relative.parts
-            and sha(output / relative) == expected,
-            "evidence changed",
-        )
-    server = strict_read_json(output / "server.json")
-    expected_argv = app_server_argv(plan, ctx["cli"])
-    require(
-        ctx["app_server_argv"] == expected_argv
-        and ctx["windows_backend"] == selected_backend(plan)
-        and "windows_backend" in subject and "windows_backend" in server
-        and subject.get("app_server_argv") == expected_argv
-        and subject.get("windows_backend") == selected_backend(plan)
-        and server.get("argv") == expected_argv
-        and server.get("windows_backend") == selected_backend(plan)
-        and server.get("os_backend_observation") == "unobserved",
-        "app-server launch binding differs",
-    )
-    boundary = strict_read_json(output / "between-turn-boundary.json")
-    samples = boundary.get("runtime_activity_samples")
-    require(
-        boundary.get("user_declared_pause") is True
-        and isinstance(samples, list)
-        and samples
-        and samples[-1].get("status") == "clear"
-        and all(
-            isinstance(row, dict) and row.get("query_cleanup") != "unconfirmed"
-            for row in samples
-        ),
-        "activity/pause boundary not established",
-    )
-    before = strict_read_json(output / "old-state.json")
-    after = strict_read_json(output / "old-after.json")
-    old = result["gates"]["old_model"]
-    fresh = result["gates"]["fresh_model"]
-    prior_official = strict_read_json(output / "official-readback.json")
-    require(
-        prior_official.get("pluginId") == ENTRY
-        and prior_official.get("version") == plan["target_version"]
-        and prior_official.get("installed") is True
-        and type(prior_official.get("enabled")) is bool
-        and prior_official.get("target_source_verified") is True,
-        "recorded official readback differs",
-    )
-    for key in (
-        "commit",
-        "old_version",
-        "target_version",
-        "zip_sha256",
-        "runtime_sha256",
-        "tool_sha256",
-        "cli_sha256",
-    ):
-        require(
-            subject.get(key) == plan.get(key), "result subject differs from native plan"
-        )
-    require(
-        type(server.get("pid")) is int and server["pid"] > 0, "invalid owned server PID"
-    )
-    identities = (
-        old.get("thread"),
-        fresh.get("thread"),
-        old.get("old_turn"),
-        old.get("new_turn"),
-        fresh.get("turn"),
-    )
-    require(
-        all(
-            isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value)
-            for value in identities
-        )
-        and len(set(identities[2:])) == 3,
-        "invalid thread or turn identity",
-    )
-    require(
-        server.get("pid")
-        == old.get("pid")
-        == fresh.get("pid")
-        == boundary.get("server_pid")
-        and boundary.get("thread") == old.get("thread")
-        and old.get("thread") != fresh.get("thread"),
-        "server/thread continuity differs",
-    )
-    require(
-        before.get("root") == after.get("root")
-        and old.get("old_turn") in before.get("turns", [])
-        and old.get("new_turn") in after.get("turns", []),
-        "owned state continuation differs",
-    )
-    ctx["u"].validate_continuity(before["state"], after["state"])
-    validate_projected_scope(before, after)
-    current = snapshot(ctx, old["thread"])
-    require(
-        current["sha256"] == after["sha256"] and current["root"] == after["root"],
-        "Guard state no longer matches validated snapshot",
-    )
-    old_hooks = strict_read_json(output / "old-trust.json")["hooks"]
-    new_hooks = strict_read_json(output / "new-trust.json")["hooks"]
-    old_src = str(ctx["old_root"] / "hooks/hooks.json")
-    new_src = str(ctx["new_root"] / "hooks/hooks.json")
-    oldinv = ctx["u"]._inventory({"data": [{"hooks": old_hooks}]}, {old_src: "old"})
-    newinv = ctx["u"]._inventory({"data": [{"hooks": new_hooks}]}, {new_src: "new"})
-    rows = strict_read_jsonl(output / "rpc.jsonl", 10000)
-    require(
-        all(row.get("direction") in ("request", "response", "local") for row in rows),
-        "RPC journal row malformed",
-    )
-    marker_names = (
-        "old_turn_complete",
-        "apply_started",
-        "apply_finished",
-        "old_continuation_complete",
-        "fresh_turn_complete",
-    )
-    marks = []
-    for name in marker_names:
-        found = [
-            (i, r)
-            for i, r in enumerate(rows)
-            if r.get("direction") == "local" and r.get("event") == name
-        ]
-        require(
-            len(found) == 1
-            and found[0][1].get("pid") == server["pid"]
-            and type(found[0][1].get("monotonic_ns")) is int,
-            "phase marker missing",
-        )
-        marks.append(found[0])
-    require(
-        [i for i, _ in marks] == sorted(i for i, _ in marks)
-        and [r["monotonic_ns"] for _, r in marks]
-        == sorted(r["monotonic_ns"] for _, r in marks),
-        "phase order differs",
-    )
-    validate_config_refresh_journal(
-        ctx,
-        rows,
-        strict_read_json(output / "config-refresh.json"),
-        strict_read_json(output / "config-refresh-attempt.json"),
-        strict_read_json(output / "config-refresh-outcome.json"),
-        server["pid"],
-        old["thread"],
-        marks[2][0],
-        marks[3][0],
-        newinv,
-    )
-    validate_turn_request_scope(rows, old, fresh)
-    call = strict_read_json(output / "maintained-call.json")
-    require(
-        marks[1][1]["monotonic_ns"]
-        <= call["start_ns"]
-        <= call["end_ns"]
-        <= marks[2][1]["monotonic_ns"],
-        "maintained timing differs",
-    )
-    require(
-        cleanup_confirmed(call.get("cleanup")),
-        "maintained cleanup unconfirmed",
-    )
-    expected_call = [
-        sys.executable,
-        str(ctx["tool"]),
-        "--plan",
-        str(ctx["maintained_plan"]),
-        "--output",
-        str(ctx["tool_output"]),
-        "--resume",
-    ]
-    require(
-        call.get("argv") == expected_call and call.get("exit_code") in (0, 1),
-        "maintained resume command differs",
-    )
-    followup = {"maintained/verify-after-trust.json", "maintained-verify-call.json"}
-    if call["exit_code"] == 1:
-        require(followup <= set(evidence), "trust continuation evidence missing")
-        verify_maintained(
-            ctx, plan, output / "maintained/verify.json", "hook_trust_pending"
-        )
-        verify_call = strict_read_json(output / "maintained-verify-call.json")
-        expected_verify = expected_call[:-1] + [
-            "--verify",
-            "--verify-output",
-            str(ctx["tool_output"] / "verify-after-trust.json"),
-        ]
-        require(
-            verify_call.get("argv") == expected_verify
-            and verify_call.get("exit_code") == 0
-            and cleanup_confirmed(verify_call.get("cleanup")),
-            "verify continuation differs",
-        )
-    else:
-        require(
-            not (followup & set(evidence)), "unexpected trust continuation evidence"
-        )
-    windows = (
-        rows[: marks[0][0]],
-        rows[marks[2][0] + 1 : marks[3][0]],
-        rows[marks[3][0] + 1 : marks[4][0]],
-    )
-    for window, (thread, turn, inventory, events) in zip(
-        windows,
-        (
-            (old["thread"], old["old_turn"], oldinv, ("userPromptSubmit", "stop")),
-            (
-                old["thread"],
-                old["new_turn"],
-                {**oldinv, **newinv},
-                ("userPromptSubmit", "stop"),
-            ),
-            (
-                fresh["thread"],
-                fresh["turn"],
-                newinv,
-                ("userPromptSubmit", "stop", "preToolUse", "postToolUse"),
-            ),
-        ),
-    ):
-        audit_turn_tools(window, thread, turn, allow_read=(thread == fresh["thread"]))
-        for event in events:
-            require(
-                ctx["u"]._paired(window, inventory, thread, event, turn=turn),
-                "actual paired Hook missing",
-            )
-        starts = [
-            r["message"]
-            for r in window
-            if r.get("direction") == "request"
-            and r.get("message", {}).get("method") == "turn/start"
-            and r["message"].get("params", {}).get("threadId") == thread
-        ]
-        require(len(starts) == 1, "turn request missing or duplicated")
-        responses = [
-            r["message"]
-            for r in window
-            if r.get("direction") == "response"
-            and r.get("message", {}).get("id") == starts[0].get("id")
-            and r["message"].get("result", {}).get("turn", {}).get("id") == turn
-        ]
-        completed = [
-            r
-            for r in window
-            if r.get("direction") == "response"
-            and r.get("message", {}).get("method") == "turn/completed"
-            and r["message"].get("params", {}).get("threadId") == thread
-            and r["message"].get("params", {}).get("turn", {}).get("id") == turn
-            and r["message"]["params"]["turn"].get("status") == "completed"
-        ]
-        require(
-            len(responses) == len(completed) == 1,
-            "model turn response/completion missing",
-        )
-    verify_read_tool(
-        ctx,
-        rows,
-        newinv,
-        fresh["thread"],
-        fresh["turn"],
-        read_command(ctx["read_file"].name),
-    )
-    for thread, turn in (
-        (old["thread"], old["old_turn"]),
-        (old["thread"], old["new_turn"]),
-        (fresh["thread"], fresh["turn"]),
-    ):
-        completed = [
-            r
-            for r in rows
-            if r.get("direction") == "response"
-            and r.get("message", {}).get("method") == "turn/completed"
-            and r["message"].get("params", {}).get("threadId") == thread
-            and r["message"].get("params", {}).get("turn", {}).get("id") == turn
-            and r["message"]["params"]["turn"].get("status") == "completed"
-        ]
-        require(len(completed) == 1, "completed model turn missing or duplicated")
-    config_requests = {}
-    provider_checks = []
-    for index, row in enumerate(rows):
-        message = row.get("message", {})
-        if row.get("direction") == "request" and message.get("method") == "config/read":
-            require(
-                message.get("params")
-                in (
-                    {"cwd": str(ctx["workspace"]), "includeLayers": False},
-                    {"cwd": None, "includeLayers": True},
-                ),
-                "provider read request differs",
-            )
-            config_requests[message.get("id")] = message["params"]["includeLayers"]
-        elif (
-            row.get("direction") == "response" and message.get("id") in config_requests
-        ):
-            is_layer = config_requests.pop(message["id"])
-            if is_layer:
-                continue
-            expected_fields = {"model_provider", "endpoint_policy", "custom_catalog"}
-            if selected_backend(plan) == "mxc":
-                expected_fields.add("windows_sandbox")
-            require(
-                isinstance(message.get("result"), dict)
-                and message["result"].get("model_provider") in (None, "openai")
-                and set(message["result"]) == expected_fields
-                and message["result"].get("endpoint_policy") == "official_default"
-                and message["result"].get("custom_catalog") is False
-                and (selected_backend(plan) != "mxc" or message["result"].get("windows_sandbox") == "mxc"),
-                "provider readback differs",
-            )
-            provider_checks.append(index)
-    require(
-        not config_requests
-        and len(provider_checks) >= 3
-        and any(index < marks[0][0] for index in provider_checks)
-        and any(marks[2][0] < index < marks[3][0] for index in provider_checks)
-        and any(marks[3][0] < index < marks[4][0] for index in provider_checks),
-        "provider configuration readbacks missing for a phase",
-    )
-    requests = {}
-    started = []
-    for row in rows:
-        msg = row.get("message", {})
-        if row["direction"] == "request" and msg.get("method") == "thread/start":
-            requests[msg.get("id")] = msg.get("params", {})
-        elif row["direction"] == "response" and msg.get("id") in requests:
-            params = requests.pop(msg["id"])
-            response = msg.get("result", {})
-            require(
-                params.get("sandbox") == "read-only"
-                and params.get("approvalPolicy") == "on-request"
-                and response.get("sandbox", {}).get("type") == "readOnly"
-                and response.get("approvalPolicy") == "on-request"
-                and response.get("modelProvider") == "openai"
-                and response.get("model") == plan["expected_model"],
-                "sandbox/approval/model binding differs",
-            )
-            started.append(response.get("thread", {}).get("id"))
-    require(
-        set(started) == {old["thread"], fresh["thread"]} and len(started) == 2,
-        "thread starts differ",
-    )
-    final_verify = (
-        output / "maintained/verify-after-trust.json"
-        if (output / "maintained/verify-after-trust.json").exists()
-        else output / "maintained/verify.json"
-    )
-    verify_maintained(ctx, plan, final_verify, "passed")
-    final_subject_readback(ctx, plan)
-    return True
+    """Re-derive v3 facts with exact captures and the narrow lifecycle relation."""
+    from tools.validation.shared_verify import verify_core
+
+    preimage, thread, current, captures = validate_state_captures(ctx, output)
+    proof = verify_core(sys.modules[__name__], ctx, plan, output,
+                        preimage_path=preimage, extra_required_evidence=CAPTURE_EVIDENCE)
+    for name, digest in captures.items():
+        require(sha(output / name) == digest, "capture evidence drift after verification")
+    final = snapshot(ctx, thread)
+    require(final["sha256"] == current["sha256"] and final["root"] == current["root"],
+            "post-close state drift after verification")
+    return proof
 
 
 def wait_for_activity(
@@ -3444,6 +3108,7 @@ def run(
             x for x in after["state"].get("prompts", []) if x.get("turn_id") == turn2
         ]
         require(len(markers) == 1, "new old-thread prompt state not observed")
+        capture_full_state(ctx, after, thread, out / "old-after-full-state.json")
         write(out / "old-after.json", project(ctx, after))
         old_witness = witness(ctx, thread, turn2)
         definitions = sorted(
@@ -3538,7 +3203,15 @@ def run(
                 result["cleanup"] = {"cleanup_unknown": type(e).__name__}
                 result["status"] = "failed_cleanup"
         if result["status"] == "passed_cli_native":
+            try:
+                capture_post_close(ctx, result["gates"]["old_model"]["thread"])
+            except Exception as exc:
+                result.update(status="failed_evidence", stage="post_close_capture", reason=type(exc).__name__)
+        if result["status"] == "passed_cli_native":
             names = [
+                "old-after-full-state.json",
+                "post-close-full-state.json",
+                "post-close.json",
                 "server.json",
                 "old-trust.json",
                 "old-state.json",
@@ -3571,6 +3244,7 @@ def run(
                     result["evidence"]["maintained-verify-call.json"] = sha(
                         out / "maintained-verify-call.json"
                     )
+                result["subject"]["state_capture"] = STATE_CAPTURE
                 result["subject"]["native_plan_sha256"] = plan["_native_plan_sha256"]
                 result["subject"]["producer_sha256"] = ctx["producer_sha256"]
                 result["subject"]["diagnostic_sha256"] = ctx["diagnostic_sha256"]
@@ -3588,7 +3262,7 @@ def run(
                 write(
                     out / "independent-verification.json",
                     {
-                        "schema": "cg-between-turn-independent/v2",
+                        "schema": INDEPENDENT,
                         "status": "passed",
                         "result_sha256": sha(out / "result.json"),
                     },
@@ -3598,7 +3272,7 @@ def run(
                 write(
                     out / "independent-verification.json",
                     {
-                        "schema": "cg-between-turn-independent/v2",
+                        "schema": INDEPENDENT,
                         "status": "failed",
                         "reason": type(exc).__name__,
                         "result_sha256": sha(out / "result.json"),
@@ -3630,7 +3304,7 @@ def main():
         if saved.get("status") == "provisional_cli_native" or sidecar_path.exists():
             sidecar = strict_read_json(sidecar_path)
             require(
-                sidecar.get("schema") == "cg-between-turn-independent/v2"
+                sidecar.get("schema") == INDEPENDENT
                 and sidecar.get("status") == "passed"
                 and sidecar.get("result_sha256") == result_sha,
                 "independent result receipt missing or mismatched",
@@ -3639,7 +3313,7 @@ def main():
         print(
             json.dumps(
                 {
-                    "schema": "cg-between-turn-independent/v2",
+                    "schema": INDEPENDENT,
                     "status": "reverified_read_only",
                     "result_sha256": result_sha,
                 }

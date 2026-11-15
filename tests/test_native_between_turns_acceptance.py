@@ -438,6 +438,8 @@ class Tests(unittest.TestCase):
         git = types.SimpleNamespace(stdout=self.plan["commit"] + "\n")
         with (
             mock.patch.object(bt, "snapshot", side_effect=self.snapshots),
+            mock.patch.object(bt, "capture_full_state", side_effect=lambda c, sn, t, p: p.write_bytes(b"private controlled snapshot")),
+            mock.patch.object(bt, "capture_post_close", side_effect=lambda c, t: [(c["output"] / name).write_bytes(b"private controlled post-close") for name in ("post-close-full-state.json", "post-close.json")]),
             mock.patch.object(bt, "official_list", return_value={"version": "0.18.0"}),
             mock.patch.object(bt, "verify_read_tool"),
             mock.patch.object(bt, "independent_verify"),
