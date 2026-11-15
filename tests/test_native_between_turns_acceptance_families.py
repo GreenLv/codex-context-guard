@@ -107,6 +107,17 @@ class FamilyTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 bt.safe_bytes(path)
 
+    def test_policy_root_symlink_parent_alias_is_not_same_path(self):
+        (self.root / "data").mkdir()
+        (self.root / "outer" / "child").mkdir(parents=True)
+        (self.root / "outer" / "data").mkdir()
+        link = self.root / "linked"
+        if not self.make_symlink(link, self.root / "outer" / "child", directory=True):
+            return
+        raw = str(link / ".." / "data")
+        self.assertNotEqual(Path(raw).resolve(), (self.root / "data").resolve())
+        self.assertFalse(orig.product_daily._same_path(raw, str(self.root / "data")))
+
     def test_hash_identity_does_not_use_bounded_record_reader(self):
         import hashlib
         path = self.root / "binary"
@@ -390,6 +401,7 @@ class FamilyTests(unittest.TestCase):
             )
         )
         daily = types.SimpleNamespace(
+            _same_path=orig.product_daily._same_path,
             _daily_home=lambda: home,
             _load_plan=lambda p: {
                 "mode": "between-turns",
@@ -491,6 +503,14 @@ class FamilyTests(unittest.TestCase):
             ctx = bt.preflight(plan, self.root / "result")
             self.assertEqual(ctx["files"], newfiles)
             self.assertFalse((self.root / "result").exists())
+            load_plan = daily._load_plan
+            try:
+                for bad_dir in (str(self.root / "other"), str(self.root / "other" / ".." / "home" / "data")):
+                    daily._load_plan = lambda p: {**load_plan(p), "data_dir": bad_dir}
+                    with self.assertRaisesRegex(bt.Refused, "policy data root differs"):
+                        bt.preflight(plan, self.root / "result")
+            finally:
+                daily._load_plan = load_plan
             with mock.patch.object(bt.platform, "system", return_value="Windows"):
                 missing = dict(plan)
                 missing.pop("windows_backend", None)
@@ -822,7 +842,7 @@ class FamilyTests(unittest.TestCase):
             journal.write_text(json.dumps(events[0]) + "\n")
             self.assertTrue(bt.no_add_attempted(ctx))
             with journal.open("a") as f:
-                f.write(json.dumps(events[1]) + "\n")
+                f.write(json.dumps(next(e for e in events if e.get("event") == "intent" and e.get("stage") == "plugin_add")) + "\n")
             self.assertFalse(bt.no_add_attempted(ctx))
             events[0]["prepared_sha256"] = "0" * 64
             journal.write_text(json.dumps(events[0]) + "\n")
@@ -1246,11 +1266,15 @@ class FamilyTests(unittest.TestCase):
             fixture.write_receipts()
             path = fixture.ctx["tool_output"] / "apply-events.jsonl"
             events = [json.loads(x) for x in path.read_text().splitlines()]
-            for bad in (
-                [events[0], events[2], events[1], events[3]],
-                [events[0], events[0], *events[1:]],
-            ):
+            intent = next(i for i, e in enumerate(events) if e.get("event") == "intent" and e.get("stage") == "plugin_add")
+            swapped = copy.deepcopy(events)
+            swapped[intent], swapped[intent + 1] = swapped[intent + 1], swapped[intent]
+            for bad in (swapped, [events[0], events[0], *events[1:]]):
                 path.write_text("".join(json.dumps(x) + "\n" for x in bad))
+                apply_path = fixture.ctx["tool_output"] / "apply.json"
+                applied = json.loads(apply_path.read_text())
+                applied["commands"] = [e for e in bad if e.get("event") == "fact"]
+                apply_path.write_text(json.dumps(applied))
                 with self.assertRaises(bt.Refused):
                     bt.verify_maintained(
                         fixture.ctx,
@@ -1282,27 +1306,21 @@ class FamilyTests(unittest.TestCase):
                 out = fixture.ctx["tool_output"]
                 journal = out / "apply-events.jsonl"
                 rows = [json.loads(line) for line in journal.read_text().splitlines()]
+                intent = next(i for i, e in enumerate(rows) if e.get("event") == "intent" and e.get("stage") == "plugin_add")
+                fact = intent + 1
                 if scenario == "note_only":
-                    rows = [
-                        rows[0],
-                        {
-                            "event": "note",
-                            "stage": "plugin_add",
-                            "message": "already current",
-                        },
-                        rows[-1],
-                    ]
+                    rows[intent:fact + 1] = [{"event": "note", "stage": "plugin_add", "message": "already current"}]
                 elif scenario == "failed_fact":
-                    rows[2]["exit_code"] = 1
+                    rows[fact]["exit_code"] = 1
                 elif scenario == "duplicate_pair":
-                    rows = rows[:3] + rows[1:3] + rows[3:]
+                    rows[fact + 1:fact + 1] = copy.deepcopy(rows[intent:fact + 1])
                 elif scenario == "wrong_argv":
-                    rows[1]["argv"][-1] = "wrong"
-                    rows[2]["argv"][-1] = "wrong"
+                    rows[intent]["argv"][-1] = "wrong"
+                    rows[fact]["argv"][-1] = "wrong"
                 elif scenario == "missing_fact_status":
-                    rows[2].pop("status")
+                    rows[fact].pop("status")
                 elif scenario == "boolean_exit":
-                    rows[2]["exit_code"] = False
+                    rows[fact]["exit_code"] = False
                 journal.write_text("".join(json.dumps(row) + "\n" for row in rows))
                 applied = out / "apply.json"
                 doc = json.loads(applied.read_text())
@@ -1339,6 +1357,127 @@ class FamilyTests(unittest.TestCase):
             self.assertEqual(fixture.calls, [])
         finally:
             fixture.tearDown()
+
+    def test_real_read_fact_family_and_tampering(self):
+        cases = ("valid", "valid_refused_gap", "valid_retry_before_add", "preflight_command", "preflight_stage", "preflight_order",
+                 "preflight_status", "preflight_exit", "preflight_missing", "preflight_wrong_source", "preflight_missing_source",
+                 "preflight_missing_market", "preflight_alias_source", "preflight_relative_source", "preflight_missing_old", "preflight_target_version", "policy_missing", "policy_interpreter",
+                 "policy_script", "policy_data", "policy_verb", "policy_extra", "policy_status", "policy_exit",
+                 "policy_late", "policy_duplicate", "read_inside_intent", "extra_mutation", "gap_registered",
+                 "gap_nonempty", "gap_wrong_status", "apply_read_failed", "version_drift", "mutation_cwd", "valid_summary")
+        for scenario in cases:
+            fixture = orig.Tests()
+            fixture.setUp()
+            try:
+                fixture.normalized["data_dir"] = str(fixture.ctx["data_root"])
+                fixture.write_receipts()
+                out = fixture.ctx["tool_output"]
+                path = out / "apply-events.jsonl"
+                original = [json.loads(x) for x in path.read_text().splitlines()]
+                states = [e for e in original if e.get("stage") == "apply_state"]
+                preflight = [e for e in original if e.get("stage") == "preflight"]
+                policy = next(e for e in original if e.get("stage") == "policy_readback")
+                pi = next(e for e in original if e.get("stage") == "plugin_add" and e["event"] == "intent")
+                pf = next(e for e in original if e.get("stage") == "plugin_add" and e["event"] == "fact")
+                cli = str(fixture.ctx["cli"])
+                def mutation(stage, argv):
+                    return [{"event": "intent", "stage": stage, "argv": argv},
+                            {"event": "fact", "stage": stage, "argv": argv, "cwd": str(fixture.repo),
+                             "status": "completed", "exit_code": 0, "stderr_nonempty": False, "observation": None}]
+                remove = mutation("marketplace_remove", [cli, "plugin", "marketplace", "remove", "codex-context-guard"])
+                add = mutation("marketplace_add", [cli, "plugin", "marketplace", "add", str(fixture.ctx["artifact"])])
+                gap = copy.deepcopy(states[:3])
+                gap[1]["observation"] = {"marketplaces": []}
+                if scenario in ("valid_refused_gap", "gap_registered", "gap_nonempty", "gap_wrong_status"):
+                    gap[2].update(status="refused_empty_readback", exit_code=1, observation={"installed": []})
+                if scenario == "gap_registered":
+                    gap[1]["observation"] = {"marketplaces": [{"name": "codex-context-guard"}]}
+                if scenario == "gap_nonempty":
+                    gap[2]["observation"] = {"installed": [{"name": "x"}]}
+                if scenario == "gap_wrong_status":
+                    gap[2]["status"] = "unknown"
+                rows = [original[0], *copy.deepcopy(states[:3]), *remove, *gap, *add,
+                        *copy.deepcopy(states[:3]), *copy.deepcopy(preflight), copy.deepcopy(policy),
+                        copy.deepcopy(pi), copy.deepcopy(pf), *copy.deepcopy(states[3:]), original[-1]]
+                pre = next(i for i, e in enumerate(rows) if e.get("stage") == "preflight")
+                pol = next(i for i, e in enumerate(rows) if e.get("stage") == "policy_readback")
+                intent = next(i for i, e in enumerate(rows) if e.get("stage") == "plugin_add" and e["event"] == "intent")
+                if scenario == "valid_retry_before_add":
+                    retry = [*copy.deepcopy(states[:3]),
+                             {"event": "note", "stage": "marketplace_remove", "message": "already at target"},
+                             {"event": "note", "stage": "marketplace_add", "message": "already registered"},
+                             *copy.deepcopy(preflight), copy.deepcopy(policy)]
+                    rows[intent:intent] = retry
+                if scenario == "preflight_command":
+                    rows[pre]["argv"] = [cli, "plugin", "remove", bt.ENTRY]
+                if scenario == "preflight_stage":
+                    rows[pre]["stage"] = "apply_state"
+                if scenario == "preflight_order":
+                    rows[pre], rows[pre + 1] = rows[pre + 1], rows[pre]
+                if scenario == "preflight_status":
+                    rows[pre]["status"] = "failed"
+                if scenario == "preflight_exit":
+                    rows[pre]["exit_code"] = 1
+                if scenario == "preflight_missing":
+                    rows.pop(pre)
+                if scenario == "preflight_wrong_source":
+                    rows[pre + 1]["observation"]["marketplaces"][0]["root"] = str(fixture.p / "third")
+                if scenario == "preflight_alias_source":
+                    rows[pre + 1]["observation"]["marketplaces"][0]["root"] = str(fixture.p / "other" / ".." / "artifact")
+                if scenario == "preflight_relative_source":
+                    rows[pre + 1]["observation"]["marketplaces"][0]["root"] = "artifact"
+                if scenario == "preflight_missing_source":
+                    del rows[pre + 1]["observation"]["marketplaces"][0]["root"]
+                if scenario == "preflight_missing_market":
+                    rows[pre + 1]["observation"]["marketplaces"] = []
+                if scenario == "preflight_missing_old":
+                    rows[pre + 2]["observation"]["installed"] = []
+                if scenario == "preflight_target_version":
+                    rows[pre + 2]["observation"]["installed"][0]["version"] = "0.18.0"
+                if scenario == "policy_missing":
+                    rows.pop(pol)
+                if scenario == "policy_interpreter":
+                    rows[pol]["argv"][0] = "other-python"
+                if scenario == "policy_script":
+                    rows[pol]["argv"][3] = str(fixture.new / "scripts/context_guard.py")
+                if scenario == "policy_data":
+                    rows[pol]["argv"][6] += "-other"
+                if scenario == "policy_verb":
+                    rows[pol]["argv"][-1] = "set"
+                if scenario == "policy_extra":
+                    rows[pol]["argv"].append("--extra")
+                if scenario == "policy_status":
+                    rows[pol]["status"] = "failed"
+                if scenario == "policy_exit":
+                    rows[pol]["exit_code"] = 1
+                if scenario == "policy_late":
+                    rows.insert(intent + 2, rows.pop(pol))
+                if scenario == "policy_duplicate":
+                    rows.insert(pol, copy.deepcopy(rows[pol]))
+                if scenario == "read_inside_intent":
+                    rows.insert(intent + 1, copy.deepcopy(states[0]))
+                if scenario == "extra_mutation":
+                    rows.insert(intent, {"event": "intent", "stage": "plugin_remove", "argv": [cli, "plugin", "remove", bt.ENTRY]})
+                if scenario == "apply_read_failed":
+                    rows[1]["exit_code"] = 1
+                if scenario == "version_drift":
+                    rows[pre]["observation"]["version"] = "codex-cli 0.1.0"
+                if scenario == "mutation_cwd":
+                    rows[intent + 1]["cwd"] = str(fixture.root if hasattr(fixture, "root") else fixture.p / "other")
+                if scenario == "valid_summary":
+                    rows[intent + 1].update(summary_parse_failed=True, stdout_sha256="f" * 64, stdout_bytes=0)
+                path.write_text("".join(json.dumps(e) + "\n" for e in rows))
+                apply_path = out / "apply.json"
+                applied = json.loads(apply_path.read_text())
+                applied["commands"] = [e for e in rows if e.get("event") == "fact"]
+                apply_path.write_text(json.dumps(applied))
+                if scenario in ("valid", "valid_refused_gap", "valid_retry_before_add", "valid_summary"):
+                    self.assertEqual(bt.verify_maintained(fixture.ctx, fixture.plan, out / "verify.json", "passed")["journal_add_count"], 1)
+                else:
+                    with self.assertRaises(bt.Refused, msg=scenario):
+                        bt.verify_maintained(fixture.ctx, fixture.plan, out / "verify.json", "passed")
+            finally:
+                fixture.tearDown()
 
     def test_independent_consumer_positive_and_evidence_tamper(self):
         fixture = orig.Tests()

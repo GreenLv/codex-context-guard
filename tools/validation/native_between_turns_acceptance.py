@@ -614,6 +614,10 @@ def preflight(plan, output, *, after=False):
     require(
         normalized.get("mode") == "between-turns", "normalized maintained mode differs"
     )
+    require(
+        normalized.get("data_dir") is None or daily._same_path(normalized["data_dir"], str(root)),
+        "policy data root differs",
+    )
     old_zip = regular(plan["old_zip"])
     old_artifact = directory(normalized["old_artifact_dir"])
     require(
@@ -1485,7 +1489,8 @@ def verify_maintained(c, plan, verify_path, expected_status):
     require(
         subject.get("daily_home") == str(c["home"])
         and subject.get("cli", {}).get("sha256") == plan["cli_sha256"]
-        and subject.get("cli", {}).get("path") == str(c["cli"]),
+        and subject.get("cli", {}).get("path") == str(c["cli"])
+        and subject.get("cli", {}).get("version") == plan["expected_cli_version"],
         "maintained HOME/CLI binding differs",
     )
     require(
@@ -1584,6 +1589,17 @@ def verify_maintained(c, plan, verify_path, expected_status):
         ],
     )
     rank = {"marketplace_remove": 0, "marketplace_add": 1, "plugin_add": 2}
+    policy_dir = c["normalized_plan"].get("data_dir")
+    if policy_dir is not None:
+        require(d._same_path(policy_dir, str(c["data_root"])), "policy data root differs")
+    policy_command = [sys.executable, "-B", "-I", str(c["old_root"] / "scripts/context_guard.py"),
+                      "cleanup", "--data-dir", str(policy_dir), "--policy", "show"]
+    read_stage = None
+    read_index = 0
+    read_registered = None
+    preflight_ready = False
+    policy_pending = False
+    retry_observation = False
     pending_stage = None
     seen = set()
     successful_plugin_adds = 0
@@ -1592,6 +1608,74 @@ def verify_maintained(c, plan, verify_path, expected_status):
     for event in events[1:]:
         kind, stage = event.get("event"), event.get("stage")
         require(not finished, "journal contains events after completion")
+        if kind == "fact" and stage in ("apply_state", "preflight"):
+            require(pending_stage is None and not policy_pending, "journal read interrupts a pending operation")
+            if read_index == 0:
+                require(stage != "preflight" or (last >= rank["marketplace_add"] and "plugin_add" not in seen),
+                        "preflight read out of order")
+                read_stage = stage
+                if stage == "apply_state":
+                    preflight_ready = False
+                else:
+                    retry_observation = False
+            require(stage == read_stage and event.get("argv") == read_commands[read_index],
+                    "journal read command or sequence differs")
+            require(set(event) == {"event", "stage", "argv", "cwd", "status", "exit_code", "stderr_nonempty", "observation"}
+                    and event.get("cwd") == str(c["repo"])
+                    and type(event.get("stderr_nonempty")) is bool
+                    and type(event.get("exit_code")) is int
+                    and isinstance(event.get("observation"), dict),
+                    "journal read fact malformed")
+            if read_index == 0:
+                require(event["observation"].get("version") == plan["expected_cli_version"],
+                        "journal CLI version differs")
+            if read_index == 1:
+                markets = event["observation"].get("marketplaces")
+                require(isinstance(markets, list) and all(isinstance(x, dict) and isinstance(x.get("name"), str) for x in markets),
+                        "journal marketplace readback malformed")
+                stable_markets = [x for x in markets if x["name"] == "codex-context-guard"]
+                require(len(stable_markets) <= 1, "ambiguous marketplace readback")
+                read_registered = bool(stable_markets)
+                if stage == "preflight":
+                    require(read_registered and isinstance(stable_markets[0].get("root"), str)
+                            and d._same_path(stable_markets[0]["root"], str(c["artifact"])),
+                            "preflight marketplace source differs")
+            refused_gap = (stage == "apply_state" and read_index == 2 and read_registered is False
+                           and event.get("status") == "refused_empty_readback"
+                           and event["exit_code"] != 0 and event["observation"] == {"installed": []})
+            require(refused_gap or (event.get("status") == "completed" and event["exit_code"] == 0),
+                    "journal read fact failed")
+            if stage == "preflight" and read_index == 2:
+                installed_rows = event["observation"].get("installed")
+                require(isinstance(installed_rows, list)
+                        and all(isinstance(row, dict) for row in installed_rows),
+                        "preflight plugin readback malformed")
+                stable_rows = [row for row in installed_rows if row.get("pluginId") == ENTRY]
+                require(len(stable_rows) == 1 and stable_rows[0].get("installed") is True
+                        and stable_rows[0].get("version") == plan["old_version"],
+                        "preflight old installation differs")
+            read_index += 1
+            if read_index == len(read_commands):
+                read_index = 0
+                read_stage = None
+                if stage == "preflight":
+                    policy_pending = policy_dir is not None
+                    preflight_ready = not policy_pending
+                elif last >= rank["marketplace_add"] and "plugin_add" not in seen:
+                    retry_observation = True
+            continue
+        require(read_index == 0, "incomplete journal read group")
+        if kind == "fact" and stage == "policy_readback":
+            require(policy_pending and pending_stage is None
+                    and set(event) == {"event", "stage", "argv", "cwd", "status", "exit_code", "stderr_nonempty", "observation"}
+                    and event.get("argv") == policy_command and event.get("cwd") == str(c["repo"])
+                    and event.get("status") == "completed" and type(event.get("exit_code")) is int
+                    and event["exit_code"] == 0 and type(event.get("stderr_nonempty")) is bool
+                    and isinstance(event.get("observation"), dict), "policy readback differs")
+            policy_pending = False
+            preflight_ready = True
+            continue
+        require(not policy_pending, "missing policy readback")
         if kind == "note":
             require(
                 pending_stage is None and stage in (*rank, "apply_complete"),
@@ -1604,25 +1688,22 @@ def verify_maintained(c, plan, verify_path, expected_status):
                     stage != "plugin_add",
                     "plugin add note cannot establish this upgrade",
                 )
-                require(
-                    stage not in seen and rank[stage] >= last,
-                    "journal note out of order",
-                )
+                if stage in seen:
+                    require(retry_observation, "journal note out of order")
+                else:
+                    require(rank[stage] >= last, "journal note out of order")
                 seen.add(stage)
-                last = rank[stage]
+                last = max(last, rank[stage])
             continue
         require(kind in ("intent", "fact"), "unknown journal event")
-        if kind == "fact" and stage == "apply_state":
-            require(
-                pending_stage is None and event.get("argv") in read_commands,
-                "unexpected journal read command",
-            )
-            continue
         require(
             stage in rank and event.get("argv") == expected_commands[stage],
             "unexpected journal mutation",
         )
         if kind == "intent":
+            if stage == "plugin_add":
+                require(preflight_ready, "preflight readback missing before plugin add")
+                preflight_ready = False
             require(
                 pending_stage is None and stage not in seen and rank[stage] >= last,
                 "journal mutation intent out of order",
@@ -1631,11 +1712,21 @@ def verify_maintained(c, plan, verify_path, expected_status):
             seen.add(stage)
             last = rank[stage]
         else:
+            fact_fields = {"event", "stage", "argv", "cwd", "status", "exit_code", "stderr_nonempty", "observation"}
+            summary_fields = {"summary_parse_failed", "stdout_sha256", "stdout_bytes"}
+            summary = set(event) == fact_fields | summary_fields
             require(
                 pending_stage == stage
                 and event.get("status") == "completed"
                 and type(event.get("exit_code")) is int
-                and event["exit_code"] == 0,
+                and event["exit_code"] == 0
+                and event.get("cwd") == str(c["repo"])
+                and type(event.get("stderr_nonempty")) is bool
+                and event.get("observation", "missing") is None
+                and (set(event) == fact_fields or
+                     (stage == "plugin_add" and summary and event.get("summary_parse_failed") is True
+                      and isinstance(event.get("stdout_sha256"), str) and HEX64.fullmatch(event["stdout_sha256"])
+                      and type(event.get("stdout_bytes")) is int and event["stdout_bytes"] >= 0)),
                 "journal mutation fact without successful matching intent",
             )
             if stage == "plugin_add":

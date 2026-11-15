@@ -19,6 +19,7 @@ bt = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bt)
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
+from tools.validation import daily_upgrade as product_daily  # noqa: E402
 from tools.validation import native_upgrade_acceptance as u  # noqa: E402
 
 
@@ -157,6 +158,7 @@ class Tests(unittest.TestCase):
             "zip": str(self.p / "archive"),
             "native_read_sha256": bt.sha(self.work / "README.md"),
             "_native_plan_sha256": bt.sha(self.p / "plan"),
+            "expected_cli_version": "codex-cli 0.169.0",
         }
         if bt.platform.system() == "Windows":
             self.plan["windows_backend"] = "mxc"
@@ -184,6 +186,7 @@ class Tests(unittest.TestCase):
             return data, bt.sha(path)
 
         self.daily = types.SimpleNamespace(
+            _same_path=product_daily._same_path,
             _read_bound_result=read_bound,
             _binding_view=lambda v: {
                 k: x
@@ -273,7 +276,8 @@ class Tests(unittest.TestCase):
             "plan_sha256": u.digest(self.normalized),
             "tool_sha256": self.plan["tool_sha256"],
             "daily_home": str(self.home),
-            "cli": {"sha256": self.plan["cli_sha256"], "path": str(self.p / "cli")},
+            "cli": {"sha256": self.plan["cli_sha256"], "path": str(self.p / "cli"),
+                    "version": self.plan["expected_cli_version"]},
             "artifact": {
                 "path": str(self.artifact),
                 "version": "0.18.0",
@@ -334,6 +338,15 @@ class Tests(unittest.TestCase):
             json.dumps({**self.verify_base, "status": self.resume_status})
         )
         argv = [str(self.p / "cli"), "plugin", "add", bt.ENTRY, "--json"]
+        def read_facts(stage):
+            commands = ([str(self.p / "cli"), "--version"],
+                        [str(self.p / "cli"), "plugin", "marketplace", "list", "--json"],
+                        [str(self.p / "cli"), "plugin", "list", "--marketplace", "codex-context-guard", "--json"])
+            observations = ({"version": self.plan["expected_cli_version"]}, {"marketplaces": [{"name": "codex-context-guard", "root": str(self.artifact)}]},
+                            {"installed": [{"pluginId": bt.ENTRY, "installed": True, "version": "0.17.3"}]})
+            return [{"event": "fact", "stage": stage, "argv": cmd, "cwd": str(self.repo),
+                     "status": "completed", "exit_code": 0, "stderr_nonempty": False, "observation": observation}
+                    for cmd, observation in zip(commands, observations)]
         events = [
             {
                 "event": "begin",
@@ -342,14 +355,28 @@ class Tests(unittest.TestCase):
                 "subject_sha256": binding,
                 "prepared_sha256": prep_sha,
             },
+            *read_facts("apply_state"),
+            {"event": "note", "stage": "marketplace_remove", "message": "already at source"},
+            {"event": "note", "stage": "marketplace_add", "message": "already registered"},
+            *read_facts("preflight"),
+            *([{"event": "fact", "stage": "policy_readback",
+                "argv": [sys.executable, "-B", "-I", str(self.old / "scripts/context_guard.py"), "cleanup",
+                         "--data-dir", self.normalized["data_dir"], "--policy", "show"],
+                "cwd": str(self.repo), "status": "completed", "exit_code": 0,
+                "stderr_nonempty": False, "observation": {"policy": None, "automatic_maintenance": None}}]
+              if self.normalized.get("data_dir") is not None else []),
             {"event": "intent", "stage": "plugin_add", "argv": argv},
             {
                 "event": "fact",
                 "stage": "plugin_add",
                 "argv": argv,
+                "cwd": str(self.repo),
                 "status": "completed",
                 "exit_code": 0,
+                "stderr_nonempty": False,
+                "observation": None,
             },
+            *read_facts("apply_state"),
             {"event": "note", "stage": "apply_complete", "message": "done"},
         ]
         (out / "apply-events.jsonl").write_text(
