@@ -1808,7 +1808,8 @@ class FamilyTests(unittest.TestCase):
                     win_result["evidence"][name] = bt.sha(out / name)
                 put("result.json", win_result)
                 with (mock.patch.object(bt.platform, "system", return_value="Windows"),
-                      mock.patch.object(u, "_source_key", side_effect=lambda raw, sources: raw if raw in sources else None)):
+                      mock.patch.object(u, "_source_key", side_effect=lambda raw, sources: raw if raw in sources else None),
+                      mock.patch.object(bt, "reported_path_matches", side_effect=lambda raw, trusted: raw == str(trusted))):
                     self.assertTrue(bt.independent_verify(ctx, plan, out))
                     for wrong_server in (
                         {"pid": 42, "argv": win_argv + ["--extra"], "windows_backend": "mxc", "os_backend_observation": "unobserved"},

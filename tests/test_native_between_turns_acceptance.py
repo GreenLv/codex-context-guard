@@ -502,7 +502,8 @@ class Tests(unittest.TestCase):
             return original(thread, prompt)
 
         self.client.observed_turn = refuse_fresh
-        with mock.patch.object(bt.platform, "system", return_value="Windows"):
+        with (mock.patch.object(bt.platform, "system", return_value="Windows"),
+              mock.patch.object(bt, "reported_path_matches", side_effect=lambda raw, trusted: raw == str(trusted))):
             result = self.execute()
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["stage"], "fresh_turn")

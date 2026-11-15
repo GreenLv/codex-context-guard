@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import ntpath
 import os
 import platform
 import queue
@@ -399,13 +400,13 @@ def official_list(ctx, version, expected_source=None, allow_disabled=False):
         market = rows[0].get("marketplaceSource", {})
         source = rows[0].get("source", {})
         require(
-            market.get("sourceType") == "local"
-            and Path(market.get("source", "")).resolve() == expected_source,
+            isinstance(market, dict) and market.get("sourceType") == "local"
+            and reported_path_matches(market.get("source"), expected_source),
             "official marketplace source differs",
         )
         require(
-            source.get("source") == "local"
-            and Path(source.get("path", "")).resolve() == expected_source,
+            isinstance(source, dict) and source.get("source") == "local"
+            and reported_path_matches(source.get("path"), expected_source),
             "official plugin source differs",
         )
     return {
@@ -771,6 +772,33 @@ def norm(p):
     return os.path.normcase(os.path.normpath(str(p)))
 
 
+def reported_path_matches(raw, trusted):
+    return native_io._official_path_matches(raw, Path(trusted), windows=platform.system() == "Windows")
+
+
+def ccg_scope_path(raw, cache_base):
+    """Rejection-only scope test; never authorize a reported path with it."""
+    if not isinstance(raw, str):
+        return False
+    if platform.system() == "Windows":
+        def key(value):
+            value = str(value).replace("/", "\\")
+            if value.startswith(("\\\\?\\", "\\\\.\\")):
+                value = value[4:]
+                if value[:4].casefold() == "unc\\":
+                    value = "\\\\" + value[4:]
+            return ntpath.normcase(ntpath.normpath(value))
+        path, root = key(raw), key(cache_base)
+        candidate = raw.replace("/", "\\").casefold()
+        marker = (r"(?:^|\\)plugins[ .]*(?::[^\\]*)?\\cache[ .]*(?::[^\\]*)?\\"
+                  r"codex-context-guard[ .]*(?::[^\\]*)?\\context-guard[ .]*(?=\\|:|$)")
+        return (path == root or path.startswith(root.rstrip("\\") + "\\")
+                or re.search(marker, candidate) is not None)
+    path, root = os.path.normpath(raw), os.path.normpath(str(cache_base))
+    marker = r"(?:^|/)plugins/cache/codex-context-guard/context-guard(?=/|$)"
+    return path == root or path.startswith(root.rstrip("/") + "/") or re.search(marker, raw) is not None
+
+
 def product_inventory(u, result, cache_base, allowed):
     rows = result.get("data")
     require(
@@ -779,16 +807,13 @@ def product_inventory(u, result, cache_base, allowed):
     row = rows[0]
     require(not row.get("errors") and not row.get("warnings"), "Hook inventory errors")
     selected = []
-    valid = {norm(x): x for x in allowed}
-    prefix = norm(cache_base) + os.sep
     for h in row.get("hooks", []):
         source = h.get("sourcePath") if isinstance(h, dict) else None
         if not isinstance(source, str):
             continue
-        key = norm(source)
-        if key in valid:
+        if u._source_key(source, {str(x) for x in allowed}) is not None:
             selected.append(h)
-        elif key.startswith(prefix):
+        elif ccg_scope_path(source, cache_base):
             raise Refused("unexpected Context Guard source")
     require(len(selected) == 9 * len(allowed), "incomplete product Hook inventory")
     require(
@@ -1147,15 +1172,6 @@ class DailyClientFactory:
                     path = (
                         message.get("params", {}).get("run", {}).get("sourcePath", "")
                     )
-                    base = (
-                        norm(
-                            c["home"]
-                            / "plugins/cache/codex-context-guard/context-guard"
-                        )
-                        + os.sep
-                    )
-                    if isinstance(path, str) and not norm(path).startswith(base):
-                        return message
                     inventory = (
                         self.observation_inventory
                         if message.get("params", {}).get("threadId")
@@ -1165,6 +1181,9 @@ class DailyClientFactory:
                     )
                     event = message.get("params", {}).get("run", {}).get("eventName")
                     source = u._source_key(path, {p for _, p in inventory})
+                    base = c["home"] / "plugins/cache/codex-context-guard/context-guard"
+                    if source is None and isinstance(path, str) and not ccg_scope_path(path, base):
+                        return message
                     expected = inventory.get((event, source))
                     run = message.get("params", {}).get("run", {})
                     require(
@@ -1530,8 +1549,8 @@ def verify_maintained(c, plan, verify_path, expected_status):
         installed.get("registered") is True
         and installed.get("installed") is True
         and installed.get("version") == plan["target_version"]
-        and Path(installed.get("market_root", "")).resolve() == c["artifact"]
-        and Path(installed.get("cache_path", "")).resolve() == c["new_root"],
+        and reported_path_matches(installed.get("market_root"), c["artifact"])
+        and reported_path_matches(installed.get("cache_path"), c["new_root"]),
         "apply target identity differs",
     )
     events = strict_read_jsonl(out / "apply-events.jsonl", 20000)
@@ -1749,7 +1768,7 @@ def verify_maintained(c, plan, verify_path, expected_status):
     require(
         after.get("installed") is True
         and after.get("version") == plan["target_version"]
-        and Path(after.get("cache_path", "")).resolve() == c["new_root"]
+        and reported_path_matches(after.get("cache_path"), c["new_root"])
         and verified.get("artifact_parity") == "passed"
         and verified.get("fresh_client_loaded") == "new",
         "verify installation facts differ",
@@ -1830,7 +1849,7 @@ def verify_read_tool(ctx, rows, inventory, thread, turn, command):
             continue
         require(
             item.get("command") == command
-            and Path(item.get("cwd", "")).resolve() == ctx["workspace"],
+            and reported_path_matches(item.get("cwd"), ctx["workspace"]),
             "read command differs",
         )
         item_id = item.get("id")
