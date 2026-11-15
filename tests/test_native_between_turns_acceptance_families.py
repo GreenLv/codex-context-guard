@@ -115,7 +115,10 @@ class FamilyTests(unittest.TestCase):
         if not self.make_symlink(link, self.root / "outer" / "child", directory=True):
             return
         raw = str(link / ".." / "data")
-        self.assertNotEqual(Path(raw).resolve(), (self.root / "data").resolve())
+        # POSIX follows the symlink before the parent segment; Win32 may
+        # normalize that segment first. Both platforms must reject this alias.
+        if os.name != "nt":
+            self.assertNotEqual(Path(raw).resolve(), (self.root / "data").resolve())
         self.assertFalse(orig.product_daily._same_path(raw, str(self.root / "data")))
 
     def test_hash_identity_does_not_use_bounded_record_reader(self):
