@@ -5,9 +5,9 @@ Earlier candidate sections retain their original pending gates and failures;
 later outcomes do not retroactively change those observations. For the public
 release identity, follow the version's GitHub Release separately.
 
-## 0.18.0 — source candidate (unreleased)
+## 0.18.0 — release-source evidence (2026-11-15)
 
-The candidate proposes an optional between-turns upgrade at the stable identity. Source checks, the final ZIP and installed parity, native macOS and Windows behavior, CI, and publication are separate subjects; no final candidate results are claimed here. The old task's continuation and the new task's actual Hook execution need native evidence tied to the same artifact and data root. A fresh CLI stdio inventory does not by itself establish Desktop GUI loading or old-task continuity. Normal Hook review remains part of the official workflow.
+Version 0.18.0 adds an optional between-turns upgrade at the stable identity. The [acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.18.0/context-guard-0.18.0-acceptance.json) identifies source checks, the exact ZIP and native-platform results; installed parity, CI and publication remain separate subjects. The old task's continuation and the new task's actual Hook execution need native evidence tied to the same artifact and data root. A fresh CLI stdio inventory does not by itself establish Desktop GUI loading or old-task continuity. Normal Hook review remains part of the official workflow.
 
 The unpublished 0.17.4 candidate's source and fixture observations retain their own subjects; they are not a published release or acceptance of 0.18.0. Previous published results below retain their original identities.
 

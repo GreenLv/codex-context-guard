@@ -82,7 +82,7 @@ authoritative.
   directly delete historical caches, or treat an unindexed or hash-mismatched
   archive as repair authority. An official cross-version add may prune an old
   slot under the reviewed lifecycle contract.
-- The 0.18.0 source candidate adds an opt-in between-turns route at the stable
+- Version 0.18.0 adds an opt-in between-turns route at the stable
   identity. It requires a verified old artifact, exact installed-old parity and
   a reviewed compatible target runtime, and the user must pause starting new
   operations after a turn finishes until the switch completes. Observe and drain

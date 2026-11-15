@@ -555,12 +555,13 @@ class Tests(unittest.TestCase):
                 u._paired(bad, inventory, "old", "stop", turn="t1")
 
     def test_read_command_only_accepts_expected_tracked_name(self):
-        self.assertTrue(
-            bt.approved_read(u, "/bin/zsh -c 'cat README.md'", "cat README.md")
-        )
-        self.assertFalse(
-            bt.approved_read(u, "cat README.md; cat secret", "cat README.md")
-        )
+        with mock.patch.object(bt.platform, "system", return_value="Darwin"):
+            self.assertTrue(
+                bt.approved_read(u, "/bin/zsh -c 'cat README.md'", "cat README.md")
+            )
+            self.assertFalse(
+                bt.approved_read(u, "cat README.md; cat secret", "cat README.md")
+            )
 
     def test_fresh_event_from_old_definition_is_not_accepted(self):
         old = str(self.old / "hooks/hooks.json")

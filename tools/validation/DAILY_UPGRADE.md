@@ -1,10 +1,9 @@
 # Daily upgrade entry
 
-The unreleased 0.18.0 source candidate adds an optional between-turns route for
+Version 0.18.0 adds an optional between-turns route for
 a strictly compatible stable-entry upgrade while Codex stays open. The
 operator must wait for the current turn to end and pause new operations until
-the switch finishes. The original stopped-host route remains available. Exact
-candidate package and native-platform acceptance are still pending.
+the switch finishes. The original stopped-host route remains available. The [acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.18.0/context-guard-0.18.0-acceptance.json) identifies the exact-package and native-platform results.
 
 `tools/validation/daily_upgrade.py` is the maintained operator entry for
 routine upgrades of the daily HOME's `context-guard@codex-context-guard`
@@ -61,7 +60,7 @@ Do not start another turn during the switch.
 Normal Hook review may still be needed. A fresh-client Hook inventory does
 not prove old-task continuation, actual new-task Hook execution or Desktop GUI
 loading; these require separate observations. See the
-[candidate upgrade guide](../../docs/UPGRADE_0_18_0.md).
+[upgrade guide](../../docs/UPGRADE_0_18_0.md).
 
 `--resume --wait [--wait-minutes N]` is the v1 stopped-host wait for Desktop to
 exit. It is not accepted with a v2 between-turns plan; v2 uses its own bounded
@@ -278,10 +277,12 @@ read-only prepare reusing still-valid test and acceptance evidence.
 
 Only what the platform actually requires of a human:
 
-- Quitting the Codex Desktop host before a swap that replaces a consumed
-  cache — the observed local-source CLI route removes the previous version's
-  cache. This tool has not established a safe live replacement. Apply refuses
-  until the host is observed absent, then one command completes the batch.
+- For the stopped-host v1 route, quit the Codex Desktop host before replacing
+  an existing installation. Apply waits for an observed host-absent state.
+- For the between-turns v2 route, keep Codex open, wait for the current turn to
+  finish, and pause starting new operations through the switch. The tool
+  checks compatibility and drains old runtime activity; active or uncertain
+  activity keeps the switch pending. Official add may remove the old cache.
 - Hook trust after the swap, through CLI `/hooks` or Desktop's Review hooks /
   Settings > Hooks.
 - Credential copies stay governed by existing permissions; the tool never
@@ -325,9 +326,9 @@ continuity. The [official local-plugin guide](https://developers.openai.com/plug
 also instructs users to restart the desktop app after changing a local plugin.
 Those observations apply to the tested fixture and do not establish the later
 between-turns route or its old-task continuity. The v1 route retains its
-host-absent apply gate. The unreleased v2 candidate instead requires the
+host-absent apply gate. The v2 route instead requires the
 explicit between-turns pause, strict compatibility and activity drain described
-above; its exact-artifact and native acceptance are separate pending work.
+above; its exact-artifact and native acceptance are separate subjects.
 
 ## Records and limitations
 

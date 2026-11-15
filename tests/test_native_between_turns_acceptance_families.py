@@ -107,6 +107,13 @@ class FamilyTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 bt.safe_bytes(path)
 
+    def test_hash_identity_does_not_use_bounded_record_reader(self):
+        import hashlib
+        path = self.root / "binary"
+        path.write_bytes(b"verified executable identity")
+        with mock.patch.object(bt, "safe_bytes", side_effect=bt.Refused("record limit")):
+            self.assertEqual(bt.sha(path), hashlib.sha256(path.read_bytes()).hexdigest())
+
     def make_client(self, response, spawn_error=None):
         ctx = {
             "output": self.root,
@@ -431,7 +438,14 @@ class FamilyTests(unittest.TestCase):
         def scan(path):
             return oldfiles if path in (old_artifact, oldroot) else newfiles
 
+        def private_fixture_directory(path):
+            # This preflight fixture models ownership only inside its own
+            # temporary tree. Native Windows DACL controls are separate.
+            bt.require(Path(path).resolve().is_relative_to(self.root),
+                       "private directory fixture escaped its temporary tree")
+
         with (
+            mock.patch.object(u, "_private_directory", side_effect=private_fixture_directory),
             mock.patch.object(bt, "producer_path", return_value=producer),
             mock.patch.object(bt, "import_product", return_value=(u, host, art, daily)),
             mock.patch.object(bt.subprocess, "run", side_effect=command),
@@ -1477,7 +1491,7 @@ class FamilyTests(unittest.TestCase):
                 "id": "read",
                 "type": "commandExecution",
                 "cwd": str(ctx["workspace"]),
-                "command": "cat README.md",
+                "command": bt.read_command("README.md"),
             }
             event("item/started", {"threadId": "fresh", "turnId": "t3", "item": item})
             event(

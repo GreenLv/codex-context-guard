@@ -4,7 +4,7 @@
 
 Versions are listed newest first. See [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) for published versions and [local acceptance](docs/LOCAL_ACCEPTANCE.md) for test results and platform limits. The [original detailed changelog](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.md) preserves the earlier implementation and validation notes.
 
-## 0.18.0 — Unreleased
+## 0.18.0 — 2026-11-15
 
 ### Highlights
 
@@ -14,11 +14,11 @@ Versions are listed newest first. See [GitHub Releases](https://github.com/Green
 
 - The tool checks the installed old files against a retained verified release and compares the new runtime before taking this route. Official installation may remove the old cache; the stable plugin identity and existing data root remain in use. The stopped-host route remains available, and normal Hook review may still be needed.
 - The source-checkout operator tool continues interrupted batches without repeating a completed installation. The stopped-host route can wait a limited time for the host to exit and can verify the signing source of a same-path host update. The tool is not included in the plugin ZIP.
-- Candidate CI can reuse a successful full run only for the exact same commit; otherwise the selected checks run normally. Portable native-acceptance results identify their ZIP and source commit while preserving earlier reports' original identities.
+- CI can reuse a successful full run only for the exact same commit; otherwise the selected checks run normally. Portable native-acceptance results identify their ZIP and source commit while preserving earlier reports' original identities.
 
 ### Validation
 
-- Source, the exact package, native macOS and Windows behavior, and daily Desktop adoption are separate subjects. This candidate's required results remain pending.
+- The [acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.18.0/context-guard-0.18.0-acceptance.json) identifies source, exact ZIP and native-platform results. Daily Desktop adoption is recorded separately.
 
 ## 0.17.3 — 2026-11-14
 

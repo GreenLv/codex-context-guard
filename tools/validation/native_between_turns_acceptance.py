@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from tools.validation import native_acceptance as native_io  # noqa: E402
+from tools.validation import native_upgrade_acceptance as native_identity  # noqa: E402
 
 PLAN = "cg-between-turn-native-plan/v1"
 REPORT = "cg-between-turn-native-result/v1"
@@ -205,7 +206,10 @@ def producer_path():
 
 
 def sha(path):
-    return hashlib.sha256(safe_bytes(path)).hexdigest()
+    # Executable identities can exceed the bounded record-reader limit.
+    # Reuse the streaming no-follow identity verifier, including its separate
+    # path/handle checks; JSON and RPC record limits remain unchanged.
+    return native_identity.sha(regular(path))
 
 
 def write(path, value):

@@ -1,8 +1,8 @@
 # Stable marketplace identity
 
-## 0.18.0 source candidate: between turns
+## 0.18.0: between turns
 
-The unreleased 0.18.0 candidate adds an optional stable-identity transition
+Version 0.18.0 adds an optional stable-identity transition
 while Codex stays open. After the current turn ends, the operator pauses new
 operations until the switch finishes. Before official installation, the tool
 compares the installed old tree with a retained verified old artifact, checks
@@ -15,8 +15,8 @@ the old version slot, even though the identity and existing data root remain.
 Normal official Hook review may still be needed. An old task's continuation,
 real Hook execution in a new task, and Desktop GUI loading require separate
 native observations. A fresh-client inventory alone does not prove them.
-The existing stopped-host route remains available. Candidate implementation
-and exact-package acceptance are separate facts.
+The existing stopped-host route remains available. Implementation and
+exact-package acceptance are separate facts.
 
 Version 0.17.0 uses the stable marketplace identity. The published 0.16.1
 package declares the experimental `codex-context-guard-v016`; installed

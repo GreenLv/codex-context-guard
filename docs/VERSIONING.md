@@ -4,9 +4,9 @@ The release entries begin with the newest version. Historical candidate
 sections preserve the status of their specific source revision at the time of
 review; a later release of the same version does not change that evidence.
 
-## 0.18.0 — source candidate (unreleased)
+## 0.18.0 — 2026-11-15
 
-The candidate extends the installation lifecycle with an optional between-turns route for a strictly compatible upgrade at the stable marketplace identity. It uses versioned v2 plan, result and journal contracts; the stopped-host v1 route remains available. The operator pauses new turns during the switch, and the tool checks old runtime activity before the official installation. Its observation is not a lock on future work.
+Version 0.18.0 extends the installation lifecycle with an optional between-turns route for a strictly compatible upgrade at the stable marketplace identity. It uses versioned v2 plan, result and journal contracts; the stopped-host v1 route remains available. The operator pauses new turns during the switch, and the tool checks old runtime activity before the official installation. Its observation is not a lock on future work.
 
 The compatibility gate compares the retained old artifact, installed old files and new runtime. Relative to the reviewed 0.17.3 runtime, the only permitted changes under `hooks/`, `assets/`, `skills/` and `scripts/` are the exact product and validator version literals; the plugin manifest may change its version field. Schema 13, Stop protocol 5.0.0, Hook behavior, retention behavior and the default business-tool path remain unchanged. Exact package, installed and native results must be checked separately.
 

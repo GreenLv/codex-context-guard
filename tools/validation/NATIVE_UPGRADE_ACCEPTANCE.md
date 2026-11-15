@@ -1,13 +1,12 @@
 # Native cross-version upgrade acceptance
 
-## 0.18.0 source candidate scope
+## 0.18.0 between-turns scope
 
 The optional between-turns route is a separate acceptance subject: it needs an
 actual old task to continue after the switch and a new task to execute real
 Hooks from the verified target bundle, with the old data root and normal trust
 observed. Use the [between-turns native acceptance guide](NATIVE_BETWEEN_TURNS_ACCEPTANCE.md)
-for its plan, launcher and evidence boundaries. Native results for this
-candidate remain pending. A stdio app-server witness and an observation of
+for its plan, launcher and evidence boundaries. The [acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.18.0/context-guard-0.18.0-acceptance.json) identifies native results. A stdio app-server witness and an observation of
 Desktop's graphical interface have different boundaries and are recorded
 separately.
 

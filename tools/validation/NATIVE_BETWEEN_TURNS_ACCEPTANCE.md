@@ -1,4 +1,4 @@
-# Between-turns native acceptance — 0.18.0 source candidate
+# Between-turns native acceptance — 0.18.0
 
 This entry checks a compatible daily upgrade while Codex remains open. It runs
 an old task before and after the switch in the same owned CLI app-server, then
@@ -7,8 +7,7 @@ for a turn to finish and pause new operations in the shared configuration until
 the switch completes. The process observation is a bounded snapshot, not a
 lock on other clients.
 
-The 0.18.0 candidate is unreleased. Exact-package native results on macOS and
-Windows are pending. This procedure uses the normal account and can change the
+The [acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.18.0/context-guard-0.18.0-acceptance.json) identifies exact-package native results on macOS and Windows. This procedure uses the normal account and can change the
 daily installation through the maintained official upgrade tool; it uses real
 model turns. It does not create a login or bypass Hook trust. A CLI stdio
 app-server is not a Desktop GUI observation: the result explicitly records
@@ -40,7 +39,7 @@ private because they can contain local paths and process facts.
 | Fields | Value to provide |
 | --- | --- |
 | `schema`, `transition_strategy`, `declared_pause` | `cg-between-turn-native-plan/v1`, `between-turns`, and `true`. The declaration records the operator's between-turn pause; it cannot enforce it for other clients. |
-| `old_version`, `target_version` | `0.17.3` and the reviewed target version, `0.18.0` for this candidate. |
+| `old_version`, `target_version` | `0.17.3` and the reviewed target version, `0.18.0` for this version. |
 | `repo`, `workspace`, `codex_home`, `data_root` | The exact reviewed checkout, the same checkout as workspace, the daily Codex configuration directory, and its existing Context Guard data root. |
 | `cli`, `maintained_tool`, `maintained_plan` | Exact Codex CLI, the checkout's `tools/validation/daily_upgrade.py`, and the private v2 between-turns plan. Its target artifact and CLI must match the native plan. |
 | `zip`, `artifact`, `old_zip` | The exact target ZIP, its extracted artifact root, and the published old ZIP. The v2 daily plan names the retained old extracted artifact through `old_artifact_dir`. |

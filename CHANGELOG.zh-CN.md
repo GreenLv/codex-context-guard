@@ -4,7 +4,7 @@
 
 版本从新到旧排列。正式发布的版本见 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases)，测试结果和平台范围见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。[原始详细更新日志](https://github.com/GreenLv/codex-context-guard/blob/1d5a0a0e5ddbefad5ee7fca778793d56b83d4081/CHANGELOG.zh-CN.md)保留了此前逐项记录的实现和验证过程。
 
-## 0.18.0 — 未发布
+## 0.18.0 — 2026-11-15
 
 ### 主要改进
 
@@ -14,11 +14,11 @@
 
 - 工具会将已安装的旧文件与保留的已核验旧版对照，并检查新版运行时。官方安装可能删除旧缓存；插件稳定身份和原有数据目录继续使用。原有的退出后升级方式仍可使用，新 Hook 可能仍需通过官方界面正常审核。
 - 源码仓库中的操作工具可以接续中断的批次，避免重复已完成的安装。退出后升级方式支持限时等待宿主退出，并可核查同一路径下宿主更新的签名来源。该工具不包含在插件 ZIP 中。
-- 候选 CI 只可复用完全相同提交已通过的完整运行；证据不匹配时照常执行所需检查。可移植原生验收结果标明 ZIP 与源码提交，历史报告保留原身份。
+- CI 只可复用完全相同提交已通过的完整运行；证据不匹配时照常执行所需检查。可移植原生验收结果标明 ZIP 与源码提交，历史报告保留原身份。
 
 ### 验证
 
-- 源码、精确发行包、macOS 与 Windows 原生行为及实际 Desktop 采用情况分别记录；本候选所需结果仍待验证。
+- [验收报告](https://github.com/GreenLv/codex-context-guard/releases/download/v0.18.0/context-guard-0.18.0-acceptance.json)分别记录源码、精确 ZIP 和原生平台结果；日常 Desktop 采用情况另行记录。
 
 ## 0.17.3 — 2026-11-14
 

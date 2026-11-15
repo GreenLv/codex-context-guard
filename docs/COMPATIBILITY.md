@@ -4,11 +4,11 @@ The newest section describes the current release. Older version sections retain
 their original compatibility and acceptance boundaries; a pending item in a
 historical section describes that point in time.
 
-## 0.18.0 — source candidate (unreleased)
+## 0.18.0 — 2026-11-15
 
 The optional between-turns route is intended for a compatible existing stable-entry installation. The tool compares the installed old files with a retained verified old artifact and checks the new runtime. Pause starting new operations after the current turn ends and keep that pause through the switch. The official plugin add may remove the old cache; compatibility, a stable identity and an unchanged data root do not alone prove that an existing task continued.
 
-The stopped-host route remains available. Hook review may be needed through the normal official interface. A fresh CLI Hook inventory, successful execution in the old task, actual new-task Hook execution and Desktop GUI loading are separate observations. Native macOS and Windows acceptance of this candidate and its exact package remains pending. See the [candidate upgrade guide](UPGRADE_0_18_0.md).
+The stopped-host route remains available. Hook review may be needed through the normal official interface. A fresh CLI Hook inventory, successful execution in the old task, actual new-task Hook execution and Desktop GUI loading are separate observations. The [acceptance report](https://github.com/GreenLv/codex-context-guard/releases/download/v0.18.0/context-guard-0.18.0-acceptance.json) identifies the exact package and native-platform results. See the [upgrade guide](UPGRADE_0_18_0.md).
 
 ## 0.17.3 — 2026-11-14
 
