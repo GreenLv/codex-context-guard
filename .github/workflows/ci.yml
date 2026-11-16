@@ -26,6 +26,8 @@ jobs:
     outputs:
       invalidates: ${{ steps.select.outputs.invalidates }}
       profile: ${{ steps.profile.outputs.profile }}
+      base: ${{ steps.profile.outputs.base }}
+      head: ${{ steps.profile.outputs.head }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -128,7 +130,7 @@ jobs:
   ubuntu_py310:
     name: Ubuntu / Python 3.10
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'daily' || (needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed')
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -164,7 +166,7 @@ jobs:
   ubuntu_py314:
     name: Ubuntu / Python 3.14
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'daily' || (needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed')
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -191,7 +193,7 @@ jobs:
   macos_py312:
     name: macOS / Python 3.12
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'daily' || (needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed')
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -236,7 +238,7 @@ jobs:
   windows_py312:
     name: Windows / Python 3.12
     needs: [classify, ci_reuse]
-    if: needs.classify.outputs.profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'
+    if: needs.classify.outputs.profile == 'daily' || (needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed')
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
@@ -259,6 +261,54 @@ jobs:
     with:
       runner: windows-latest
       python-version: "3.14"
+
+  selected_ubuntu_py310:
+    name: Ubuntu selected / Python 3.10
+    needs: classify
+    if: needs.classify.outputs.profile == 'tests'
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: ubuntu-latest
+      python-version: "3.10"
+      suite: selected
+      base-sha: ${{ needs.classify.outputs.base }}
+      head-sha: ${{ needs.classify.outputs.head }}
+
+  selected_ubuntu_py314:
+    name: Ubuntu selected / Python 3.14
+    needs: classify
+    if: needs.classify.outputs.profile == 'tests'
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: ubuntu-latest
+      python-version: "3.14"
+      suite: selected
+      base-sha: ${{ needs.classify.outputs.base }}
+      head-sha: ${{ needs.classify.outputs.head }}
+
+  selected_macos_py312:
+    name: macOS selected / Python 3.12
+    needs: classify
+    if: needs.classify.outputs.profile == 'tests'
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: macos-latest
+      python-version: "3.12"
+      suite: selected
+      base-sha: ${{ needs.classify.outputs.base }}
+      head-sha: ${{ needs.classify.outputs.head }}
+
+  selected_windows_py312:
+    name: Windows selected / Python 3.12
+    needs: classify
+    if: needs.classify.outputs.profile == 'tests'
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: windows-latest
+      python-version: "3.12"
+      suite: selected
+      base-sha: ${{ needs.classify.outputs.base }}
+      head-sha: ${{ needs.classify.outputs.head }}
 
   windows_platform_py310:
     name: Windows platform / Python 3.10
@@ -345,6 +395,10 @@ jobs:
       - windows_py312
       - windows_py313
       - windows_py314
+      - selected_ubuntu_py310
+      - selected_ubuntu_py314
+      - selected_macos_py312
+      - selected_windows_py312
       - windows_platform_py310
       - windows_platform_py314
       - portable_windows

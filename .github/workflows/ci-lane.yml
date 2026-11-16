@@ -12,8 +12,18 @@ on:
         required: true
         type: string
 
+      base-sha:
+        description: Exact baseline for a selected test diff
+        required: false
+        type: string
+        default: ""
+      head-sha:
+        description: Exact head for a selected test diff
+        required: false
+        type: string
+        default: ""
       suite:
-        description: Full behavior or bounded Windows platform checks
+        description: Full behavior, selected tests, or bounded Windows platform checks
         required: false
         type: string
         default: full
@@ -28,6 +38,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.head-sha || github.sha }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: ${{ inputs.python-version }}
@@ -36,7 +49,14 @@ jobs:
       - name: Validate suite selection
         env:
           CI_SUITE: ${{ inputs.suite }}
-        run: python -c "import os; assert os.environ['CI_SUITE'] in ('full', 'windows-platform')"
+        run: python -c "import os; assert os.environ['CI_SUITE'] in ('full', 'windows-platform', 'selected')"
+      - name: Run independently selected test modules
+        if: inputs.suite == 'selected'
+        shell: bash
+        env:
+          SELECTED_BASE: ${{ inputs.base-sha }}
+          SELECTED_HEAD: ${{ inputs.head-sha }}
+        run: uv run --locked --only-group test --python python python tools/validation/run_selected_validation.py --tests-base "$SELECTED_BASE" --tests-head "$SELECTED_HEAD"
       - name: Run Windows platform regressions
         if: inputs.suite == 'windows-platform'
         run: uv run --locked --only-group test --python python python -m tools.validation.run_windows_platform_suite

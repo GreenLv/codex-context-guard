@@ -175,10 +175,25 @@ def commands_for(value: Any) -> list[list[str]]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--plan-json", required=True)
+    parser.add_argument("--plan-json")
+    parser.add_argument("--tests-base")
+    parser.add_argument("--tests-head")
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--list", action="store_true", dest="list_only")
     args = parser.parse_args(argv)
+    if args.tests_base or args.tests_head:
+        if args.plan_json or not args.tests_base or not args.tests_head or args.list_only:
+            parser.error("test selection requires both endpoints and no other mode")
+        sys.path.insert(0, str(ROOT))
+        from tools.validation.ci_policy import test_modules_for_diff
+        from tools.validation.run_windows_platform_suite import run
+        modules = test_modules_for_diff(args.repo_root.resolve(), args.tests_base, args.tests_head)
+        if not modules:
+            print("selected_validation=invalid: test diff cannot be proven", file=sys.stderr)
+            return 2
+        return run(modules)
+    if not args.plan_json:
+        parser.error("--plan-json is required outside test mode")
     try:
         commands = commands_for(json.loads(args.plan_json))
     except (json.JSONDecodeError, RunSelectionError) as exc:

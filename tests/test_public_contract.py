@@ -130,7 +130,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertNotIn("matrix:", caller)
         self.assertEqual(
             caller.count("uses: ./.github/workflows/ci-lane.yml"),
-            len(workflow.CI_LANES) + len(workflow.DAILY_FOCUSED),
+            len(workflow.CI_LANES) + len(workflow.DAILY_FOCUSED) + len(workflow.TEST_LANES),
         )
         self.assertEqual(caller.count("python scripts/audit_public_tree.py ."), 1)
         self.assertEqual(caller.count("ruff check ."), 1)
@@ -220,7 +220,7 @@ class PublicContractTests(unittest.TestCase):
         # full-only lanes stay profile-gated. Both skip only on a confirmed
         # reuse.
         daily_lane = caller.split("  ubuntu_py310:\n", 1)[1].split("uses:", 1)[0]
-        self.assertIn("profile != 'full' || needs.ci_reuse.outputs.reuse != 'confirmed'",
+        self.assertIn("profile == 'daily' || (needs.classify.outputs.profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed')",
                       daily_lane)
         full_only = caller.split("  macos_py311:\n", 1)[1].split("uses:", 1)[0]
         self.assertIn("profile == 'full' && needs.ci_reuse.outputs.reuse != 'confirmed'",

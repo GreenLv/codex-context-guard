@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).parents[1] / "tools" / "validation" / "run_selected_validation.py"
 SPEC = importlib.util.spec_from_file_location("run_selected_validation", SCRIPT)
@@ -27,6 +28,15 @@ def plan(gates: list[str], paths: list[str]) -> dict[str, object]:
 
 
 class SelectedValidationTests(unittest.TestCase):
+    def test_selected_cli_consumes_verified_diff_and_refuses_unknown(self) -> None:
+        argv = ["--tests-base", "a" * 40, "--tests-head", "b" * 40]
+        with mock.patch("tools.validation.ci_policy.test_modules_for_diff", return_value=None):
+            self.assertEqual(RUNNER.main(argv), 2)
+        with mock.patch("tools.validation.ci_policy.test_modules_for_diff", return_value=("tests.example",)), \
+             mock.patch("tools.validation.run_windows_platform_suite.run", return_value=1) as run:
+            self.assertEqual(RUNNER.main(argv), 1)
+            run.assert_called_once_with(("tests.example",))
+
     def test_single_test_change_runs_owning_module_without_full_suite(self) -> None:
         commands = RUNNER.commands_for(plan(
             ["focused_tests", "repo_contract"], ["tests/test_native_acceptance.py"],

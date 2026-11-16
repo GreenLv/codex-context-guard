@@ -165,8 +165,10 @@ authoritative.
   POSIX shell, `bash`, PowerShell, or another runtime.
 - For documentation-only changes, run the affected contract tests, repository
   validator, privacy audit, and `git diff --check`.
-- Use the required PR validation summary for mapped fast checks. Main CI uses
-  daily coverage by default: full behavior on Linux Python 3.10/3.14 and
+- Use the required PR validation summary for mapped fast checks. Narrow, explicitly
+  owned test-method changes may use the `tests` profile on Linux 3.10/3.14 and
+  macOS/Windows 3.12; uncertain ownership or shared changes retain daily/full.
+  Main CI otherwise uses daily coverage: full behavior on Linux Python 3.10/3.14 and
   macOS/Windows Python 3.12, plus Windows platform regressions on 3.10/3.14.
   Compatibility, dependency, installer, launcher, protocol, CI-policy and unknown
   changes select full coverage (three OSes × Python 3.10–3.14). Version-only
@@ -174,7 +176,9 @@ authoritative.
   every other field unchanged. Release candidates require the selected risk
   profile on the exact commit; manual daily runs supply the actual prior baseline.
   A daily request never overrides a selected full minimum.
-  Tags do not rerun CI. See `docs/CI_POLICY.md` for triggers and evidence scope.
+  Tags do not rerun CI. Current checkout rules are in
+  `tools/validation/CI_POLICY.md`; the packaged `docs/CI_POLICY.md` is the
+  0.18.0 release snapshot until the next product release.
   Identity, repository, privacy, Ruff and compile checks run once per candidate.
 - During conformance, schema, or digest repair loops, first replay the focused
   reproducer and close the affected input family across the reference encoder,

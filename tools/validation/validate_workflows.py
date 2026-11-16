@@ -12,7 +12,12 @@ from pathlib import Path
 FULL_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 EXTERNAL_USE = re.compile(r"^\s*(?:-\s*)?uses:\s+([^\s#]+)@([^\s#]+)", re.MULTILINE)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools.validation.ci_policy import CI_LANES, DAILY_FOCUSED, DAILY_FULL  # noqa: E402
+from tools.validation.ci_policy import (  # noqa: E402
+    CI_LANES,
+    DAILY_FOCUSED,
+    DAILY_FULL,
+    TEST_LANES,
+)
 
 
 def validate_action_pins(workflows: Path) -> list[str]:
@@ -71,7 +76,7 @@ def validate(root: Path) -> list[str]:
     if "strategy:" in candidate or "matrix:" in candidate:
         errors.append("candidate lanes must remain independent jobs")
     reusable_call = "uses: ./.github/workflows/ci-lane.yml"
-    if candidate.count(reusable_call) != len(CI_LANES) + len(DAILY_FOCUSED):
+    if candidate.count(reusable_call) != len(CI_LANES) + len(DAILY_FOCUSED) + len(TEST_LANES):
         errors.append("candidate CI must declare all full and focused lanes")
     reuse_skip = "needs.ci_reuse.outputs.reuse != 'confirmed'"
     for job_id, display_name, runner, python_version in CI_LANES:
@@ -80,7 +85,7 @@ def validate(root: Path) -> list[str]:
         # only by a confirmed reuse.
         if job_id in DAILY_FULL:
             condition = (f"    needs: [classify, ci_reuse]\n"
-                         f"    if: needs.classify.outputs.profile != 'full' || {reuse_skip}\n")
+                         f"    if: needs.classify.outputs.profile == 'daily' || (needs.classify.outputs.profile == 'full' && {reuse_skip})\n")
         else:
             condition = (f"    needs: [classify, ci_reuse]\n"
                          f"    if: needs.classify.outputs.profile == 'full' && {reuse_skip}\n")
@@ -97,7 +102,7 @@ def validate(root: Path) -> list[str]:
             errors.append(f"candidate lane is missing or malformed: {job_id}")
     required_section = candidate.split("  required:\n", 1)[-1]
     for job_id in ["classify", "static", "ci_reuse", *[row[0] for row in CI_LANES],
-                   *DAILY_FOCUSED, "portable_windows"]:
+                   *DAILY_FOCUSED, *TEST_LANES, "portable_windows"]:
         if f"      - {job_id}\n" not in required_section:
             errors.append(f"required summary does not depend on {job_id}")
     portable_condition = ("    if: needs.ci_reuse.outputs.reuse != 'confirmed' && "
@@ -140,6 +145,28 @@ def validate(root: Path) -> list[str]:
         )
         if expected not in candidate:
             errors.append(f"focused platform lane is missing or malformed: {job_id}")
+    selected_specs = zip(TEST_LANES, ("ubuntu-latest", "ubuntu-latest", "macos-latest", "windows-latest"),
+                         ("3.10", "3.14", "3.12", "3.12"))
+    for job_id, runner, version in selected_specs:
+        for workflow_name, workflow in (("candidate", candidate), ("PR", pull_request)):
+            start = workflow.find(f"  {job_id}:\n")
+            match = re.search(r"(?m)^  [a-z][a-z0-9_]*:\s*$", workflow[start + 3:]) if start >= 0 else None
+            end = start + 3 + match.start() if match else None
+            block = workflow[start:end] if start >= 0 else ""
+            for fragment in ("needs: classify", "profile == 'tests'", reusable_call,
+                             f"runner: {runner}", f'python-version: "{version}"',
+                             "suite: selected", "needs.classify.outputs.base", "needs.classify.outputs.head"):
+                if fragment not in block:
+                    errors.append(f"{workflow_name} selected lane {job_id} missing: {fragment}")
+        if job_id not in pull_request.split("  required:\n", 1)[-1]:
+            errors.append(f"PR summary does not depend on {job_id}")
+    for fragment in ("if: inputs.suite == 'selected'", "shell: bash", "--tests-base", "--tests-head", "fetch-depth: 0"):
+        if fragment not in lane:
+            errors.append(f"selected lane contract is missing: {fragment}")
+    for fragment in ("python -m tools.validation.ci_policy select", "python -m tools.validation.ci_policy verify-pr",
+                     "needs.classify.outputs.profile == 'full'"):
+        if fragment not in pull_request:
+            errors.append(f"PR profile contract is missing: {fragment}")
     if "continue-on-error" in candidate or "continue-on-error" in lane:
         errors.append("candidate jobs must propagate failures")
     for forbidden in ("pull_request:", 'tags: ["v*"]'):

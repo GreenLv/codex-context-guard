@@ -1,7 +1,10 @@
 """Profile selection and summary fail-closed regressions."""
 import hashlib
 import json
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from tools.validation import ci_policy as policy
@@ -10,6 +13,152 @@ from tools.validation.verify_required_jobs import SummaryError
 
 
 class CIPolicyTests(unittest.TestCase):
+    def test_selected_profile_requires_every_owned_platform_lane(self):
+        required = policy.required_jobs("tests", False)
+        self.assertEqual(set(required), {"classify", "static", "ci_reuse", *policy.TEST_LANES})
+        base = {job: {"result": "success"} for job in required}
+        self.assertEqual(set(policy.verify("tests", False, base)["passed"]), set(required))
+        for job in required:
+            for failure in ("skipped", "failure", "cancelled", "missing"):
+                with self.subTest(job=job, failure=failure):
+                    observed = dict(base)
+                    if failure == "missing":
+                        del observed[job]
+                    else:
+                        observed[job] = {"result": failure}
+                    with self.assertRaises(SummaryError):
+                        policy.verify("tests", False, observed)
+        for portable, reuse in ((True, False), (False, True)):
+            with self.assertRaises(ValueError):
+                policy.required_jobs("tests", portable, reuse)
+
+    def test_pr_summary_enforces_all_selected_lanes_and_unknown_profile(self):
+        selected = {job: {"result": "success"} for job in
+                    ("classify", "selected_validation", *policy.TEST_LANES)}
+        policy.verify_pr("tests", selected)
+        for job in policy.TEST_LANES:
+            for status in ("missing", "skipped", "failure", "cancelled"):
+                observed = dict(selected)
+                if status == "missing":
+                    del observed[job]
+                else:
+                    observed[job] = {"result": status}
+                with self.subTest(job=job, status=status), self.assertRaises(SummaryError):
+                    policy.verify_pr("tests", observed)
+        with self.assertRaises(ValueError):
+            policy.verify_pr("", selected)
+        with self.assertRaises(SummaryError):
+            policy.verify_pr("daily", {"classify": {"result": "success"},
+                                       "selected_validation": {"result": "success"},
+                                       "selected_windows_py312": {"result": "failure"}})
+
+    def test_static_importer_expands_its_registered_dynamic_family(self):
+        source = (Path(__file__).resolve().parents[1] / "validation-map.json").read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def git(*args):
+                return subprocess.check_output(["git", "-C", str(root), *args], stderr=subprocess.DEVNULL).decode().strip()
+            git("init", "-q")
+            (root / "tests").mkdir()
+            (root / "validation-map.json").write_bytes(source)
+            (root / "scripts").mkdir()
+            runtime = root / "scripts/runtime.py"
+            runtime.write_text("VERSION = 1\n", encoding="utf-8")
+            (root / "tools/validation").mkdir(parents=True)
+            controller = root / "tools/validation/ci_policy.py"
+            controller.write_text("VERSION = 1\n", encoding="utf-8")
+            owner = root / "tests/test_private_upgrade_output.py"
+            original = "import unittest\nclass Owner(unittest.TestCase):\n    def test_old(self): pass\n"
+            owner.write_text(original, encoding="utf-8")
+            (root / "tests/test_native_between_turns_acceptance.py").write_text(
+                "from tests.test_private_upgrade_output import Owner\n", encoding="utf-8")
+            (root / "tests/test_native_between_turns_acceptance_families.py").write_text("import unittest\n", encoding="utf-8")
+            (root / "tests/test_last.py").write_text(
+                "from tests.test_native_between_turns_acceptance_families import helper\n", encoding="utf-8")
+            git("add", ".")
+            def commit():
+                git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
+                return git("rev-parse", "HEAD")
+            base = commit()
+            owner.write_text(original + "    def test_new(self): pass\n", encoding="utf-8")
+            git("add", ".")
+            head = commit()
+            result = policy.test_modules_for_diff(root, base, head)
+            self.assertEqual(set(result), {"tests.test_private_upgrade_output", "tests.test_native_between_turns_acceptance",
+                                           "tests.test_native_between_turns_acceptance_families", "tests.test_last"})
+            runtime.write_text("VERSION = 2\n", encoding="utf-8")
+            self.assertIsNone(policy.test_modules_for_diff(root, base, head))
+            runtime.write_text("VERSION = 1\n", encoding="utf-8")
+            controller.write_text("VERSION = 2\n", encoding="utf-8")
+            self.assertIsNone(policy.test_modules_for_diff(root, base, head))
+            controller.write_text("VERSION = 1\n", encoding="utf-8")
+            (root / "new_untracked.txt").write_text("x = 1\n", encoding="utf-8")
+            self.assertIsNone(policy.test_modules_for_diff(root, base, head))
+
+    def test_real_git_diff_selects_only_provable_test_methods(self):
+        source = (Path(__file__).resolve().parents[1] / "validation-map.json").read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def git(*args):
+                return subprocess.check_output(["git", "-C", str(root), *args], stderr=subprocess.DEVNULL).decode().strip()
+            git("init", "-q")
+            (root / "tests").mkdir()
+            (root / "validation-map.json").write_bytes(source)
+            test = root / "tests/test_daily_upgrade.py"
+            for name in ("test_native_between_turns_acceptance.py", "test_native_between_turns_acceptance_families.py"):
+                (root / "tests" / name).write_text("import unittest\n", encoding="utf-8")
+            (root / "tests/test_reported_paths.py").write_text(
+                "from tests.test_native_between_turns_acceptance import helper\n", encoding="utf-8")
+            (root / "tests/test_indirect.py").write_text(
+                "from tests.test_reported_paths import helper\n", encoding="utf-8")
+            original = "import unittest\nclass Owner(unittest.TestCase):\n    def test_old(self): self.assertTrue(True)\n"
+            test.write_text(original, encoding="utf-8")
+            git("add", ".")
+            def commit():
+                git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
+                return git("rev-parse", "HEAD")
+            base = commit()
+            def check(body, extra=None, expect=True):
+                test.write_text(body, encoding="utf-8")
+                if extra:
+                    path = root / extra
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("changed", encoding="utf-8")
+                git("add", "-A")
+                head = commit()
+                selected = policy.test_modules_for_diff(root, base, head)
+                if expect:
+                    self.assertIn("tests.test_daily_upgrade", selected)
+                    self.assertIn("tests.test_native_between_turns_acceptance_families", selected)
+                    self.assertIn("tests.test_reported_paths", selected)
+                    self.assertIn("tests.test_indirect", selected)
+                else:
+                    self.assertIsNone(selected)
+                git("reset", "--hard", "-q", base)
+            check(original + "    def test_new(self): self.assertTrue(True)\n")
+            check(original.replace("assertTrue(True)", "assertEqual(1, 1)"))
+            check(original + "    def helper(self): pass\n", expect=False)
+            check(original.replace("test_old", "test_renamed"), expect=False)
+            check(original + "    def test_new(self): __import__('other')\n", expect=False)
+            check(original + "    def test_new(self): from tests import helper\n", expect=False)
+            check(original + "    def test_new(self): pass\n", "tests/fixture.txt", expect=False)
+            check(original + "    def test_new(self): pass\n", "scripts/runtime.py", expect=False)
+            check(original + "    def test_new(self): pass\n", "tests/test_unknown.py", expect=False)
+            check(original + "    def test_new(self): pass\n", "validation-map-extra.json", expect=False)
+            git("rm", "-q", "tests/test_daily_upgrade.py")
+            removed = commit()
+            self.assertIsNone(policy.test_modules_for_diff(root, base, removed))
+            git("reset", "--hard", "-q", base)
+            git("mv", "tests/test_daily_upgrade.py", "tests/test_daily_upgrade_moved.py")
+            renamed = commit()
+            self.assertIsNone(policy.test_modules_for_diff(root, base, renamed))
+            git("reset", "--hard", "-q", base)
+            git("update-index", "--chmod=+x", "tests/test_daily_upgrade.py")
+            executable = commit()
+            self.assertIsNone(policy.test_modules_for_diff(root, base, executable))
+            self.assertIsNone(policy.test_modules_for_diff(root, base, base))
+            self.assertIsNone(policy.test_modules_for_diff(root, "bad", base))
+
     def test_daily_full_and_focused_coverage(self):
         jobs = policy.required_jobs('daily', False)
         self.assertEqual(set(jobs) - {'classify', 'static'}, policy.DAILY_FULL | set(policy.DAILY_FOCUSED))
@@ -30,6 +179,20 @@ class CIPolicyTests(unittest.TestCase):
         self.assertEqual(policy.select_profile('daily', ['.github/workflows/ci.yml']), 'full')
         with self.assertRaises(ValueError):
             policy.select_profile('typo', [])
+
+    def test_ci_controllers_and_their_contracts_never_downgrade(self):
+        paths = ("scripts/run_current_behavior_suite.py", "scripts/check_phase3_transition.py",
+                 "scripts/audit_commit_identity.py", "scripts/validate_public_repo.py", "scripts/audit_public_tree.py",
+                 "tools/validation/ci_policy.py", "tools/validation/select_validation.py",
+                 "tools/validation/run_selected_validation.py", "tools/validation/verify_required_jobs.py",
+                 "tools/validation/ci_reuse.py", "tools/validation/validate_workflows.py",
+                 "tools/validation/run_windows_platform_suite.py", "tools/validation/CI_POLICY.md",
+                 "tests/test_ci_policy.py", "tests/test_ci_reuse.py", "tests/test_validation_selection.py",
+                 "tests/test_selected_validation.py", "tests/test_required_jobs.py", "tests/test_public_contract.py")
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertEqual(policy.select_profile("auto", [path]), "full")
+                self.assertEqual(policy.select_profile("daily", ["tests/test_daily_upgrade.py", path]), "full")
 
     def test_release_builder_changes_require_full_coverage(self):
         self.assertEqual(policy.select_profile('auto', ['scripts/build_release_artifact.py']), 'full')

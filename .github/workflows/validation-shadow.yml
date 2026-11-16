@@ -19,6 +19,9 @@ jobs:
       gates: ${{ steps.select.outputs.gates }}
       invalidates: ${{ steps.select.outputs.invalidates }}
       full_required: ${{ steps.select.outputs.full_required }}
+      profile: ${{ steps.profile.outputs.profile }}
+      base: ${{ steps.profile.outputs.base }}
+      head: ${{ steps.profile.outputs.head }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -42,6 +45,13 @@ jobs:
             --head "$EVENT_HEAD_SHA" \
             --github-output "$GITHUB_OUTPUT"
 
+      - name: Classify the same diff for platform coverage
+        id: profile
+        env:
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python -m tools.validation.ci_policy select --profile auto --base "$EVENT_BASE_SHA" --head "$EVENT_HEAD_SHA" --github-output "$GITHUB_OUTPUT"
+
   selected_validation:
     name: Selected validation
     needs: classify
@@ -61,23 +71,74 @@ jobs:
           uv sync --locked --only-group validation
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Run repository-owned selected gates
+        if: needs.classify.outputs.profile == 'tests' || (needs.classify.outputs.profile == 'daily' && !contains(needs.classify.outputs.gates, 'focused_tests'))
         env:
           VALIDATION_PLAN: ${{ needs.classify.outputs.plan }}
         run: python tools/validation/run_selected_validation.py --plan-json "$VALIDATION_PLAN" --repo-root .
 
+      - name: Run conservative full candidate gates
+        if: needs.classify.outputs.profile == 'full' || (needs.classify.outputs.profile == 'daily' && contains(needs.classify.outputs.gates, 'focused_tests'))
+        run: python tools/validation/run_selected_validation.py --plan-json '{"schema":"change-scoped-validation-plan/v1","gates":["full_candidate"],"changed_paths":[]}' --repo-root .
+
+  selected_ubuntu_py310:
+    name: Ubuntu selected / Python 3.10
+    needs: classify
+    if: needs.classify.outputs.profile == 'tests'
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: ubuntu-latest
+      python-version: "3.10"
+      suite: selected
+      base-sha: ${{ needs.classify.outputs.base }}
+      head-sha: ${{ needs.classify.outputs.head }}
+
+  selected_ubuntu_py314:
+    name: Ubuntu selected / Python 3.14
+    needs: classify
+    if: needs.classify.outputs.profile == 'tests'
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: ubuntu-latest
+      python-version: "3.14"
+      suite: selected
+      base-sha: ${{ needs.classify.outputs.base }}
+      head-sha: ${{ needs.classify.outputs.head }}
+
+  selected_macos_py312:
+    name: macOS selected / Python 3.12
+    needs: classify
+    if: needs.classify.outputs.profile == 'tests'
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: macos-latest
+      python-version: "3.12"
+      suite: selected
+      base-sha: ${{ needs.classify.outputs.base }}
+      head-sha: ${{ needs.classify.outputs.head }}
+
+  selected_windows_py312:
+    name: Windows selected / Python 3.12
+    needs: classify
+    if: needs.classify.outputs.profile == 'tests'
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: windows-latest
+      python-version: "3.12"
+      suite: selected
+      base-sha: ${{ needs.classify.outputs.base }}
+      head-sha: ${{ needs.classify.outputs.head }}
+
   required:
     name: PR validation required
     if: always()
-    needs: [classify, selected_validation]
+    needs: [classify, selected_validation, selected_ubuntu_py310, selected_ubuntu_py314, selected_macos_py312, selected_windows_py312]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Fail closed over required jobs
         env:
-          CLASSIFY_RESULT: ${{ needs.classify.result }}
-          VALIDATION_RESULT: ${{ needs.selected_validation.result }}
+          CI_PROFILE: ${{ needs.classify.outputs.profile }}
+          ALL_NEEDS: ${{ toJSON(needs) }}
         run: |
           set -euo pipefail
-          printf '%s\n' '["classify","selected_validation"]' > "$RUNNER_TEMP/required.json"
-          printf '{"classify":"%s","selected_validation":"%s"}\n' "$CLASSIFY_RESULT" "$VALIDATION_RESULT" > "$RUNNER_TEMP/observed.json"
-          python tools/validation/verify_required_jobs.py --required "$RUNNER_TEMP/required.json" --observed "$RUNNER_TEMP/observed.json"
+          python -m tools.validation.ci_policy verify-pr --profile "$CI_PROFILE" --needs-json "$ALL_NEEDS"
