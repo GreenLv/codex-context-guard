@@ -1685,6 +1685,43 @@ class TestBetweenTurnsMode(DailyUpgradeCase):
         self.assertEqual(self.fake.calls.count(
             [str(self.tmp / "codex"), "plugin", "marketplace", "remove", MARKET]), 1)
 
+    def test_between_turns_journal_is_consumed_by_native_verifier(self):
+        """Exercise actual journal production and its independent consumer."""
+        from tools.validation import native_between_turns_acceptance as native
+
+        self.seed_old_slot()
+        self.host_status = inventory_result("running", desktop_pids=(4242,))
+        self.assertEqual(self.main("--resume"), 0)
+        subject = self.read("prepare.json")["subject"]
+        plan = {"tool_sha256": subject["tool_sha256"],
+                "cli_sha256": subject["cli"]["sha256"],
+                "expected_cli_version": subject["cli"]["version"],
+                "old_version": OLD, "target_version": TARGET}
+        ctx = {"daily": U, "u": U.base, "tool_output": self.output,
+               "home": self.daily, "cli": Path(subject["cli"]["path"]),
+               "artifact": self.artifact, "old_root": self.cache_root / OLD,
+               "new_root": self.cache_root / TARGET, "repo": U.ROOT,
+               "normalized_plan": U._load_plan(self.plan_path),
+               "helpers": subject["helpers"],
+               "compatibility": subject["compatibility"]}
+        verified = native.verify_maintained(ctx, plan, self.output / "verify.json", "passed")
+        self.assertEqual(verified["journal_add_count"], 1)
+
+        # A matching receipt cannot launder a different preflight CLI version.
+        journal = self.output / "apply-events.jsonl"
+        rows = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+        fact = next(row for row in rows
+                    if row.get("event") == "fact" and row.get("stage") == "preflight"
+                    and row.get("observation", {}).get("version") is not None)
+        fact["observation"]["version"] = "codex-cli 0.0.0"
+        journal.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        apply_path = self.output / "apply.json"
+        applied = self.read("apply.json")
+        applied["commands"] = [row for row in rows if row.get("event") == "fact"]
+        apply_path.write_text(json.dumps(applied), encoding="utf-8")
+        with self.assertRaisesRegex(native.Refused, "journal CLI version differs"):
+            native.verify_maintained(ctx, plan, self.output / "verify.json", "passed")
+
     def test_registered_at_target_skips_marketplace_repoint(self):
         self.seed_old_slot()
         self.fake.market_root = str(self.artifact)
