@@ -134,3 +134,24 @@ candidate lanes remain independent jobs. The final `Candidate CI required` job
 runs even after a failure and checks every job required by the resolved profile.
 A missing, failed, cancelled or skipped required job fails the summary; only
 unselected lanes may be skipped. Missing classification also fails closed.
+
+## Automatic fast-forward for HOL Action patches
+
+The fast-forward workflow runs from `main` after PR validation or HOL scanning
+finishes. It considers only an open, same-repository Dependabot PR with one
+verified commit directly on current `main`. The sole change must be a full-SHA
+pin and version comment for a higher patch release in the same HOL Action
+major/minor series. The SHA must match the upstream tag. The latest PR validation
+and HOL scan must pass on that head, and the scan must retain evidence for the
+current GitHub test merge. A changed scanner engine version still has to pass
+the workflow's existing scanner-version check.
+
+The workflow only fetches Git objects from the PR. It executes the copy of the
+merge script from `main`. A private GitHub App installed only on this repository
+supplies a short-lived token with Contents and Workflows write permissions.
+Configure the `hol-fast-forward` GitHub environment to allow deployments from
+`main` alone. Set its `HOL_APP_CLIENT_ID` variable and `HOL_APP_PRIVATE_KEY`
+secret through GitHub. Use manual dispatch on `main` to check token issuance
+and repository scope without updating refs. Automatic runs compare the previous
+`main` SHA in the ref update and let GitHub reject any non-fast-forward. A
+successful update triggers the usual `main` push workflows.

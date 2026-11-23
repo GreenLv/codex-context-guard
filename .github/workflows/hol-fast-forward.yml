@@ -1,0 +1,58 @@
+name: Fast-forward Dependabot HOL patches
+
+on:
+  workflow_run:
+    workflows: [PR validation, HOL Plugin Scanner]
+    types: [completed]
+    branches: ['dependabot/github_actions/hashgraph-online/ai-plugin-scanner-action-*']
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: hol-fast-forward-${{ github.event.workflow_run.head_branch || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  fast-forward:
+    if: >-
+      github.repository == 'GreenLv/codex-context-guard' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.conclusion == 'success'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: hol-fast-forward
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check scope and PR results
+        id: gate
+        if: github.event_name == 'workflow_run'
+        run: python3 -m tools.validation.hol_fast_forward
+      - name: Get a single-repository installation token
+        id: app
+        if: github.event_name == 'workflow_dispatch' || steps.gate.outputs.eligible == 'true'
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ vars.HOL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOL_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-workflows: write
+      - name: Verify installation without updating refs
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          HOL_APP_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -m tools.validation.hol_fast_forward --check-installation
+      - name: Recheck and fast-forward main
+        if: github.event_name == 'workflow_run' && steps.gate.outputs.eligible == 'true'
+        env:
+          HOL_APP_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -m tools.validation.hol_fast_forward --apply
