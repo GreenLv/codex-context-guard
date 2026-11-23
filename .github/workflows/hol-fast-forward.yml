@@ -13,7 +13,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: hol-fast-forward-${{ github.event.workflow_run.head_branch || github.run_id }}
+  group: hol-fast-forward
   cancel-in-progress: false
 
 jobs:
