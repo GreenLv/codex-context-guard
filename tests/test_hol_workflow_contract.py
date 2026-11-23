@@ -10,8 +10,12 @@ class HolWorkflowContractTests(unittest.TestCase):
         self.workflow = (ROOT / ".github/workflows/hol-plugin-scanner.yml").read_text()
 
     def test_scan_gate_and_pinned_inputs_are_preserved(self):
+        self.assertRegex(
+            self.workflow,
+            r"(?m)^[ \t]*uses: hashgraph-online/ai-plugin-scanner-action@"
+            r"[0-9a-f]{40}(?:[ \t]+#[^\n]*)?$",
+        )
         for expected in (
-            "hashgraph-online/ai-plugin-scanner-action@9b169fc65d09b24726b66d70b3563ab563158b58",
             'plugin_dir: "."', "mode: scan", "install_cisco: true",
             'cisco_skill_scan: "on"', "min_score: 80", "fail_on_severity: high",
             "format: sarif", "upload_sarif: true", "output: ai-plugin-scanner.sarif",
