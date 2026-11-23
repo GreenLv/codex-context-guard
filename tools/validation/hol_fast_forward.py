@@ -190,7 +190,8 @@ def evaluate(repo: dict, endpoint: str, run: dict) -> Candidate:
     require(len(pulls) == 1, "no unique open PR for this head branch")
     pr = api(f"{endpoint}/pulls/{pulls[0]['number']}")
     base = api(f"{endpoint}/git/ref/heads/main")["object"]["sha"]
-    require(SHA.fullmatch(base) is not None and base == os.environ["GITHUB_SHA"],
+    require(SHA.fullmatch(base) is not None and base == os.environ["GITHUB_SHA"]
+            and command("git", "rev-parse", "HEAD").decode().strip() == base,
             "main advanced after the trusted workflow started")
     candidate = candidate_from_pr(repo, pr, branch, head, base)
     verify_checks(candidate, endpoint, repo["id"])

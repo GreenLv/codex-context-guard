@@ -78,6 +78,16 @@ class ScopeTests(unittest.TestCase):
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_rejects_stale_workflow_checkout_before_fetching_pr(self):
+        event = {"head_branch": BRANCH, "head_sha": HEAD, "event": "pull_request",
+                 "conclusion": "success", "head_repository": {"id": REPO["id"]}}
+        with (patch.dict("os.environ", {"GITHUB_SHA": BASE}),
+              patch.object(hol, "api", side_effect=[[pull()], pull(), {"object": {"sha": BASE}}]),
+              patch.object(hol, "command", return_value=MERGE.encode()) as command,
+              self.assertRaisesRegex(hol.Ineligible, "main advanced")):
+            hol.evaluate(REPO, ENDPOINT, event)
+        command.assert_called_once_with("git", "rev-parse", "HEAD")
+
     def test_both_exact_workflows_pass_current_attempt_jobs_and_hol_artifact(self):
         with patch.object(hol, "api", side_effect=check_data().__getitem__):
             hol.verify_checks(CANDIDATE, ENDPOINT, REPO["id"])
